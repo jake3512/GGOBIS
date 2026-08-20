@@ -1,0 +1,67 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// A champion, keyed by Riot's numeric championId (from Data Dragon).
+model Champion {
+  id        Int    @id
+  key       String @unique // Data Dragon string key, e.g. "266" for Aatrox
+  name      String
+  title     String
+  iconUrl   String
+  tags      String // comma-separated Data Dragon tags, e.g. "Fighter,Tank"
+
+  updatedAt DateTime @updatedAt
+}
+
+// Aggregated win-rate stats for two champions placed on the SAME team.
+// championAId is always the smaller id so each unordered pair has one row.
+model ChampionPairStat {
+  id          Int @id @default(autoincrement())
+  championAId Int
+  championBId Int
+  games       Int @default(0)
+  wins        Int @default(0) // wins credited to the team containing both champions
+
+  @@unique([championAId, championBId])
+  @@index([championAId])
+  @@index([championBId])
+}
+
+// Aggregated win-rate stats for two champions placed on OPPOSING teams.
+// Stored directionally: championAId's win rate against championBId.
+model ChampionMatchupStat {
+  id          Int @id @default(autoincrement())
+  championAId Int
+  championBId Int
+  games       Int @default(0)
+  winsA       Int @default(0) // games where the team containing championA won
+
+  @@unique([championAId, championBId])
+  @@index([championAId])
+  @@index([championBId])
+}
+
+// Bookkeeping so the collector script never re-processes the same match.
+model ProcessedMatch {
+  matchId     String   @id
+  patch       String?
+  queueId     Int?
+  processedAt DateTime @default(now())
+}
+
+// Tracks collection progress per source (e.g. per region+tier queue used to seed PUUIDs).
+model CollectionCursor {
+  source    String   @id
+  cursor    String?
+  updatedAt DateTime @updatedAt
+}
