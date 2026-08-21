@@ -1,6 +1,9 @@
 // Client for Riot's static "Data Dragon" asset feed (champion names, tags,
-// icons). This is public, unauthenticated, and unrelated to the rate-limited
-// Riot API used for match data — see src/lib/riot.ts for that.
+// icons, and — importantly for src/lib/opgg.ts — the canonical slug used to
+// build champion URLs).
+
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 
 const DDRAGON_BASE = "https://ddragon.leagueoflegends.com";
 
@@ -72,4 +75,44 @@ export async function getChampions(
       iconUrl: championIconUrl(v, c.image.full),
     }))
     .sort((a, b) => a.name.localeCompare(b.name, "ko"));
+}
+
+let cachedChampions: { value: DDragonChampion[]; fetchedAt: number } | null = null;
+const CHAMPIONS_TTL_MS = 60 * 60 * 1000; // 1 hour
+
+async function loadFallbackChampions(): Promise<DDragonChampion[]> {
+  const raw = await readFile(
+    path.join(process.cwd(), "data", "fallback-champions.json"),
+    "utf-8",
+  );
+  const snapshot = JSON.parse(raw) as {
+    ddragonVersion: string;
+    champions: { id: number; slug: string; name: string; title: string; tags: string[] }[];
+  };
+  return snapshot.champions.map((c) => ({
+    id: c.id,
+    slug: c.slug,
+    name: c.name,
+    title: c.title,
+    tags: c.tags,
+    iconUrl: championIconUrl(snapshot.ddragonVersion, `${c.slug}.png`),
+  }));
+}
+
+/** Champion list for the picker UI. Tries live Data Dragon first (cached for
+ * an hour in-process), falling back to the bundled offline snapshot
+ * (data/fallback-champions.json) if Data Dragon can't be reached — e.g. a
+ * sandboxed environment with no general internet egress. */
+export async function getChampionsWithFallback(locale = "ko_KR"): Promise<DDragonChampion[]> {
+  if (cachedChampions && Date.now() - cachedChampions.fetchedAt < CHAMPIONS_TTL_MS) {
+    return cachedChampions.value;
+  }
+  try {
+    const champions = await getChampions(locale);
+    cachedChampions = { value: champions, fetchedAt: Date.now() };
+    return champions;
+  } catch (err) {
+    console.warn("Data Dragon unreachable, using offline fallback champion list:", err);
+    return loadFallbackChampions();
+  }
 }

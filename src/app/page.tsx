@@ -5,49 +5,60 @@ import { ChampionPicker, type ChampionSummary } from "@/components/ChampionPicke
 import { ChampionIcon } from "@/components/ChampionIcon";
 import { WinRateBar } from "@/components/WinRateBar";
 
-type Mode = "teammates" | "comp";
+type Mode = "counter" | "duo";
 
-// API responses key champions by `championId` (not `id`, which is reserved
-// for the /api/champions list that backs the picker/chips).
-interface RecommendedChampion {
+const POSITIONS: { value: string; label: string }[] = [
+  { value: "top", label: "탑" },
+  { value: "jungle", label: "정글" },
+  { value: "mid", label: "미드" },
+  { value: "adc", label: "원거리 딜러" },
+  { value: "support", label: "서포터" },
+];
+
+interface ChampionBrief {
+  id: number;
+  name: string;
+  iconUrl: string;
+}
+
+interface CounterEntry {
   championId: number;
   name: string;
   iconUrl: string;
-  tags: string[];
-}
-
-interface TeammateRecommendation extends RecommendedChampion {
   winRate: number;
-  sampleGames: number;
+  games: number;
 }
 
-interface CompResult {
-  team: RecommendedChampion[];
-  synergyScore: number;
-  pairBreakdown: {
-    championA: RecommendedChampion;
-    championB: RecommendedChampion;
-    winRate: number;
-    sampleGames: number;
-  }[];
-  topCounterPicks: (RecommendedChampion & { winRate: number })[];
-  composedCounterTeam: {
-    synergyScore: number;
-    avgCounterScore: number;
-    team: (RecommendedChampion & {
-      counterWinRate: number;
-      synergyWithTeamSoFar: number | null;
-    })[];
-  };
+interface CounterResult {
+  champion: ChampionBrief;
+  position: string;
+  sourceUrl: string;
+  counters: CounterEntry[];
+}
+
+interface DuoResult {
+  adc: ChampionBrief;
+  support: ChampionBrief;
+  sourceUrl: string;
+  winRate: number | null;
+  games: number | null;
+}
+
+interface Slot {
+  key: string;
+  label: string;
+  championId: number | null;
 }
 
 export default function Home() {
   const [champions, setChampions] = useState<ChampionSummary[]>([]);
   const [champLoadError, setChampLoadError] = useState<string | null>(null);
-  const [mode, setMode] = useState<Mode>("teammates");
-  const [selectedIds, setSelectedIds] = useState<number[]>([]);
-  const [teammateResults, setTeammateResults] = useState<TeammateRecommendation[] | null>(null);
-  const [compResult, setCompResult] = useState<CompResult | null>(null);
+  const [mode, setMode] = useState<Mode>("counter");
+  const [position, setPosition] = useState("top");
+  const [slots, setSlots] = useState<Slot[]>([{ key: "target", label: "기준 챔피언", championId: null }]);
+  const [activeSlotKey, setActiveSlotKey] = useState("target");
+  const [counterResult, setCounterResult] = useState<CounterResult | null>(null);
+  const [duoResult, setDuoResult] = useState<DuoResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -64,44 +75,64 @@ export default function Home() {
     return map;
   }, [champions]);
 
-  const maxSelect = mode === "teammates" ? 4 : 5;
-
   function switchMode(next: Mode) {
     setMode(next);
-    setSelectedIds([]);
-    setTeammateResults(null);
-    setCompResult(null);
     setError(null);
+    setCounterResult(null);
+    setDuoResult(null);
+    if (next === "counter") {
+      const nextSlots: Slot[] = [{ key: "target", label: "기준 챔피언", championId: null }];
+      setSlots(nextSlots);
+      setActiveSlotKey(nextSlots[0].key);
+    } else {
+      const nextSlots: Slot[] = [
+        { key: "adc", label: "원거리 딜러", championId: null },
+        { key: "support", label: "서포터", championId: null },
+      ];
+      setSlots(nextSlots);
+      setActiveSlotKey(nextSlots[0].key);
+    }
   }
 
-  function toggleChampion(id: number) {
-    setSelectedIds((prev) =>
-      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id].slice(0, maxSelect),
-    );
+  function assignActiveSlot(championId: number) {
+    setSlots((prev) => {
+      const next = prev.map((s) => (s.key === activeSlotKey ? { ...s, championId } : s));
+      const nextEmpty = next.find((s) => s.key !== activeSlotKey && s.championId === null);
+      if (nextEmpty) setActiveSlotKey(nextEmpty.key);
+      return next;
+    });
   }
 
-  async function runRecommendation() {
+  function clearSlot(key: string) {
+    setSlots((prev) => prev.map((s) => (s.key === key ? { ...s, championId: null } : s)));
+    setActiveSlotKey(key);
+  }
+
+  const activeSlotChampionId = slots.find((s) => s.key === activeSlotKey)?.championId ?? null;
+  const pickerSelectedIds = activeSlotChampionId !== null ? [activeSlotChampionId] : [];
+
+  const canRun =
+    mode === "counter"
+      ? slots[0]?.championId !== null
+      : slots.every((s) => s.championId !== null);
+
+  async function runLookup() {
     setError(null);
     setLoading(true);
     try {
-      if (mode === "teammates") {
-        const res = await fetch("/api/recommend/teammates", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ championIds: selectedIds }),
-        });
+      if (mode === "counter") {
+        const championId = slots[0].championId;
+        const res = await fetch(`/api/counters?championId=${championId}&position=${position}`);
         const data = await res.json();
-        if (!res.ok) throw new Error(data.error ?? "요청에 실패했습니다.");
-        setTeammateResults(data.recommendations);
+        if (!res.ok) throw new Error(data.error ?? "조회에 실패했습니다.");
+        setCounterResult(data);
       } else {
-        const res = await fetch("/api/recommend/comp", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ team: selectedIds }),
-        });
+        const adcId = slots.find((s) => s.key === "adc")?.championId;
+        const supportId = slots.find((s) => s.key === "support")?.championId;
+        const res = await fetch(`/api/duo?adcId=${adcId}&supportId=${supportId}`);
         const data = await res.json();
-        if (!res.ok) throw new Error(data.error ?? "요청에 실패했습니다.");
-        setCompResult(data);
+        if (!res.ok) throw new Error(data.error ?? "조회에 실패했습니다.");
+        setDuoResult(data);
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : "알 수 없는 오류가 발생했습니다.");
@@ -110,139 +141,141 @@ export default function Home() {
     }
   }
 
-  const canRun =
-    mode === "teammates" ? selectedIds.length >= 1 && selectedIds.length <= 4 : selectedIds.length === 5;
-
   return (
     <main className="page">
       <header className="page-header">
-        <h1>LoL 챔피언 조합 추천</h1>
-        <p>실제 매치 데이터를 기반으로 시너지가 좋은 조합과 카운터 조합을 추천합니다.</p>
+        <h1>LoL 라인 카운터 / 바텀 듀오 조회</h1>
+        <p>op.gg의 실제 통계를 요청할 때마다 실시간으로 가져와 보여줍니다 (자체 DB 없음).</p>
       </header>
 
       <div className="mode-tabs">
         <button
           type="button"
-          className={mode === "teammates" ? "tab tab--active" : "tab"}
-          onClick={() => switchMode("teammates")}
+          className={mode === "counter" ? "tab tab--active" : "tab"}
+          onClick={() => switchMode("counter")}
         >
-          챔피언 1~4개 → 남은 자리 추천
+          라인 카운터
         </button>
         <button
           type="button"
-          className={mode === "comp" ? "tab tab--active" : "tab"}
-          onClick={() => switchMode("comp")}
+          className={mode === "duo" ? "tab tab--active" : "tab"}
+          onClick={() => switchMode("duo")}
         >
-          5인 조합 평가 + 카운터 추천
+          바텀 듀오 시너지
         </button>
       </div>
 
+      {mode === "counter" && (
+        <div className="position-tabs">
+          {POSITIONS.map((p) => (
+            <button
+              key={p.value}
+              type="button"
+              className={position === p.value ? "tab tab--active" : "tab"}
+              onClick={() => setPosition(p.value)}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+      )}
+
       <section className="selected-bar">
-        <span className="selected-label">
-          선택됨 ({selectedIds.length}/{maxSelect})
-        </span>
-        <div className="selected-chips">
-          {selectedIds.map((id) => {
-            const champ = championById.get(id);
-            if (!champ) return null;
+        <div className="slot-row">
+          {slots.map((slot) => {
+            const champ = slot.championId !== null ? championById.get(slot.championId) : null;
+            const active = slot.key === activeSlotKey;
             return (
               <button
-                key={id}
+                key={slot.key}
                 type="button"
-                className="chip"
-                onClick={() => toggleChampion(id)}
-                title="클릭해서 제거"
+                className={`slot${active ? " slot--active" : ""}${champ ? "" : " slot--empty"}`}
+                onClick={() => (champ ? clearSlot(slot.key) : setActiveSlotKey(slot.key))}
               >
-                <ChampionIcon src={champ.iconUrl} name={champ.name} />
-                {champ.name}
-                <span className="chip-x">×</span>
+                {champ ? (
+                  <>
+                    <ChampionIcon src={champ.iconUrl} name={champ.name} />
+                    <span>{champ.name}</span>
+                  </>
+                ) : (
+                  <span>{slot.label} 선택</span>
+                )}
               </button>
             );
           })}
-          {selectedIds.length === 0 && <span className="empty-hint">아래에서 챔피언을 선택하세요.</span>}
         </div>
-        <button
-          type="button"
-          className="run-button"
-          disabled={!canRun || loading}
-          onClick={runRecommendation}
-        >
-          {loading ? "계산 중..." : mode === "teammates" ? "추천받기" : "평가하기"}
+        <button type="button" className="run-button" disabled={!canRun || loading} onClick={runLookup}>
+          {loading ? "조회 중..." : mode === "counter" ? "카운터 조회" : "듀오 시너지 조회"}
         </button>
       </section>
 
-      {error && <p className="error-banner">{error}</p>}
+      {error && (
+        <p className="error-banner">
+          {error}
+          <br />
+          <span className="empty-hint">
+            op.gg 페이지 구조가 예상과 달라 발생하는 문제일 수 있습니다. 이 메시지를 그대로 알려주시면
+            바로잡을게요.
+          </span>
+        </p>
+      )}
       {champLoadError && <p className="error-banner">{champLoadError}</p>}
 
-      {mode === "teammates" && teammateResults && (
+      {mode === "counter" && counterResult && (
         <section className="results">
-          <h2>추천 챔피언</h2>
+          <h2>
+            {counterResult.champion.name} ({POSITIONS.find((p) => p.value === counterResult.position)?.label}) 카운터
+          </h2>
+          <p className="empty-hint">
+            승률은 {counterResult.champion.name} 기준 상대 챔피언과 붙었을 때의 승률입니다. 낮을수록 상대하기
+            까다로운(=카운터) 챔피언입니다.
+          </p>
           <ol className="recommend-list">
-            {teammateResults.map((r) => (
-              <li key={r.championId} className="recommend-row">
-                <ChampionIcon src={r.iconUrl} name={r.name} />
-                <span className="recommend-name">{r.name}</span>
-                <WinRateBar rate={r.winRate} games={r.sampleGames} />
+            {counterResult.counters.map((c) => (
+              <li key={c.championId} className="recommend-row">
+                <ChampionIcon src={c.iconUrl} name={c.name} />
+                <span className="recommend-name">{c.name}</span>
+                <WinRateBar rate={c.winRate} games={c.games} />
               </li>
             ))}
+            {counterResult.counters.length === 0 && (
+              <p className="empty-hint">카운터 데이터를 찾지 못했습니다.</p>
+            )}
           </ol>
+          <p className="source-note">
+            출처:{" "}
+            <a href={counterResult.sourceUrl} target="_blank" rel="noreferrer">
+              op.gg
+            </a>
+          </p>
         </section>
       )}
 
-      {mode === "comp" && compResult && (
+      {mode === "duo" && duoResult && (
         <section className="results">
-          <h2>조합 평가</h2>
-          <div className="synergy-summary">
-            <span>이 조합의 평균 시너지 승률</span>
-            <WinRateBar rate={compResult.synergyScore} />
-          </div>
-
-          <h3>페어별 시너지</h3>
-          <ul className="pair-list">
-            {compResult.pairBreakdown.map((p, i) => (
-              <li key={i} className="pair-row">
-                <span className="pair-names">
-                  {p.championA.name} + {p.championB.name}
-                </span>
-                <WinRateBar rate={p.winRate} games={p.sampleGames} />
-              </li>
-            ))}
-          </ul>
-
-          <h3>이 조합을 상대하기 좋은 챔피언 (개별)</h3>
-          <ol className="recommend-list">
-            {compResult.topCounterPicks.map((c) => (
-              <li key={c.championId} className="recommend-row">
-                <ChampionIcon src={c.iconUrl} name={c.name} />
-                <span className="recommend-name">{c.name}</span>
-                <WinRateBar rate={c.winRate} />
-              </li>
-            ))}
-          </ol>
-
-          <h3>이 조합을 상대하기 좋은 추천 5인 조합</h3>
-          <p className="empty-hint">
-            평균 카운터 승률 {(compResult.composedCounterTeam.avgCounterScore * 100).toFixed(1)}% · 팀
-            내부 시너지 {(compResult.composedCounterTeam.synergyScore * 100).toFixed(1)}%
+          <h2>
+            {duoResult.adc.name} + {duoResult.support.name} 듀오 시너지
+          </h2>
+          {duoResult.winRate !== null ? (
+            <WinRateBar rate={duoResult.winRate} games={duoResult.games ?? undefined} />
+          ) : (
+            <p className="empty-hint">이 조합에 대한 데이터를 op.gg에서 찾지 못했습니다.</p>
+          )}
+          <p className="source-note">
+            출처:{" "}
+            <a href={duoResult.sourceUrl} target="_blank" rel="noreferrer">
+              op.gg
+            </a>
           </p>
-          <ol className="recommend-list">
-            {compResult.composedCounterTeam.team.map((c) => (
-              <li key={c.championId} className="recommend-row">
-                <ChampionIcon src={c.iconUrl} name={c.name} />
-                <span className="recommend-name">{c.name}</span>
-                <WinRateBar rate={c.counterWinRate} />
-              </li>
-            ))}
-          </ol>
         </section>
       )}
 
       <section className="picker-section">
         <ChampionPicker
           champions={champions}
-          selectedIds={selectedIds}
-          onToggle={toggleChampion}
-          maxSelect={maxSelect}
+          selectedIds={pickerSelectedIds}
+          onToggle={assignActiveSlot}
+          maxSelect={champions.length || 1}
         />
       </section>
     </main>
