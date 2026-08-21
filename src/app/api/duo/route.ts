@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getChampionsWithFallback } from "@/lib/ddragon";
-import { getBotDuoSynergy } from "@/lib/opgg";
+import { getAggregatedDuoSynergy } from "@/lib/sources/aggregate";
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
@@ -22,17 +22,23 @@ export async function GET(req: Request) {
   }
 
   try {
-    const result = await getBotDuoSynergy(adc.slug, support.slug, support.id);
+    const result = await getAggregatedDuoSynergy(adc.slug, support.slug, support.id);
     return NextResponse.json({
       adc: { id: adc.id, name: adc.name, iconUrl: adc.iconUrl },
       support: { id: support.id, name: support.name, iconUrl: support.iconUrl },
-      sourceUrl: result.sourceUrl,
-      winRate: result.winRate,
-      games: result.games,
+      sourcesSucceeded: result.sourcesSucceeded,
+      sourcesAttempted: result.sourcesAttempted,
+      sourceErrors: result.errors,
+      bySource: result.bySource.map((s) => ({
+        sourceId: s.sourceId,
+        sourceLabel: s.sourceLabel,
+        winRate: s.winRate,
+        games: s.games,
+      })),
     });
   } catch (err) {
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Failed to fetch data from op.gg" },
+      { error: err instanceof Error ? err.message : "Failed to fetch duo data" },
       { status: 502 },
     );
   }

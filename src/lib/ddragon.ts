@@ -1,6 +1,6 @@
 // Client for Riot's static "Data Dragon" asset feed (champion names, tags,
-// icons, and — importantly for src/lib/opgg.ts — the canonical slug used to
-// build champion URLs).
+// icons, and — importantly for src/lib/sources/ — the canonical slug used
+// to build each stat site's champion URLs).
 
 import { readFile } from "node:fs/promises";
 import path from "node:path";

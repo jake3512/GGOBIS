@@ -4,21 +4,28 @@ import { useEffect, useMemo, useState } from "react";
 import { ChampionPicker, type ChampionSummary } from "@/components/ChampionPicker";
 import { ChampionIcon } from "@/components/ChampionIcon";
 import { WinRateBar } from "@/components/WinRateBar";
+import { SourceBreakdown } from "@/components/SourceBreakdown";
+import { POSITIONS } from "@/lib/positions";
 
 type Mode = "counter" | "duo";
-
-const POSITIONS: { value: string; label: string }[] = [
-  { value: "top", label: "탑" },
-  { value: "jungle", label: "정글" },
-  { value: "mid", label: "미드" },
-  { value: "adc", label: "원거리 딜러" },
-  { value: "support", label: "서포터" },
-];
 
 interface ChampionBrief {
   id: number;
   name: string;
   iconUrl: string;
+}
+
+interface SourceValue {
+  sourceId: string;
+  sourceLabel: string;
+  winRate: number;
+  games: number;
+}
+
+interface SourceErrorInfo {
+  sourceId: string;
+  sourceLabel: string;
+  message: string;
 }
 
 interface CounterEntry {
@@ -27,27 +34,57 @@ interface CounterEntry {
   iconUrl: string;
   winRate: number;
   games: number;
+  bySource: SourceValue[];
 }
 
 interface CounterResult {
   champion: ChampionBrief;
   position: string;
-  sourceUrl: string;
+  sourcesSucceeded: number;
+  sourcesAttempted: number;
+  sourceErrors: SourceErrorInfo[];
   counters: CounterEntry[];
 }
 
 interface DuoResult {
   adc: ChampionBrief;
   support: ChampionBrief;
-  sourceUrl: string;
-  winRate: number | null;
-  games: number | null;
+  sourcesSucceeded: number;
+  sourcesAttempted: number;
+  sourceErrors: SourceErrorInfo[];
+  bySource: SourceValue[];
 }
 
 interface Slot {
   key: string;
   label: string;
   championId: number | null;
+}
+
+function SourceStatusNote({
+  succeeded,
+  attempted,
+  errors,
+}: {
+  succeeded: number;
+  attempted: number;
+  errors: SourceErrorInfo[];
+}) {
+  if (errors.length === 0) return null;
+  return (
+    <details className="source-status">
+      <summary>
+        {attempted}개 소스 중 {succeeded}개 성공 ({errors.length}개 실패 — 눌러서 자세히 보기)
+      </summary>
+      <ul>
+        {errors.map((e) => (
+          <li key={e.sourceId}>
+            <strong>{e.sourceLabel}</strong>: {e.message}
+          </li>
+        ))}
+      </ul>
+    </details>
+  );
 }
 
 export default function Home() {
@@ -145,7 +182,7 @@ export default function Home() {
     <main className="page">
       <header className="page-header">
         <h1>LoL 라인 카운터 / 바텀 듀오 조회</h1>
-        <p>op.gg의 실제 통계를 요청할 때마다 실시간으로 가져와 보여줍니다 (자체 DB 없음).</p>
+        <p>op.gg, u.gg, lolalytics 등 여러 사이트의 실제 통계를 요청할 때마다 실시간으로 가져와 보여줍니다 (자체 DB 없음).</p>
       </header>
 
       <div className="mode-tabs">
@@ -214,8 +251,8 @@ export default function Home() {
           {error}
           <br />
           <span className="empty-hint">
-            op.gg 페이지 구조가 예상과 달라 발생하는 문제일 수 있습니다. 이 메시지를 그대로 알려주시면
-            바로잡을게요.
+            연동된 사이트의 페이지 구조가 예상과 달라 발생하는 문제일 수 있습니다. 이 메시지를 그대로
+            알려주시면 바로잡을게요.
           </span>
         </p>
       )}
@@ -228,26 +265,29 @@ export default function Home() {
           </h2>
           <p className="empty-hint">
             승률은 {counterResult.champion.name} 기준 상대 챔피언과 붙었을 때의 승률입니다. 낮을수록 상대하기
-            까다로운(=카운터) 챔피언입니다.
+            까다로운(=카운터) 챔피언입니다. 각 항목의 승률은 표본(게임 수)이 가장 많은 소스 기준이며, 아래에
+            표본이 많은 순으로 최대 3개 소스를 함께 보여줍니다.
           </p>
+          <SourceStatusNote
+            succeeded={counterResult.sourcesSucceeded}
+            attempted={counterResult.sourcesAttempted}
+            errors={counterResult.sourceErrors}
+          />
           <ol className="recommend-list">
             {counterResult.counters.map((c) => (
-              <li key={c.championId} className="recommend-row">
-                <ChampionIcon src={c.iconUrl} name={c.name} />
-                <span className="recommend-name">{c.name}</span>
-                <WinRateBar rate={c.winRate} games={c.games} />
+              <li key={c.championId} className="recommend-row recommend-row--stacked">
+                <div className="recommend-row-main">
+                  <ChampionIcon src={c.iconUrl} name={c.name} />
+                  <span className="recommend-name">{c.name}</span>
+                  <WinRateBar rate={c.winRate} games={c.games} />
+                </div>
+                <SourceBreakdown sources={c.bySource} />
               </li>
             ))}
             {counterResult.counters.length === 0 && (
               <p className="empty-hint">카운터 데이터를 찾지 못했습니다.</p>
             )}
           </ol>
-          <p className="source-note">
-            출처:{" "}
-            <a href={counterResult.sourceUrl} target="_blank" rel="noreferrer">
-              op.gg
-            </a>
-          </p>
         </section>
       )}
 
@@ -256,17 +296,19 @@ export default function Home() {
           <h2>
             {duoResult.adc.name} + {duoResult.support.name} 듀오 시너지
           </h2>
-          {duoResult.winRate !== null ? (
-            <WinRateBar rate={duoResult.winRate} games={duoResult.games ?? undefined} />
+          <SourceStatusNote
+            succeeded={duoResult.sourcesSucceeded}
+            attempted={duoResult.sourcesAttempted}
+            errors={duoResult.sourceErrors}
+          />
+          {duoResult.bySource.length > 0 ? (
+            <>
+              <WinRateBar rate={duoResult.bySource[0].winRate} games={duoResult.bySource[0].games} />
+              <SourceBreakdown sources={duoResult.bySource} />
+            </>
           ) : (
-            <p className="empty-hint">이 조합에 대한 데이터를 op.gg에서 찾지 못했습니다.</p>
+            <p className="empty-hint">이 조합에 대한 데이터를 어느 소스에서도 찾지 못했습니다.</p>
           )}
-          <p className="source-note">
-            출처:{" "}
-            <a href={duoResult.sourceUrl} target="_blank" rel="noreferrer">
-              op.gg
-            </a>
-          </p>
         </section>
       )}
 
