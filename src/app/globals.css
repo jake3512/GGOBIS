@@ -62,6 +62,7 @@ body {
 
 .tab {
   padding: 0.6rem 1rem;
+  min-height: 44px;
   border-radius: 999px;
   border: 1px solid var(--border);
   background: var(--surface);
@@ -109,7 +110,7 @@ body {
   color: var(--foreground);
   cursor: pointer;
   font-size: 0.85rem;
-  min-height: 2.5rem;
+  min-height: 44px;
 }
 
 .slot img {
@@ -132,6 +133,7 @@ body {
 .source-status {
   font-size: 0.8rem;
   color: var(--muted);
+  overflow-wrap: anywhere;
 }
 
 .source-status summary {
@@ -188,6 +190,7 @@ body {
   border: none;
   border-radius: 8px;
   padding: 0.65rem 1.4rem;
+  min-height: 44px;
   font-size: 0.95rem;
   cursor: pointer;
 }
@@ -204,6 +207,7 @@ body {
   color: var(--bad);
   padding: 0.75rem 1rem;
   border-radius: 8px;
+  overflow-wrap: anywhere;
 }
 
 .empty-hint {
@@ -308,12 +312,14 @@ body {
 .champion-search {
   width: 100%;
   padding: 0.6rem 0.8rem;
+  min-height: 44px;
   border-radius: 8px;
   border: 1px solid var(--border);
   background: var(--surface-alt);
   color: var(--foreground);
   margin-bottom: 1rem;
-  font-size: 0.9rem;
+  /* Keep this >=16px — iOS Safari auto-zooms the page on focus otherwise. */
+  font-size: 1rem;
 }
 
 .champion-grid {
