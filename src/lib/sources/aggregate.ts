@@ -1,0 +1,135 @@
+import { SOURCES } from "@/lib/sources/registry";
+import type { Position } from "@/lib/positions";
+
+export interface SourceValue {
+  sourceId: string;
+  sourceLabel: string;
+  sourceUrl: string;
+  winRate: number;
+  games: number;
+}
+
+export interface AggregatedCounterEntry {
+  championId: number;
+  /** Up to 3 sources with the largest sample size for this specific matchup. */
+  bySource: SourceValue[];
+  /** The single most-sampled source's number — what the UI leads with. */
+  primary: SourceValue;
+}
+
+export interface SourceError {
+  sourceId: string;
+  sourceLabel: string;
+  message: string;
+}
+
+export interface AggregatedCounters {
+  entries: AggregatedCounterEntry[];
+  errors: SourceError[];
+  sourcesSucceeded: number;
+  sourcesAttempted: number;
+}
+
+export async function getAggregatedLaneCounters(
+  dataDragonSlug: string,
+  position: Position,
+): Promise<AggregatedCounters> {
+  const settled = await Promise.allSettled(
+    SOURCES.map((s) => s.getLaneCounters(dataDragonSlug, position)),
+  );
+
+  const errors: SourceError[] = [];
+  const byChampion = new Map<number, SourceValue[]>();
+
+  settled.forEach((result, i) => {
+    const source = SOURCES[i];
+    if (result.status === "rejected") {
+      errors.push({
+        sourceId: source.id,
+        sourceLabel: source.label,
+        message: result.reason instanceof Error ? result.reason.message : String(result.reason),
+      });
+      return;
+    }
+    for (const c of result.value.counters) {
+      const list = byChampion.get(c.championId) ?? [];
+      list.push({
+        sourceId: source.id,
+        sourceLabel: source.label,
+        sourceUrl: result.value.sourceUrl,
+        winRate: c.winRate,
+        games: c.games,
+      });
+      byChampion.set(c.championId, list);
+    }
+  });
+
+  const sourcesSucceeded = settled.filter((r) => r.status === "fulfilled").length;
+  if (sourcesSucceeded === 0) {
+    throw new Error(
+      `All ${SOURCES.length} sources failed. ` +
+        errors.map((e) => `${e.sourceLabel}: ${e.message}`).join(" | "),
+    );
+  }
+
+  const entries: AggregatedCounterEntry[] = [...byChampion.entries()].map(
+    ([championId, sources]) => {
+      const bySource = [...sources].sort((a, b) => b.games - a.games).slice(0, 3);
+      return { championId, bySource, primary: bySource[0] };
+    },
+  );
+
+  return { entries, errors, sourcesSucceeded, sourcesAttempted: SOURCES.length };
+}
+
+export interface AggregatedDuo {
+  bySource: SourceValue[];
+  errors: SourceError[];
+  sourcesSucceeded: number;
+  sourcesAttempted: number;
+}
+
+export async function getAggregatedDuoSynergy(
+  adcSlug: string,
+  supportSlug: string,
+  supportChampionId: number,
+): Promise<AggregatedDuo> {
+  const settled = await Promise.allSettled(
+    SOURCES.map((s) => s.getBotDuoSynergy(adcSlug, supportSlug, supportChampionId)),
+  );
+
+  const errors: SourceError[] = [];
+  const values: SourceValue[] = [];
+
+  settled.forEach((result, i) => {
+    const source = SOURCES[i];
+    if (result.status === "rejected") {
+      errors.push({
+        sourceId: source.id,
+        sourceLabel: source.label,
+        message: result.reason instanceof Error ? result.reason.message : String(result.reason),
+      });
+      return;
+    }
+    if (result.value.winRate !== null && result.value.games !== null) {
+      values.push({
+        sourceId: source.id,
+        sourceLabel: source.label,
+        sourceUrl: result.value.sourceUrl,
+        winRate: result.value.winRate,
+        games: result.value.games,
+      });
+    }
+  });
+
+  const sourcesSucceeded = settled.filter((r) => r.status === "fulfilled").length;
+  if (sourcesSucceeded === 0) {
+    throw new Error(
+      `All ${SOURCES.length} sources failed. ` +
+        errors.map((e) => `${e.sourceLabel}: ${e.message}`).join(" | "),
+    );
+  }
+
+  const bySource = values.sort((a, b) => b.games - a.games).slice(0, 3);
+  return { bySource, errors, sourcesSucceeded, sourcesAttempted: SOURCES.length };
+}
