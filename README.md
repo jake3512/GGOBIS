@@ -60,6 +60,34 @@ npm run dev
 
 개인 키는 24시간마다 만료되니, 꾸준히 데이터를 쌓으려면 매일 새 키를 발급받아 `.env`를 갱신하거나, Riot의 프로덕션 키를 신청하세요.
 
+## Vercel 배포
+
+Riot의 **Production API Key**(만료 없는 키) 신청서에는 실제로 접속 가능한 Product URL을 적어야 합니다. 아래대로 하면 Vercel에 무료로 배포해 URL을 만들 수 있습니다.
+
+1. https://vercel.com 에서 GitHub 계정으로 로그인 → **Add New → Project** → 이 저장소(`jake3512/semips`) import
+2. **Environment Variables**에 아래를 추가 (Production/Preview/Development 전체 체크):
+   - `DATABASE_URL` = `file:./dev.db`
+3. **Deploy** 클릭
+
+Vercel은 `vercel-build`라는 스크립트가 있으면 `build` 대신 그걸 실행합니다(Vercel의 표준 관례). 이 프로젝트의 `vercel-build`는 다음을 순서대로 합니다:
+
+```
+prisma generate → prisma migrate deploy → 챔피언 동기화(Data Dragon) → 데모 샘플 데이터 시드 → next build
+```
+
+즉 **배포될 때마다 새 SQLite 파일을 만들고 데모용 합성 통계로 채웁니다.** RIOT_API_KEY 없이도 빌드/배포가 됩니다.
+
+### 왜 SQLite인데 서버리스에서 되나요?
+
+Vercel의 서버리스 함수는 배포 번들이 읽기 전용이라 SQLite처럼 파일에 쓰는 DB는 원래 까다롭습니다. 이 프로젝트는:
+
+- `next.config.ts`의 `outputFileTracingIncludes`로 빌드 시 만들어진 `prisma/dev.db`를 API 라우트 번들에 강제로 포함시키고,
+- `src/lib/db.ts`가 (Vercel 환경일 때만) 이 읽기전용 파일을 함수의 `/tmp`(쓰기 가능한 임시 공간)로 콜드스타트 시 한 번 복사해서 그 경로로 Prisma를 연결합니다.
+
+로컬 개발/테스트에서는 정상 동작을 확인했지만, **실제 Vercel 인프라에는 이 세션에서 배포·검증할 방법이 없어** 100% 검증되지는 않았습니다. 배포 후 API가 500 에러를 내면 알려주시면 바로 봐드릴게요.
+
+> 이 방식은 "지금 당장 데모용 URL이 필요하다"는 목적에 맞춘 임시방편입니다. 재배포할 때마다 데이터가 합성 샘플로 초기화되고, `npm run collect`로 모은 실제 데이터는 로컬에만 남습니다. 나중에 실제 서비스로 키우실 거면 Postgres(Vercel Postgres, Neon 등)나 Turso(libSQL) 같은 호스팅 DB로 옮기는 걸 권장드립니다 — 필요하시면 마이그레이션 도와드릴게요.
+
 ## 스크립트
 
 | 명령어 | 설명 |
@@ -71,6 +99,7 @@ npm run dev
 | `npm run db:seed-sample` | 데모용 합성 통계 생성 |
 | `npm run collect -- [옵션]` | Riot API로 실제 매치 데이터 수집 |
 | `npm run db:migrate` | Prisma 마이그레이션 |
+| `npm run vercel-build` | Vercel 배포용 빌드 (DB 생성 + 챔피언 동기화 + 샘플 시드 + next build) |
 
 ## 폴더 구조
 

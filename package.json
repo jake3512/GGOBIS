@@ -10,7 +10,8 @@
     "db:migrate": "prisma migrate dev",
     "db:sync-champions": "dotenv -e .env -- tsx scripts/syncChampions.ts",
     "db:seed-sample": "dotenv -e .env -- tsx scripts/seedSampleData.ts",
-    "collect": "dotenv -e .env -- tsx scripts/collectMatches.ts"
+    "collect": "dotenv -e .env -- tsx scripts/collectMatches.ts",
+    "vercel-build": "prisma generate && prisma migrate deploy && tsx scripts/syncChampions.ts && tsx scripts/seedSampleData.ts && next build"
   },
   "dependencies": {
     "@prisma/client": "^6.19.3",
