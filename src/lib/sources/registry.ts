@@ -23,22 +23,20 @@ function toKebabSlug(dataDragonSlug: string): string {
 
 const configs: GenericSourceConfig[] = [
   {
-    // Confidence: medium-high. URL confirmed against a real op.gg page:
-    // https://op.gg/lol/champions/nasus/build/top — position is a PATH
-    // segment under /build, not a `?position=` query param as originally
-    // guessed. Counters/matchups appear to be a tab within this same build
-    // page rather than a separate route, so we point both counters and duo
-    // at it and let the shape-based search in scrape.ts find whichever
-    // stat array is actually present. Duo (ADC+Support synergy) specifically
-    // is still unconfirmed — if it's not on this page, it may need its own
-    // URL (op.gg's nav also has a separate duo.op.gg, but that looks like
-    // matchmaking, not champion-synergy stats).
+    // Confidence: high. Full tab nav confirmed against a real op.gg page
+    // (https://op.gg/lol/champions/nasus/build/top): Counters and Champion
+    // synergies are separate sibling routes, not tabs within /build —
+    // /lol/champions/{slug}/counters/{position} and
+    // .../synergies/{position}, position as a path segment (no `?position=`
+    // query param, that guess was wrong twice over). "Champion synergies"
+    // isn't ADC+Support-specific, but requesting it from the ADC's page
+    // should surface support pairings among the results.
     id: "opgg",
     label: "op.gg",
-    confidence: "medium",
+    confidence: "high",
     slug: (s) => (s === "MonkeyKing" ? "wukong" : s.toLowerCase()),
-    counterUrl: (slug, position) => `https://op.gg/lol/champions/${slug}/build/${position}`,
-    duoUrl: (adcSlug) => `https://op.gg/lol/champions/${adcSlug}/build/adc`,
+    counterUrl: (slug, position) => `https://op.gg/lol/champions/${slug}/counters/${position}`,
+    duoUrl: (adcSlug) => `https://op.gg/lol/champions/${adcSlug}/synergies/adc`,
   },
   {
     // Confidence: medium. u.gg is a well-known second major stats site with

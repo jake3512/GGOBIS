@@ -8,7 +8,7 @@ const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 export interface GenericSourceConfig {
   id: string;
   label: string;
-  confidence: "medium" | "low";
+  confidence: "high" | "medium" | "low";
   /** Data Dragon slug -> this site's champion slug. Defaults to lowercasing. */
   slug?(dataDragonSlug: string): string;
   counterUrl(slug: string, position: Position): string;
