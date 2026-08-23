@@ -31,12 +31,24 @@ const configs: GenericSourceConfig[] = [
     // query param, that guess was wrong twice over). "Champion synergies"
     // isn't ADC+Support-specific, but requesting it from the ADC's page
     // should surface support pairings among the results.
+    //
+    // The query string (region/type/tier/patch) turned out to matter too —
+    // confirmed via the user finding the exact network request (by content-
+    // searching for a win-rate number visible on the page) whose response
+    // actually contained the matchup data: .../counters/top?region=global&
+    // type=ranked&tier=emerald_plus&patch=16.16. Without it the page 200s
+    // but apparently doesn't render the stat table. `patch` is a moving
+    // target (this site patches LoL roughly every 2 weeks), so it's
+    // deliberately left off here on the bet that omitting it falls back to
+    // "current patch" rather than erroring — unconfirmed either way.
     id: "opgg",
     label: "op.gg",
     confidence: "high",
     slug: (s) => (s === "MonkeyKing" ? "wukong" : s.toLowerCase()),
-    counterUrl: (slug, position) => `https://op.gg/lol/champions/${slug}/counters/${position}`,
-    duoUrl: (adcSlug) => `https://op.gg/lol/champions/${adcSlug}/synergies/adc`,
+    counterUrl: (slug, position) =>
+      `https://op.gg/lol/champions/${slug}/counters/${position}?region=global&type=ranked&tier=emerald_plus`,
+    duoUrl: (adcSlug) =>
+      `https://op.gg/lol/champions/${adcSlug}/synergies/adc?region=global&type=ranked&tier=emerald_plus`,
   },
   {
     // Confidence: medium. u.gg is a well-known second major stats site with
