@@ -170,4 +170,8 @@ export const lolpsSource: StatSource = {
   async getBotDuoSynergy(): Promise<SourceDuoResult> {
     throw new Error("lol.ps: bottom-lane duo synergy page not identified yet — not supported.");
   },
+
+  async getBotDuoCandidates(): Promise<SourceCounterResult> {
+    throw new Error("lol.ps: bottom-lane duo synergy page not identified yet — not supported.");
+  },
 };

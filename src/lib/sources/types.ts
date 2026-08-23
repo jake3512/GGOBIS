@@ -47,4 +47,12 @@ export interface StatSource {
     supportChampionId: number,
     champions: ChampionRef[],
   ): Promise<SourceDuoResult>;
+  /** All of a known ADC's synergy partners (mainly supports), ranked —
+   * the same underlying page/data as getBotDuoSynergy, just not filtered
+   * down to one specific partner. Used for "which support/pick goes well
+   * with this ADC" recommendations. */
+  getBotDuoCandidates(
+    adcDataDragonSlug: string,
+    champions: ChampionRef[],
+  ): Promise<SourceCounterResult>;
 }
