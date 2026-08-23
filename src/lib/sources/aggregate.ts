@@ -1,5 +1,6 @@
 import { SOURCES } from "@/lib/sources/registry";
 import type { Position } from "@/lib/positions";
+import type { ChampionRef } from "@/lib/sources/types";
 
 export interface SourceValue {
   sourceId: string;
@@ -33,9 +34,10 @@ export interface AggregatedCounters {
 export async function getAggregatedLaneCounters(
   dataDragonSlug: string,
   position: Position,
+  champions: ChampionRef[],
 ): Promise<AggregatedCounters> {
   const settled = await Promise.allSettled(
-    SOURCES.map((s) => s.getLaneCounters(dataDragonSlug, position)),
+    SOURCES.map((s) => s.getLaneCounters(dataDragonSlug, position, champions)),
   );
 
   const errors: SourceError[] = [];
@@ -93,9 +95,10 @@ export async function getAggregatedDuoSynergy(
   adcSlug: string,
   supportSlug: string,
   supportChampionId: number,
+  champions: ChampionRef[],
 ): Promise<AggregatedDuo> {
   const settled = await Promise.allSettled(
-    SOURCES.map((s) => s.getBotDuoSynergy(adcSlug, supportSlug, supportChampionId)),
+    SOURCES.map((s) => s.getBotDuoSynergy(adcSlug, supportSlug, supportChampionId, champions)),
   );
 
   const errors: SourceError[] = [];

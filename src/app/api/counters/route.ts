@@ -28,7 +28,7 @@ export async function GET(req: Request) {
   const champById = new Map(champions.map((c) => [c.id, c]));
 
   try {
-    const result = await getAggregatedLaneCounters(champion.slug, position);
+    const result = await getAggregatedLaneCounters(champion.slug, position, champions);
     return NextResponse.json({
       champion: { id: champion.id, name: champion.name, iconUrl: champion.iconUrl },
       position,

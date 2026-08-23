@@ -94,24 +94,41 @@ export function extractEmbeddedJsonRoots(html: string, sourceLabel: string): unk
 }
 
 const KEY_PATTERNS = {
+  // A flat numeric champion id field, e.g. `championId: 86`.
   championId: /^(champion_?id|opponent_?champion_?id|target_?champion_?id)$/i,
+  // A nested object field holding champion identity instead, e.g.
+  // `champion: {key: "garen", name: "Garen", ...}` (confirmed on op.gg,
+  // which has no flat numeric champion id field at all).
+  championObject: /^(champion|opponent_?champion|target_?champion)$/i,
   winRate: /^(win_?rate|win_?ratio)$/i,
   wins: /^wins?$/i,
-  games: /^(games?|play_?count|matches?)$/i,
+  // `play` (bare, no suffix) is op.gg's actual field name for game count.
+  games: /^(games?|play|play_?count|matches?)$/i,
 };
 
 export interface RawStatEntry {
   [key: string]: unknown;
 }
 
+/** True if `raw` carries champion identity, either as a flat id field or as
+ * a nested object with a key/slug/id field inside it (op.gg's shape). */
+function hasChampionIdentity(raw: RawStatEntry): boolean {
+  const keys = Object.keys(raw);
+  if (keys.some((k) => KEY_PATTERNS.championId.test(k))) return true;
+  const champKey = keys.find((k) => KEY_PATTERNS.championObject.test(k));
+  if (!champKey) return false;
+  const champVal = raw[champKey];
+  if (champVal === null || typeof champVal !== "object" || Array.isArray(champVal)) return false;
+  return Object.keys(champVal as object).some((k) => /^(key|slug|id)$/i.test(k));
+}
+
 function isStatShapedObject(item: unknown): item is RawStatEntry {
   if (item === null || typeof item !== "object" || Array.isArray(item)) return false;
-  const keys = Object.keys(item as object);
-  const hasChampionId = keys.some((k) => KEY_PATTERNS.championId.test(k));
-  const hasWinShape = keys.some(
+  const raw = item as RawStatEntry;
+  const hasWinShape = Object.keys(raw).some(
     (k) => KEY_PATTERNS.winRate.test(k) || KEY_PATTERNS.wins.test(k),
   );
-  return hasChampionId && hasWinShape;
+  return hasChampionIdentity(raw) && hasWinShape;
 }
 
 /** Recursively walks a parsed data tree looking for arrays whose objects
@@ -142,13 +159,34 @@ export interface NormalizedEntry {
   games: number;
 }
 
-export function normalizeStatEntry(raw: RawStatEntry): NormalizedEntry | null {
-  const championIdKey = Object.keys(raw).find((k) => KEY_PATTERNS.championId.test(k));
-  const gamesKey = Object.keys(raw).find((k) => KEY_PATTERNS.games.test(k));
-  const winRateKey = Object.keys(raw).find((k) => KEY_PATTERNS.winRate.test(k));
-  const winsKey = Object.keys(raw).find((k) => KEY_PATTERNS.wins.test(k));
+/** Maps a site's own champion slug (as embedded in its page data, e.g.
+ * op.gg's `champion.key: "garen"`) to our numeric championId. Returns
+ * undefined if unrecognized. */
+export type SlugResolver = (siteSlug: string) => number | undefined;
 
-  const championId = championIdKey ? Number(raw[championIdKey]) : NaN;
+export function normalizeStatEntry(
+  raw: RawStatEntry,
+  resolveSlug?: SlugResolver,
+): NormalizedEntry | null {
+  const keys = Object.keys(raw);
+  const championIdKey = keys.find((k) => KEY_PATTERNS.championId.test(k));
+  const gamesKey = keys.find((k) => KEY_PATTERNS.games.test(k));
+  const winRateKey = keys.find((k) => KEY_PATTERNS.winRate.test(k));
+  const winsKey = keys.find((k) => KEY_PATTERNS.wins.test(k));
+
+  let championId = championIdKey ? Number(raw[championIdKey]) : NaN;
+
+  if (!Number.isFinite(championId) && resolveSlug) {
+    const champKey = keys.find((k) => KEY_PATTERNS.championObject.test(k));
+    const champVal = champKey ? raw[champKey] : undefined;
+    if (champVal !== null && typeof champVal === "object" && !Array.isArray(champVal)) {
+      const champObj = champVal as RawStatEntry;
+      const slugKey = Object.keys(champObj).find((k) => /^(key|slug|id)$/i.test(k));
+      const slug = slugKey ? String(champObj[slugKey]) : null;
+      const resolved = slug ? resolveSlug(slug) : undefined;
+      if (resolved !== undefined) championId = resolved;
+    }
+  }
   if (!Number.isFinite(championId)) return null;
 
   const games = gamesKey ? Number(raw[gamesKey]) : 0;
@@ -167,9 +205,14 @@ export function normalizeStatEntry(raw: RawStatEntry): NormalizedEntry | null {
 
 /** Best matching array of normalized entries out of everything found across
  * every root of the page's embedded data. */
-export function extractBestStatList(roots: unknown[]): NormalizedEntry[] {
+export function extractBestStatList(
+  roots: unknown[],
+  resolveSlug?: SlugResolver,
+): NormalizedEntry[] {
   const arrays = roots.flatMap((root) => findStatArrays(root));
   if (arrays.length === 0) return [];
   const best = arrays.reduce((a, b) => (b.length > a.length ? b : a));
-  return best.map(normalizeStatEntry).filter((e): e is NormalizedEntry => e !== null);
+  return best
+    .map((raw) => normalizeStatEntry(raw, resolveSlug))
+    .filter((e): e is NormalizedEntry => e !== null);
 }

@@ -22,7 +22,7 @@ export async function GET(req: Request) {
   }
 
   try {
-    const result = await getAggregatedDuoSynergy(adc.slug, support.slug, support.id);
+    const result = await getAggregatedDuoSynergy(adc.slug, support.slug, support.id, champions);
     return NextResponse.json({
       adc: { id: adc.id, name: adc.name, iconUrl: adc.iconUrl },
       support: { id: support.id, name: support.name, iconUrl: support.iconUrl },
