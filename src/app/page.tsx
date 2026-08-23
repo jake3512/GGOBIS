@@ -90,14 +90,32 @@ interface Slot {
   key: string;
   label: string;
   championId: number | null;
+  /** True for the one slot advice mode is recommending a pick for — not a
+   * fillable input. */
+  disabled?: boolean;
 }
 
-function adviceSlotsFor(position: string): Slot[] {
-  const slots: Slot[] = [{ key: "enemyLane", label: "상대 라이너", championId: null }];
-  if (position === "support") {
-    slots.push({ key: "allyAdc", label: "우리팀 원거리 딜러", championId: null });
-  }
-  return slots;
+/** Advice mode shows a full 10-slot draft board (5 ally + 5 enemy
+ * positions) so it feels like an actual champion-select screen, even
+ * though — given the data this app can actually get — only two of those
+ * ten slots feed the recommendation: the enemy pick in my own position
+ * (lane counter data) and, when I'm picking support, our ADC (duo synergy
+ * data). The rest are there for context/future sources, not decoration to
+ * be hidden — see the hint text rendered alongside the board. */
+function adviceSlotsFor(myPosition: string): Slot[] {
+  return [
+    ...POSITIONS.map((p) => ({
+      key: `ally-${p.value}`,
+      label: `우리팀 ${p.label}`,
+      championId: null,
+      disabled: p.value === myPosition,
+    })),
+    ...POSITIONS.map((p) => ({
+      key: `enemy-${p.value}`,
+      label: `상대 ${p.label}`,
+      championId: null,
+    })),
+  ];
 }
 
 function SourceStatusNote({
@@ -172,25 +190,24 @@ export default function Home() {
     } else {
       const nextSlots = adviceSlotsFor(position);
       setSlots(nextSlots);
-      setActiveSlotKey(nextSlots[0].key);
+      setActiveSlotKey(`enemy-${position}`);
     }
   }
 
   /** Position tabs are shared by counter mode and advice mode. In advice
-   * mode, changing position also reshapes the slot list (the ally-ADC slot
-   * only makes sense when picking support) while preserving any selection
-   * still relevant. */
+   * mode, changing position moves which ally slot is "my pick" (disabled,
+   * not fillable) — the slot keys themselves stay stable, so existing
+   * selections in every other slot are preserved. */
   function changePosition(next: string) {
     setPosition(next);
     if (mode === "advice") {
-      setSlots((prev) => {
-        const nextSlots = adviceSlotsFor(next);
-        return nextSlots.map((s) => ({
-          ...s,
-          championId: prev.find((p) => p.key === s.key)?.championId ?? null,
-        }));
-      });
-      setActiveSlotKey("enemyLane");
+      setSlots((prev) =>
+        prev.map((s) => {
+          const isSelf = s.key === `ally-${next}`;
+          return { ...s, disabled: isSelf, championId: isSelf ? null : s.championId };
+        }),
+      );
+      setActiveSlotKey(`enemy-${next}`);
       setAdviceResult(null);
     }
   }
@@ -198,7 +215,9 @@ export default function Home() {
   function assignActiveSlot(championId: number) {
     setSlots((prev) => {
       const next = prev.map((s) => (s.key === activeSlotKey ? { ...s, championId } : s));
-      const nextEmpty = next.find((s) => s.key !== activeSlotKey && s.championId === null);
+      const nextEmpty = next.find(
+        (s) => s.key !== activeSlotKey && s.championId === null && !s.disabled,
+      );
       if (nextEmpty) setActiveSlotKey(nextEmpty.key);
       return next;
     });
@@ -237,8 +256,8 @@ export default function Home() {
         if (!res.ok) throw new Error(data.error ?? "조회에 실패했습니다.");
         setDuoResult(data);
       } else {
-        const enemyLaneId = slots.find((s) => s.key === "enemyLane")?.championId;
-        const allyAdcId = slots.find((s) => s.key === "allyAdc")?.championId;
+        const enemyLaneId = slots.find((s) => s.key === `enemy-${position}`)?.championId;
+        const allyAdcId = slots.find((s) => s.key === "ally-adc")?.championId;
         const params = new URLSearchParams({ position });
         if (enemyLaneId !== null && enemyLaneId !== undefined) {
           params.set("enemyLaneChampionId", String(enemyLaneId));
@@ -256,6 +275,35 @@ export default function Home() {
     } finally {
       setLoading(false);
     }
+  }
+
+  function renderSlot(slot: Slot) {
+    if (slot.disabled) {
+      return (
+        <div key={slot.key} className="slot slot--disabled" title="추천 대상 자리">
+          <span>{slot.label} (내 픽)</span>
+        </div>
+      );
+    }
+    const champ = slot.championId !== null ? championById.get(slot.championId) : null;
+    const active = slot.key === activeSlotKey;
+    return (
+      <button
+        key={slot.key}
+        type="button"
+        className={`slot${active ? " slot--active" : ""}${champ ? "" : " slot--empty"}`}
+        onClick={() => (champ ? clearSlot(slot.key) : setActiveSlotKey(slot.key))}
+      >
+        {champ ? (
+          <>
+            <ChampionIcon src={champ.iconUrl} name={champ.name} />
+            <span>{champ.name}</span>
+          </>
+        ) : (
+          <span>{slot.label} 선택</span>
+        )}
+      </button>
+    );
   }
 
   return (
@@ -306,36 +354,38 @@ export default function Home() {
 
       {mode === "advice" && (
         <p className="empty-hint">
-          내가 픽할 포지션을 고른 뒤, 상대가 같은 라인에 이미 픽한 챔피언과(있다면) 우리팀 원거리 딜러를
-          입력하면 좋은 픽을 추천해드려요. 시너지 추천은 서포터를 픽할 때만 제공됩니다(원딜 쪽에서 시너지
-          좋은 서포터 목록을 보여주는 페이지만 확인됐어요).
+          우리팀/상대팀 각 라인에 이미 정해진 챔피언이 있으면 채워보세요 — 실제 픽창처럼 10칸 다 입력해도
+          되지만, 지금 실제로 추천에 반영되는 건{" "}
+          <strong>상대 {POSITIONS.find((p) => p.value === position)?.label} 라이너</strong>
+          {position === "support" && (
+            <>
+              {" "}
+              와 <strong>우리팀 원거리 딜러</strong>
+            </>
+          )}{" "}
+          칸뿐이에요. 나머지 칸은 더 많은 사이트를 연동하면 활용할 수 있도록 미리 마련해둔 자리입니다.
         </p>
       )}
 
       <section className="selected-bar">
-        <div className="slot-row">
-          {slots.map((slot) => {
-            const champ = slot.championId !== null ? championById.get(slot.championId) : null;
-            const active = slot.key === activeSlotKey;
-            return (
-              <button
-                key={slot.key}
-                type="button"
-                className={`slot${active ? " slot--active" : ""}${champ ? "" : " slot--empty"}`}
-                onClick={() => (champ ? clearSlot(slot.key) : setActiveSlotKey(slot.key))}
-              >
-                {champ ? (
-                  <>
-                    <ChampionIcon src={champ.iconUrl} name={champ.name} />
-                    <span>{champ.name}</span>
-                  </>
-                ) : (
-                  <span>{slot.label} 선택</span>
-                )}
-              </button>
-            );
-          })}
-        </div>
+        {mode === "advice" ? (
+          <div className="draft-board">
+            <div className="draft-team-row">
+              <span className="draft-team-label">우리팀</span>
+              <div className="draft-row">
+                {slots.filter((s) => s.key.startsWith("ally-")).map((slot) => renderSlot(slot))}
+              </div>
+            </div>
+            <div className="draft-team-row">
+              <span className="draft-team-label">상대팀</span>
+              <div className="draft-row">
+                {slots.filter((s) => s.key.startsWith("enemy-")).map((slot) => renderSlot(slot))}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="slot-row">{slots.map((slot) => renderSlot(slot))}</div>
+        )}
         <button type="button" className="run-button" disabled={!canRun || loading} onClick={runLookup}>
           {loading
             ? "조회 중..."
