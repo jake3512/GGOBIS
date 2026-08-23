@@ -30,14 +30,14 @@ DB도, API 키도 필요 없습니다. `npm install && npm run dev`만으로 뜹
 
 | 소스 | 신뢰도 | 비고 |
 | --- | --- | --- |
-| op.gg | 높음 | **URL 전체 확정**: 카운터는 `/lol/champions/{slug}/counters/{position}?region=global&type=ranked&tier=emerald_plus`, 시너지는 `.../synergies/{position}`도 동일 쿼리. 브라우저 Network 탭에서 화면에 보이는 승률 숫자로 응답 본문을 직접 검색해서(content search) 찾은, 실제로 데이터가 들어있는 요청입니다. 경로도 `?position=` 쿼리가 아니라 세그먼트, `region`/`type`/`tier` 없이는 통계가 안 채워지는 것도 이 과정에서 확인됨. Next.js App Router + RSC Flight 스트림(`self.__next_f.push`)인 것도 실제 페이지 소스로 검증함. `patch`(패치 버전) 파라미터는 계속 바뀌는 값이라 일부러 뺐습니다 — 생략 시 최신 패치로 기본 동작하길 기대하는 것이라 아직 확정은 아님. "Champion synergies" 탭이 ADC+서포터 전용은 아니라서, 원하는 조합이 결과에 안 잡힐 수도 있음 |
+| op.gg | 높음 | **URL과 실제 데이터 필드 구조까지 확정**: 카운터는 `/lol/champions/{slug}/counters/{position}?region=global&type=ranked&tier=emerald_plus`, 시너지는 `.../synergies/{position}`도 동일 쿼리. 브라우저 Network 탭에서 화면에 보이는 승률 숫자로 응답 본문을 직접 검색해서(content search) 찾은, 실제로 데이터가 들어있는 요청입니다. 경로도 `?position=` 쿼리가 아니라 세그먼트, `region`/`type`/`tier` 없이는 통계가 안 채워지는 것도 이 과정에서 확인됨. Next.js App Router + RSC Flight 스트림(`self.__next_f.push`)인 것도 실제 페이지 소스로 검증함. 사용자가 실제 응답 본문 전체를 파일로 저장해 공유해준 덕분에, 필드명이 예상과 다르다는 것도 확인해서 고쳤습니다: 게임 수 필드는 `games`가 아니라 `play`, 챔피언 식별자는 평평한 숫자 `championId`가 없고 `champion: {key: "garen", name: "Garen", ...}`처럼 문자열 슬러그가 중첩돼 있음 — 파서가 이 중첩 슬러그를 Data Dragon 챔피언 목록과 대조해서 숫자 championId로 역매핑하도록 수정함(`src/lib/scrape.ts`의 `resolveSlug`). `patch`(패치 버전) 파라미터는 계속 바뀌는 값이라 일부러 뺐습니다 — 생략 시 최신 패치로 기본 동작하길 기대하는 것이라 아직 확정은 아님. "Champion synergies" 탭이 ADC+서포터 전용은 아니라서, 원하는 조합이 결과에 안 잡힐 수도 있음 |
 | u.gg | 중간 | op.gg와 유사한 구조로 추정 |
 | lolalytics | 중간 | 라인 매치업 데이터로 유명. `lane` 파라미터명 추정. "Could not find embedded page data" 에러가 났던 걸 보면 이쪽도 App Router/Flight 방식일 가능성이 있음 (op.gg와 같은 원인일 수 있음) |
 | Mobalytics | 낮음 | 챔피언 슬러그가 하이픈(kebab-case)을 쓴다는 것만 어느 정도 확신, 나머지는 일반 패턴 추정 |
 | DeepLoL | 낮음 | 요청하신 "deep.lol"은 아마 **deeplol.gg**를 말씀하신 것 같아 그쪽으로 연동했습니다. 도메인이 다르면 알려주세요 |
 | lol.ps | 매우 낮음 | 이 사이트는 구조를 전혀 모르는 상태에서 op.gg와 같은 일반 패턴으로 자리만 잡아뒀습니다. 실제 URL을 알려주시면 바로 고칩니다 |
 
-**공통 파싱 로직**(`src/lib/scrape.ts`)은 정확한 JSON 경로를 하드코딩하지 않고, `championId`류 필드 + `winRate`/`wins`류 필드를 동시에 가진 객체가 2개 이상 들어있는 배열을 페이지의 내장 데이터에서 찾는 방식이라 필드명이 조금 달라도, 배열에 마커 값이 섞여 있어도 버틸 여지가 있지만, 근본적으로는 여전히 추정입니다.
+**공통 파싱 로직**(`src/lib/scrape.ts`)은 정확한 JSON 경로를 하드코딩하지 않고, 챔피언 식별 필드(평평한 `championId`류, 또는 op.gg처럼 `champion: {key: "..."}`형태로 중첩된 슬러그) + `winRate`/`wins`류 필드를 동시에 가진 객체가 2개 이상 들어있는 배열을 페이지의 내장 데이터에서 찾는 방식이라 필드명이 조금 달라도, 배열에 마커 값이 섞여 있어도 버틸 여지가 있지만, 근본적으로는 여전히 추정입니다. 중첩 슬러그는 각 소스가 URL을 만들 때 쓰는 것과 동일한 슬러그 변환 함수로 Data Dragon 챔피언 목록을 돌려서 역매핑합니다(`genericSource.ts`의 `buildSlugResolver`).
 
 **로컬에서 실행해보고 안 되면** 에러 메시지를 그대로 알려주세요. API 응답에는 소스별로 어떤 이유로 실패했는지(HTTP 상태 코드 / 못 찾은 부분)가 다 담겨 있어서 바로 원인을 좁힐 수 있습니다. 일부만 실패하는 경우 화면의 "N개 소스 중 M개 성공" 항목을 펼치면 소스별 에러가 보입니다. 카운터 페이지 하나의 실제 URL과 (가능하면) 그 페이지 소스를 공유해주시면 가장 빠르게 고칠 수 있습니다.
 
