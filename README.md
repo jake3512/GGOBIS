@@ -30,7 +30,7 @@ DB도, API 키도 필요 없습니다. `npm install && npm run dev`만으로 뜹
 
 | 소스 | 신뢰도 | 비고 |
 | --- | --- | --- |
-| op.gg | 중간 | **URL 확정**: `https://op.gg/lol/champions/{slug}/build/{position}` (예: `.../nasus/build/top`) — `?position=` 쿼리가 아니라 `/build/{position}` 경로였습니다. Next.js App Router + RSC Flight 스트림(`self.__next_f.push`, `__NEXT_DATA__` 아님)인 것도 실제 페이지 소스로 확인해 `src/lib/scrape.ts`에 반영·검증함. 카운터는 이 build 페이지의 한 탭으로 보여서 같은 URL로 연결해뒀는데, 실제 통계 데이터가 이 안에 있는지는 아직 확인 전 — 배포 후 실제 응답을 봐야 최종 확정됩니다. 듀오(ADC+서포터) URL은 여전히 추정치입니다 |
+| op.gg | 높음 | **탭 URL 전체 확정**: 카운터는 `/lol/champions/{slug}/counters/{position}`, 시너지는 `/lol/champions/{slug}/synergies/{position}` — `build`와는 별개의 라우트였고, `?position=` 쿼리가 아니라 경로 세그먼트였습니다 (실제 nav 링크로 확인). Next.js App Router + RSC Flight 스트림(`self.__next_f.push`, `__NEXT_DATA__` 아님)인 것도 실제 페이지 소스로 확인해 `src/lib/scrape.ts`에 반영·검증함. 남은 불확실성: "Champion synergies" 탭이 ADC+서포터 전용은 아니라서, 원하는 조합이 결과에 안 잡힐 수도 있음 |
 | u.gg | 중간 | op.gg와 유사한 구조로 추정 |
 | lolalytics | 중간 | 라인 매치업 데이터로 유명. `lane` 파라미터명 추정. "Could not find embedded page data" 에러가 났던 걸 보면 이쪽도 App Router/Flight 방식일 가능성이 있음 (op.gg와 같은 원인일 수 있음) |
 | Mobalytics | 낮음 | 챔피언 슬러그가 하이픈(kebab-case)을 쓴다는 것만 어느 정도 확신, 나머지는 일반 패턴 추정 |
