@@ -75,6 +75,49 @@ interface CombinedPickEntry {
   score: number;
 }
 
+interface LaneSynergyEntry {
+  position: string;
+  ally: ChampionBrief;
+  enemy: ChampionBrief;
+  winRate: number | null;
+  games: number | null;
+  bySource: SourceValue[];
+  error: string | null;
+}
+
+interface DuoSynergyEntry {
+  adc: ChampionBrief;
+  support: ChampionBrief;
+  winRate: number | null;
+  games: number | null;
+  bySource: SourceValue[];
+  error: string | null;
+}
+
+interface MeasuredSynergy {
+  lanes: LaneSynergyEntry[];
+  duo: DuoSynergyEntry | null;
+  overallScore: number | null;
+}
+
+interface DamageBalance {
+  physicalPct: number;
+  magicPct: number;
+  sampledCount: number;
+}
+
+interface TeamCompAnalysis {
+  filledCount: number;
+  tagCounts: Record<string, number>;
+  damageBalance: DamageBalance | null;
+  hasFrontline: boolean;
+}
+
+interface CompHeuristic {
+  ally: TeamCompAnalysis | null;
+  enemy: TeamCompAnalysis | null;
+}
+
 interface AdviceResult {
   position: string;
   enemyLaneChampion: ChampionBrief | null;
@@ -84,6 +127,8 @@ interface AdviceResult {
   synergyPicks: PickEntry[] | null;
   synergyError: string | null;
   combinedPicks: CombinedPickEntry[];
+  measuredSynergy: MeasuredSynergy;
+  compHeuristic: CompHeuristic;
 }
 
 interface Slot {
@@ -96,12 +141,13 @@ interface Slot {
 }
 
 /** Advice mode shows a full 10-slot draft board (5 ally + 5 enemy
- * positions) so it feels like an actual champion-select screen, even
- * though — given the data this app can actually get — only two of those
- * ten slots feed the recommendation: the enemy pick in my own position
- * (lane counter data) and, when I'm picking support, our ADC (duo synergy
- * data). The rest are there for context/future sources, not decoration to
- * be hidden — see the hint text rendered alongside the board. */
+ * positions) so it feels like an actual champion-select screen. Two of
+ * those ten slots feed the single-pick recommendation (the enemy pick in my
+ * own position, and — when I'm picking support — our ADC); beyond that,
+ * whichever ally/enemy pairs are filled in also feed the "measured"
+ * lane-by-lane + duo synergy comparison and the tag-based comp analysis
+ * further down the results — see the hint text rendered alongside the
+ * board for exactly which. */
 function adviceSlotsFor(myPosition: string): Slot[] {
   return [
     ...POSITIONS.map((p) => ({
@@ -116,6 +162,38 @@ function adviceSlotsFor(myPosition: string): Slot[] {
       championId: null,
     })),
   ];
+}
+
+const TAG_LABELS: Record<string, string> = {
+  Fighter: "전사",
+  Tank: "탱커",
+  Mage: "마법사",
+  Assassin: "암살자",
+  Support: "서포터",
+  Marksman: "원거리 딜러",
+};
+
+function CompCard({ title, analysis }: { title: string; analysis: TeamCompAnalysis }) {
+  return (
+    <div className="comp-card">
+      <h4>
+        {title} ({analysis.filledCount}명 입력됨)
+      </h4>
+      <p className="empty-hint">
+        {Object.entries(analysis.tagCounts)
+          .map(([tag, count]) => `${TAG_LABELS[tag] ?? tag} ${count}`)
+          .join(" · ")}
+      </p>
+      <p className="empty-hint">프론트라인(탱커): {analysis.hasFrontline ? "있음" : "없음"}</p>
+      {analysis.damageBalance && (
+        <p className="empty-hint">
+          물리 {analysis.damageBalance.physicalPct}% · 마법 {analysis.damageBalance.magicPct}%
+          {(analysis.damageBalance.physicalPct >= 75 || analysis.damageBalance.magicPct >= 75) &&
+            " (한쪽으로 치우침 — 상대가 방어구/마법저항 몰아주기 쉬워요)"}
+        </p>
+      )}
+    </div>
+  );
 }
 
 function SourceStatusNote({
@@ -256,14 +334,9 @@ export default function Home() {
         if (!res.ok) throw new Error(data.error ?? "조회에 실패했습니다.");
         setDuoResult(data);
       } else {
-        const enemyLaneId = slots.find((s) => s.key === `enemy-${position}`)?.championId;
-        const allyAdcId = slots.find((s) => s.key === "ally-adc")?.championId;
         const params = new URLSearchParams({ position });
-        if (enemyLaneId !== null && enemyLaneId !== undefined) {
-          params.set("enemyLaneChampionId", String(enemyLaneId));
-        }
-        if (allyAdcId !== null && allyAdcId !== undefined) {
-          params.set("allyAdcChampionId", String(allyAdcId));
+        for (const slot of slots) {
+          if (slot.championId !== null) params.set(slot.key, String(slot.championId));
         }
         const res = await fetch(`/api/pickadvice?${params.toString()}`);
         const data = await res.json();
@@ -354,16 +427,18 @@ export default function Home() {
 
       {mode === "advice" && (
         <p className="empty-hint">
-          우리팀/상대팀 각 라인에 이미 정해진 챔피언이 있으면 채워보세요 — 실제 픽창처럼 10칸 다 입력해도
-          되지만, 지금 실제로 추천에 반영되는 건{" "}
-          <strong>상대 {POSITIONS.find((p) => p.value === position)?.label} 라이너</strong>
+          우리팀/상대팀 각 라인에 이미 정해진 챔피언이 있으면 채워보세요. <strong>내 픽 추천</strong>은
+          <strong> 상대 {POSITIONS.find((p) => p.value === position)?.label} 라이너</strong>
           {position === "support" && (
             <>
               {" "}
               와 <strong>우리팀 원거리 딜러</strong>
             </>
-          )}{" "}
-          칸뿐이에요. 나머지 칸은 더 많은 사이트를 연동하면 활용할 수 있도록 미리 마련해둔 자리입니다.
+          )}
+          만 보고 계산돼요. 그 외에 이미 양 팀 다 채워진 라인이 있거나 우리팀 원딜+서포터가 둘 다 있으면{" "}
+          <strong>실측 데이터 기반 전체 시너지</strong>(실제 스크래핑한 승률을 조합)와{" "}
+          <strong>챔피언 특성 기반 조합 분석</strong>(승률이 아니라 Riot 공식 챔피언 태그/능력치로 보는
+          역할군·데미지 타입 균형)도 아래에 따로 보여드려요.
         </p>
       )}
 
@@ -536,6 +611,87 @@ export default function Home() {
                   )}
                 </ol>
               )}
+            </>
+          )}
+
+          {(adviceResult.measuredSynergy.lanes.length > 0 || adviceResult.measuredSynergy.duo) && (
+            <>
+              <h3>실측 데이터 기반 전체 시너지</h3>
+              <p className="empty-hint">
+                양 팀 다 채워진 라인의 실제 매치업 승률과 우리팀 원딜+서포터의 실제 듀오 승률을 그대로
+                보여줍니다(우리 시점 승률로 환산).
+                {adviceResult.measuredSynergy.overallScore !== null && (
+                  <>
+                    {" "}
+                    평균 <strong>{(adviceResult.measuredSynergy.overallScore * 100).toFixed(1)}%</strong>
+                  </>
+                )}
+              </p>
+              <ol className="recommend-list">
+                {adviceResult.measuredSynergy.lanes.map((l) => (
+                  <li key={l.position} className="recommend-row recommend-row--stacked">
+                    <div className="recommend-row-main">
+                      <ChampionIcon src={l.ally.iconUrl} name={l.ally.name} />
+                      <span className="recommend-name">
+                        {POSITIONS.find((p) => p.value === l.position)?.label}: {l.ally.name} vs{" "}
+                        {l.enemy.name}
+                      </span>
+                      {l.winRate !== null && l.games !== null ? (
+                        <WinRateBar rate={l.winRate} games={l.games} />
+                      ) : (
+                        <span className="empty-hint">{l.error ?? "이 매치업 데이터를 찾지 못했습니다."}</span>
+                      )}
+                    </div>
+                    {l.bySource.length > 0 && <SourceBreakdown sources={l.bySource} />}
+                  </li>
+                ))}
+                {adviceResult.measuredSynergy.duo && (
+                  <li className="recommend-row recommend-row--stacked">
+                    <div className="recommend-row-main">
+                      <ChampionIcon
+                        src={adviceResult.measuredSynergy.duo.adc.iconUrl}
+                        name={adviceResult.measuredSynergy.duo.adc.name}
+                      />
+                      <span className="recommend-name">
+                        바텀 듀오: {adviceResult.measuredSynergy.duo.adc.name} +{" "}
+                        {adviceResult.measuredSynergy.duo.support.name}
+                      </span>
+                      {adviceResult.measuredSynergy.duo.winRate !== null &&
+                      adviceResult.measuredSynergy.duo.games !== null ? (
+                        <WinRateBar
+                          rate={adviceResult.measuredSynergy.duo.winRate}
+                          games={adviceResult.measuredSynergy.duo.games}
+                        />
+                      ) : (
+                        <span className="empty-hint">
+                          {adviceResult.measuredSynergy.duo.error ?? "이 조합 데이터를 찾지 못했습니다."}
+                        </span>
+                      )}
+                    </div>
+                    {adviceResult.measuredSynergy.duo.bySource.length > 0 && (
+                      <SourceBreakdown sources={adviceResult.measuredSynergy.duo.bySource} />
+                    )}
+                  </li>
+                )}
+              </ol>
+            </>
+          )}
+
+          {(adviceResult.compHeuristic.ally || adviceResult.compHeuristic.enemy) && (
+            <>
+              <h3>챔피언 특성 기반 조합 분석</h3>
+              <p className="empty-hint">
+                승률이 아니라 Riot 공식 챔피언 태그·능력치(공격형/마법형 비중)만 이용한 참고용 체크입니다.
+                CC기·이니시 성향처럼 공식 데이터로 확인 안 되는 항목은 포함하지 않았습니다.
+              </p>
+              <div className="comp-heuristic-grid">
+                {adviceResult.compHeuristic.ally && (
+                  <CompCard title="우리팀" analysis={adviceResult.compHeuristic.ally} />
+                )}
+                {adviceResult.compHeuristic.enemy && (
+                  <CompCard title="상대팀" analysis={adviceResult.compHeuristic.enemy} />
+                )}
+              </div>
             </>
           )}
         </section>

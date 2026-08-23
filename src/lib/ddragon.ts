@@ -18,6 +18,12 @@ export interface DDragonChampion {
   title: string;
   tags: string[];
   iconUrl: string;
+  /** Riot's own 0-10 champion attribute ratings (attack/defense/magic —
+   * difficulty omitted, not used here). Used as a rough, official-data-only
+   * proxy for physical/magic damage balance in team-comp analysis — not
+   * real per-match damage stats, just Riot's own published ratings.
+   * Optional because the offline fallback snapshot doesn't carry it. */
+  info?: { attack: number; defense: number; magic: number };
 }
 
 let cachedVersion: { value: string; fetchedAt: number } | null = null;
@@ -62,6 +68,7 @@ export async function getChampions(
       title: string;
       tags: string[];
       image: { full: string };
+      info: { attack: number; defense: number; magic: number };
     }
   >;
 
@@ -73,6 +80,7 @@ export async function getChampions(
       title: c.title,
       tags: c.tags,
       iconUrl: championIconUrl(v, c.image.full),
+      info: { attack: c.info.attack, defense: c.info.defense, magic: c.info.magic },
     }))
     .sort((a, b) => a.name.localeCompare(b.name, "ko"));
 }
