@@ -9,6 +9,7 @@
 // always just correcting one config below.
 
 import { createGenericSource, type GenericSourceConfig } from "@/lib/sources/genericSource";
+import { lolpsSource } from "@/lib/sources/lolps";
 import type { StatSource } from "@/lib/sources/types";
 
 // Data Dragon's slug is already apostrophe-stripped PascalCase (e.g. "Kaisa",
@@ -94,18 +95,9 @@ const configs: GenericSourceConfig[] = [
     counterUrl: (slug, position) => `https://www.deeplol.gg/champions/${slug}/counters?position=${position}`,
     duoUrl: (adcSlug) => `https://www.deeplol.gg/champions/${adcSlug}/duos?position=adc`,
   },
-  {
-    // Confidence: very low. This isn't a site with a known structure in the
-    // codebase author's background knowledge — this config is a placeholder
-    // following the same generic pattern as the others, essentially
-    // unverified even in concept. Please confirm the exact URL for this one.
-    id: "lolps",
-    label: "lol.ps",
-    confidence: "low",
-    slug: (s) => s.toLowerCase(),
-    counterUrl: (slug, position) => `https://lol.ps/champions/${slug}/counters?position=${position}`,
-    duoUrl: (adcSlug) => `https://lol.ps/champions/${adcSlug}/duos?position=adc`,
-  },
 ];
 
-export const SOURCES: StatSource[] = configs.map(createGenericSource);
+// lol.ps doesn't fit the generic "embedded JSON blob" model (see
+// src/lib/sources/lolps.ts for why) so it's implemented directly and
+// appended here instead of going through createGenericSource.
+export const SOURCES: StatSource[] = [...configs.map(createGenericSource), lolpsSource];

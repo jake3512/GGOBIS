@@ -35,7 +35,7 @@ DB도, API 키도 필요 없습니다. `npm install && npm run dev`만으로 뜹
 | lolalytics | 중간 | 라인 매치업 데이터로 유명. `lane` 파라미터명 추정. "Could not find embedded page data" 에러가 났던 걸 보면 이쪽도 App Router/Flight 방식일 가능성이 있음 (op.gg와 같은 원인일 수 있음) |
 | Mobalytics | 낮음 | 챔피언 슬러그가 하이픈(kebab-case)을 쓴다는 것만 어느 정도 확신, 나머지는 일반 패턴 추정 |
 | DeepLoL | 낮음 | 요청하신 "deep.lol"은 아마 **deeplol.gg**를 말씀하신 것 같아 그쪽으로 연동했습니다. 도메인이 다르면 알려주세요 |
-| lol.ps | 매우 낮음 | 이 사이트는 구조를 전혀 모르는 상태에서 op.gg와 같은 일반 패턴으로 자리만 잡아뒀습니다. 실제 URL을 알려주시면 바로 고칩니다 |
+| lol.ps | 중간 | **URL과 데이터 구조 확정**: `https://lol.ps/champ/{championId}` — 슬러그가 아니라 Riot 공식 숫자 championId를 그대로 씀. op.gg와 완전히 다른 SvelteKit 사이트라 전용 어댑터로 따로 구현(`src/lib/sources/lolps.ts`, `genericSource.ts` 안 씀). 페이지에 내장된 `champSummary` 데이터에 카운터 목록이 병렬 배열(`counterChampionIdList`/`counterWinrateList`/`counterCountList`, "쉬운 상대"용 `counterEasy*` 세트)로 미리 계산되어 들어있어서 다른 소스보다 오히려 깔끔함. **알려진 제약**: 화면의 라인 탭(탑/정글/미드/바텀/서폿)을 눌러 라인을 바꾸는 게 어떤 요청으로 이루어지는지 여러 방법(쿼리 파라미터, Network 탭 전체 필터)으로도 못 찾았음 — `https://lol.ps/champ/{id}`로 요청하면 그 챔피언이 **가장 많이 가는 라인**의 데이터만 받아옴. 그래서 이 소스는 사용자가 고른 라인이 챔피언의 주 라인과 일치할 때만(응답의 `laneId`로 확인) 데이터를 보여주고, 안 맞으면 조용히 스킵함(틀린 라인 데이터를 보여주지 않기 위함). 바텀 듀오 시너지 페이지는 아직 위치를 못 찾아서 미지원 |
 
 **공통 파싱 로직**(`src/lib/scrape.ts`)은 정확한 JSON 경로를 하드코딩하지 않고, 챔피언 식별 필드(평평한 `championId`류, 또는 op.gg처럼 `champion: {key: "..."}`형태로 중첩된 슬러그) + `winRate`/`wins`류 필드를 동시에 가진 객체가 2개 이상 들어있는 배열을 페이지의 내장 데이터에서 찾는 방식이라 필드명이 조금 달라도, 배열에 마커 값이 섞여 있어도 버틸 여지가 있지만, 근본적으로는 여전히 추정입니다. 중첩 슬러그는 각 소스가 URL을 만들 때 쓰는 것과 동일한 슬러그 변환 함수로 Data Dragon 챔피언 목록을 돌려서 역매핑합니다(`genericSource.ts`의 `buildSlugResolver`).
 
@@ -79,6 +79,7 @@ src/
       types.ts               # StatSource 인터페이스
       genericSource.ts        # 사이트 설정 → StatSource 팩토리
       registry.ts             # 6개 사이트 설정 (여기서 URL/슬러그 규칙 수정)
+      lolps.ts                 # lol.ps 전용 어댑터 (genericSource로 안 되는 구조라 직접 구현)
       aggregate.ts             # 여러 소스를 챔피언별로 합치고 상위 3개만 추림
 data/fallback-champions.json # Data Dragon 접근 불가 시 쓰는 오프라인 챔피언 스냅샷
 ```
