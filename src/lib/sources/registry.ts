@@ -23,16 +23,22 @@ function toKebabSlug(dataDragonSlug: string): string {
 
 const configs: GenericSourceConfig[] = [
   {
-    // Confidence: medium. General URL shape (op.gg/lol/champions/{slug}/...)
-    // is well-known; exact query param name and JSON field names are the
-    // part that's guessed.
+    // Confidence: medium-high. URL confirmed against a real op.gg page:
+    // https://op.gg/lol/champions/nasus/build/top — position is a PATH
+    // segment under /build, not a `?position=` query param as originally
+    // guessed. Counters/matchups appear to be a tab within this same build
+    // page rather than a separate route, so we point both counters and duo
+    // at it and let the shape-based search in scrape.ts find whichever
+    // stat array is actually present. Duo (ADC+Support synergy) specifically
+    // is still unconfirmed — if it's not on this page, it may need its own
+    // URL (op.gg's nav also has a separate duo.op.gg, but that looks like
+    // matchmaking, not champion-synergy stats).
     id: "opgg",
     label: "op.gg",
     confidence: "medium",
     slug: (s) => (s === "MonkeyKing" ? "wukong" : s.toLowerCase()),
-    counterUrl: (slug, position) =>
-      `https://www.op.gg/lol/champions/${slug}/counters?position=${position}`,
-    duoUrl: (adcSlug) => `https://www.op.gg/lol/champions/${adcSlug}/duos?position=adc`,
+    counterUrl: (slug, position) => `https://op.gg/lol/champions/${slug}/build/${position}`,
+    duoUrl: (adcSlug) => `https://op.gg/lol/champions/${adcSlug}/build/adc`,
   },
   {
     // Confidence: medium. u.gg is a well-known second major stats site with
