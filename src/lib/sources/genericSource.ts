@@ -1,6 +1,6 @@
 import { cached } from "@/lib/cache";
 import type { Position } from "@/lib/positions";
-import { extractBestStatList, extractEmbeddedJson, fetchHtml } from "@/lib/scrape";
+import { extractBestStatList, extractEmbeddedJsonRoots, fetchHtml } from "@/lib/scrape";
 import type { StatSource, SourceCounterResult, SourceDuoResult } from "@/lib/sources/types";
 
 const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
@@ -32,8 +32,8 @@ export function createGenericSource(config: GenericSourceConfig): StatSource {
       return cached(`${config.id}:counters:${slug}:${position}`, CACHE_TTL_MS, async () => {
         const url = config.counterUrl(slug, position);
         const html = await fetchHtml(url);
-        const data = extractEmbeddedJson(html, config.label);
-        const counters = extractBestStatList(data);
+        const roots = extractEmbeddedJsonRoots(html, config.label);
+        const counters = extractBestStatList(roots);
         if (counters.length === 0) {
           throw new Error(
             `${config.label}: fetched the page but couldn't locate matchup data in it.`,
@@ -49,8 +49,8 @@ export function createGenericSource(config: GenericSourceConfig): StatSource {
       return cached(`${config.id}:duo:${adcSlug}:${supportSlug}`, CACHE_TTL_MS, async () => {
         const url = config.duoUrl(adcSlug);
         const html = await fetchHtml(url);
-        const data = extractEmbeddedJson(html, config.label);
-        const entries = extractBestStatList(data);
+        const roots = extractEmbeddedJsonRoots(html, config.label);
+        const entries = extractBestStatList(roots);
         const match = entries.find((e) => e.championId === supportChampionId);
         return {
           sourceId: config.id,
