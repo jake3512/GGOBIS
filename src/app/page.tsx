@@ -7,7 +7,7 @@ import { WinRateBar } from "@/components/WinRateBar";
 import { SourceBreakdown } from "@/components/SourceBreakdown";
 import { POSITIONS } from "@/lib/positions";
 
-type Mode = "counter" | "duo";
+type Mode = "counter" | "duo" | "advice";
 
 interface ChampionBrief {
   id: number;
@@ -55,10 +55,49 @@ interface DuoResult {
   bySource: SourceValue[];
 }
 
+interface PickEntry {
+  championId: number;
+  name: string;
+  iconUrl: string;
+  winRate: number;
+  games: number;
+  bySource: SourceValue[];
+}
+
+interface CombinedPickEntry {
+  championId: number;
+  name: string;
+  iconUrl: string;
+  counterWinRate: number;
+  counterGames: number;
+  synergyWinRate: number;
+  synergyGames: number;
+  score: number;
+}
+
+interface AdviceResult {
+  position: string;
+  enemyLaneChampion: ChampionBrief | null;
+  allyAdcChampion: ChampionBrief | null;
+  counterPicks: PickEntry[] | null;
+  counterError: string | null;
+  synergyPicks: PickEntry[] | null;
+  synergyError: string | null;
+  combinedPicks: CombinedPickEntry[];
+}
+
 interface Slot {
   key: string;
   label: string;
   championId: number | null;
+}
+
+function adviceSlotsFor(position: string): Slot[] {
+  const slots: Slot[] = [{ key: "enemyLane", label: "상대 라이너", championId: null }];
+  if (position === "support") {
+    slots.push({ key: "allyAdc", label: "우리팀 원거리 딜러", championId: null });
+  }
+  return slots;
 }
 
 function SourceStatusNote({
@@ -96,6 +135,7 @@ export default function Home() {
   const [activeSlotKey, setActiveSlotKey] = useState("target");
   const [counterResult, setCounterResult] = useState<CounterResult | null>(null);
   const [duoResult, setDuoResult] = useState<DuoResult | null>(null);
+  const [adviceResult, setAdviceResult] = useState<AdviceResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -117,17 +157,41 @@ export default function Home() {
     setError(null);
     setCounterResult(null);
     setDuoResult(null);
+    setAdviceResult(null);
     if (next === "counter") {
       const nextSlots: Slot[] = [{ key: "target", label: "기준 챔피언", championId: null }];
       setSlots(nextSlots);
       setActiveSlotKey(nextSlots[0].key);
-    } else {
+    } else if (next === "duo") {
       const nextSlots: Slot[] = [
         { key: "adc", label: "원거리 딜러", championId: null },
         { key: "support", label: "서포터", championId: null },
       ];
       setSlots(nextSlots);
       setActiveSlotKey(nextSlots[0].key);
+    } else {
+      const nextSlots = adviceSlotsFor(position);
+      setSlots(nextSlots);
+      setActiveSlotKey(nextSlots[0].key);
+    }
+  }
+
+  /** Position tabs are shared by counter mode and advice mode. In advice
+   * mode, changing position also reshapes the slot list (the ally-ADC slot
+   * only makes sense when picking support) while preserving any selection
+   * still relevant. */
+  function changePosition(next: string) {
+    setPosition(next);
+    if (mode === "advice") {
+      setSlots((prev) => {
+        const nextSlots = adviceSlotsFor(next);
+        return nextSlots.map((s) => ({
+          ...s,
+          championId: prev.find((p) => p.key === s.key)?.championId ?? null,
+        }));
+      });
+      setActiveSlotKey("enemyLane");
+      setAdviceResult(null);
     }
   }
 
@@ -151,7 +215,9 @@ export default function Home() {
   const canRun =
     mode === "counter"
       ? slots[0]?.championId !== null
-      : slots.every((s) => s.championId !== null);
+      : mode === "duo"
+        ? slots.every((s) => s.championId !== null)
+        : slots.some((s) => s.championId !== null);
 
   async function runLookup() {
     setError(null);
@@ -163,13 +229,27 @@ export default function Home() {
         const data = await res.json();
         if (!res.ok) throw new Error(data.error ?? "조회에 실패했습니다.");
         setCounterResult(data);
-      } else {
+      } else if (mode === "duo") {
         const adcId = slots.find((s) => s.key === "adc")?.championId;
         const supportId = slots.find((s) => s.key === "support")?.championId;
         const res = await fetch(`/api/duo?adcId=${adcId}&supportId=${supportId}`);
         const data = await res.json();
         if (!res.ok) throw new Error(data.error ?? "조회에 실패했습니다.");
         setDuoResult(data);
+      } else {
+        const enemyLaneId = slots.find((s) => s.key === "enemyLane")?.championId;
+        const allyAdcId = slots.find((s) => s.key === "allyAdc")?.championId;
+        const params = new URLSearchParams({ position });
+        if (enemyLaneId !== null && enemyLaneId !== undefined) {
+          params.set("enemyLaneChampionId", String(enemyLaneId));
+        }
+        if (allyAdcId !== null && allyAdcId !== undefined) {
+          params.set("allyAdcChampionId", String(allyAdcId));
+        }
+        const res = await fetch(`/api/pickadvice?${params.toString()}`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error ?? "조회에 실패했습니다.");
+        setAdviceResult(data);
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : "알 수 없는 오류가 발생했습니다.");
@@ -181,7 +261,7 @@ export default function Home() {
   return (
     <main className="page">
       <header className="page-header">
-        <h1>LoL 라인 카운터 / 바텀 듀오 조회</h1>
+        <h1>LoL 라인 카운터 / 바텀 듀오 / 픽 추천</h1>
         <p>op.gg, u.gg, lolalytics 등 여러 사이트의 실제 통계를 요청할 때마다 실시간으로 가져와 보여줍니다 (자체 DB 없음).</p>
       </header>
 
@@ -200,21 +280,36 @@ export default function Home() {
         >
           바텀 듀오 시너지
         </button>
+        <button
+          type="button"
+          className={mode === "advice" ? "tab tab--active" : "tab"}
+          onClick={() => switchMode("advice")}
+        >
+          픽 추천
+        </button>
       </div>
 
-      {mode === "counter" && (
+      {(mode === "counter" || mode === "advice") && (
         <div className="position-tabs">
           {POSITIONS.map((p) => (
             <button
               key={p.value}
               type="button"
               className={position === p.value ? "tab tab--active" : "tab"}
-              onClick={() => setPosition(p.value)}
+              onClick={() => changePosition(p.value)}
             >
               {p.label}
             </button>
           ))}
         </div>
+      )}
+
+      {mode === "advice" && (
+        <p className="empty-hint">
+          내가 픽할 포지션을 고른 뒤, 상대가 같은 라인에 이미 픽한 챔피언과(있다면) 우리팀 원거리 딜러를
+          입력하면 좋은 픽을 추천해드려요. 시너지 추천은 서포터를 픽할 때만 제공됩니다(원딜 쪽에서 시너지
+          좋은 서포터 목록을 보여주는 페이지만 확인됐어요).
+        </p>
       )}
 
       <section className="selected-bar">
@@ -242,7 +337,13 @@ export default function Home() {
           })}
         </div>
         <button type="button" className="run-button" disabled={!canRun || loading} onClick={runLookup}>
-          {loading ? "조회 중..." : mode === "counter" ? "카운터 조회" : "듀오 시너지 조회"}
+          {loading
+            ? "조회 중..."
+            : mode === "counter"
+              ? "카운터 조회"
+              : mode === "duo"
+                ? "듀오 시너지 조회"
+                : "픽 추천 받기"}
         </button>
       </section>
 
@@ -308,6 +409,84 @@ export default function Home() {
             </>
           ) : (
             <p className="empty-hint">이 조합에 대한 데이터를 어느 소스에서도 찾지 못했습니다.</p>
+          )}
+        </section>
+      )}
+
+      {mode === "advice" && adviceResult && (
+        <section className="results">
+          <h2>{POSITIONS.find((p) => p.value === adviceResult.position)?.label} 픽 추천</h2>
+
+          {adviceResult.combinedPicks.length > 0 && (
+            <>
+              <h3>라인전 + 시너지 둘 다 좋은 픽</h3>
+              <p className="empty-hint">
+                {adviceResult.enemyLaneChampion?.name} 상대 라인전 승률과 {adviceResult.allyAdcChampion?.name}
+                와의 시너지 승률을 평균 낸 순위입니다.
+              </p>
+              <ol className="recommend-list">
+                {adviceResult.combinedPicks.map((c) => (
+                  <li key={c.championId} className="recommend-row recommend-row--stacked">
+                    <div className="recommend-row-main">
+                      <ChampionIcon src={c.iconUrl} name={c.name} />
+                      <span className="recommend-name">{c.name}</span>
+                    </div>
+                    <p className="empty-hint">
+                      라인전 {(c.counterWinRate * 100).toFixed(1)}% · 시너지{" "}
+                      {(c.synergyWinRate * 100).toFixed(1)}%
+                    </p>
+                  </li>
+                ))}
+              </ol>
+            </>
+          )}
+
+          {adviceResult.enemyLaneChampion && (
+            <>
+              <h3>{adviceResult.enemyLaneChampion.name} 상대 라인전 유리한 픽</h3>
+              {adviceResult.counterError && <p className="error-banner">{adviceResult.counterError}</p>}
+              {adviceResult.counterPicks && (
+                <ol className="recommend-list">
+                  {adviceResult.counterPicks.map((c) => (
+                    <li key={c.championId} className="recommend-row recommend-row--stacked">
+                      <div className="recommend-row-main">
+                        <ChampionIcon src={c.iconUrl} name={c.name} />
+                        <span className="recommend-name">{c.name}</span>
+                        <WinRateBar rate={c.winRate} games={c.games} />
+                      </div>
+                      <SourceBreakdown sources={c.bySource} />
+                    </li>
+                  ))}
+                  {adviceResult.counterPicks.length === 0 && (
+                    <p className="empty-hint">카운터 데이터를 찾지 못했습니다.</p>
+                  )}
+                </ol>
+              )}
+            </>
+          )}
+
+          {adviceResult.allyAdcChampion && (
+            <>
+              <h3>{adviceResult.allyAdcChampion.name}와 시너지 좋은 픽</h3>
+              {adviceResult.synergyError && <p className="error-banner">{adviceResult.synergyError}</p>}
+              {adviceResult.synergyPicks && (
+                <ol className="recommend-list">
+                  {adviceResult.synergyPicks.map((c) => (
+                    <li key={c.championId} className="recommend-row recommend-row--stacked">
+                      <div className="recommend-row-main">
+                        <ChampionIcon src={c.iconUrl} name={c.name} />
+                        <span className="recommend-name">{c.name}</span>
+                        <WinRateBar rate={c.winRate} games={c.games} />
+                      </div>
+                      <SourceBreakdown sources={c.bySource} />
+                    </li>
+                  ))}
+                  {adviceResult.synergyPicks.length === 0 && (
+                    <p className="empty-hint">시너지 데이터를 찾지 못했습니다.</p>
+                  )}
+                </ol>
+              )}
+            </>
           )}
         </section>
       )}

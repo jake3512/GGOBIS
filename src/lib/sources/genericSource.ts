@@ -68,21 +68,42 @@ export function createGenericSource(config: GenericSourceConfig): StatSource {
       champions,
     ): Promise<SourceDuoResult> {
       const adcSlug = toSlug(adcSlugRaw);
-      const supportSlug = toSlug(supportSlugRaw);
-      return cached(`${config.id}:duo:${adcSlug}:${supportSlug}`, CACHE_TTL_MS, async () => {
-        const url = config.duoUrl(adcSlug);
-        const html = await fetchHtml(url);
-        const roots = extractEmbeddedJsonRoots(html, config.label);
-        const entries = extractBestStatList(roots, buildSlugResolver(champions));
-        const match = entries.find((e) => e.championId === supportChampionId);
-        return {
-          sourceId: config.id,
-          sourceLabel: config.label,
-          sourceUrl: url,
-          winRate: match?.winRate ?? null,
-          games: match?.games ?? null,
-        };
-      });
+      const { sourceUrl, counters } = await fetchDuoCandidates(adcSlug, champions);
+      const match = counters.find((e) => e.championId === supportChampionId);
+      return {
+        sourceId: config.id,
+        sourceLabel: config.label,
+        sourceUrl,
+        winRate: match?.winRate ?? null,
+        games: match?.games ?? null,
+      };
+    },
+
+    async getBotDuoCandidates(adcSlugRaw, champions): Promise<SourceCounterResult> {
+      const adcSlug = toSlug(adcSlugRaw);
+      return fetchDuoCandidates(adcSlug, champions);
     },
   };
+
+  /** Fetches and parses an ADC's synergies page once — shared by
+   * getBotDuoSynergy (which filters down to one partner) and
+   * getBotDuoCandidates (which returns the whole ranked list), so both end
+   * up sharing the same cache entry instead of double-fetching. */
+  function fetchDuoCandidates(
+    adcSlug: string,
+    champions: ChampionRef[],
+  ): Promise<SourceCounterResult> {
+    return cached(`${config.id}:duo:${adcSlug}`, CACHE_TTL_MS, async () => {
+      const url = config.duoUrl(adcSlug);
+      const html = await fetchHtml(url);
+      const roots = extractEmbeddedJsonRoots(html, config.label);
+      const counters = extractBestStatList(roots, buildSlugResolver(champions));
+      if (counters.length === 0) {
+        throw new Error(
+          `${config.label}: fetched the page but couldn't locate synergy data in it.`,
+        );
+      }
+      return { sourceId: config.id, sourceLabel: config.label, sourceUrl: url, counters };
+    });
+  }
 }

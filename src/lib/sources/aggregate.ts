@@ -1,6 +1,6 @@
 import { SOURCES } from "@/lib/sources/registry";
 import type { Position } from "@/lib/positions";
-import type { ChampionRef } from "@/lib/sources/types";
+import type { ChampionRef, SourceCounterResult } from "@/lib/sources/types";
 
 export interface SourceValue {
   sourceId: string;
@@ -31,14 +31,13 @@ export interface AggregatedCounters {
   sourcesAttempted: number;
 }
 
-export async function getAggregatedLaneCounters(
-  dataDragonSlug: string,
-  position: Position,
-  champions: ChampionRef[],
+/** Shared merge logic for anything shaped like "one source call per site,
+ * each returning a ranked {championId, winRate, games}[] list" — used by
+ * both lane counters and duo-candidate lookups. */
+async function aggregateCounterLike(
+  promises: Promise<SourceCounterResult>[],
 ): Promise<AggregatedCounters> {
-  const settled = await Promise.allSettled(
-    SOURCES.map((s) => s.getLaneCounters(dataDragonSlug, position, champions)),
-  );
+  const settled = await Promise.allSettled(promises);
 
   const errors: SourceError[] = [];
   const byChampion = new Map<number, SourceValue[]>();
@@ -82,6 +81,25 @@ export async function getAggregatedLaneCounters(
   );
 
   return { entries, errors, sourcesSucceeded, sourcesAttempted: SOURCES.length };
+}
+
+export async function getAggregatedLaneCounters(
+  dataDragonSlug: string,
+  position: Position,
+  champions: ChampionRef[],
+): Promise<AggregatedCounters> {
+  return aggregateCounterLike(
+    SOURCES.map((s) => s.getLaneCounters(dataDragonSlug, position, champions)),
+  );
+}
+
+/** All of a known ADC's synergy partners, ranked — used to recommend picks
+ * (mainly supports) that pair well with an already-locked ADC. */
+export async function getAggregatedDuoCandidates(
+  adcSlug: string,
+  champions: ChampionRef[],
+): Promise<AggregatedCounters> {
+  return aggregateCounterLike(SOURCES.map((s) => s.getBotDuoCandidates(adcSlug, champions)));
 }
 
 export interface AggregatedDuo {
