@@ -595,7 +595,9 @@ export default function Home() {
   return (
     <main className="page">
       <header className="page-header">
-        <h1>LoL 라인 카운터 / 바텀 듀오 / 픽 추천</h1>
+        <h1>
+          GGOBIS <span className="page-header-kr">꼬비스</span>
+        </h1>
         <p>op.gg, u.gg, lolalytics 등 여러 사이트의 실제 통계를 요청할 때마다 실시간으로 가져와 보여줍니다 (자체 DB 없음).</p>
       </header>
 

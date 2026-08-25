@@ -19,17 +19,40 @@ html {
 html,
 body {
   max-width: 100vw;
-  overflow-x: hidden;
+  /* clip, not hidden: hidden on both x and y-less axes makes the browser
+     auto-promote overflow-y to "auto" on each element (CSSOM overflow
+     computed-value quirk), which turns html AND body into two separate
+     scroll containers and breaks position:sticky (the sticky element ends
+     up anchored to the wrong one and scrolls straight past). clip avoids
+     that side effect while still preventing horizontal overflow. */
+  overflow-x: clip;
 }
 
 body {
   min-height: 100%;
+  min-height: 100dvh;
   color: var(--foreground);
   background: var(--background);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo", "Noto Sans KR",
     Pretendard, Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  /* App-like feel, not a document: no accidental text selection, no
+     double-tap-to-zoom, no long-press callout/highlight flash. */
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+/* ...except form fields, where selecting/copying what you typed is expected. */
+input,
+textarea {
+  -webkit-user-select: text;
+  -moz-user-select: text;
+  user-select: text;
 }
 
 * {
@@ -39,25 +62,53 @@ body {
 .page {
   max-width: 960px;
   margin: 0 auto;
-  padding: 2rem 1.25rem 4rem;
+  padding: 1.5rem 1rem 3rem;
+  padding-top: max(1.5rem, env(safe-area-inset-top));
+  padding-bottom: max(3rem, env(safe-area-inset-bottom));
+  padding-left: max(1rem, env(safe-area-inset-left));
+  padding-right: max(1rem, env(safe-area-inset-right));
   display: flex;
   flex-direction: column;
-  gap: 1.5rem;
+  gap: 1.25rem;
 }
 
 .page-header h1 {
-  font-size: 1.75rem;
-  margin-bottom: 0.35rem;
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  font-size: 1.6rem;
+  letter-spacing: 0.01em;
+  margin-bottom: 0.3rem;
+}
+
+.page-header-kr {
+  font-size: 0.95rem;
+  font-weight: 500;
+  color: var(--muted);
 }
 
 .page-header p {
   color: var(--muted);
+  font-size: 0.85rem;
 }
 
 .mode-tabs {
   display: flex;
   gap: 0.5rem;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  margin: 0 -1rem;
+  padding: 0.15rem 1rem;
+  position: sticky;
+  top: env(safe-area-inset-top, 0px);
+  z-index: 10;
+  background: var(--background);
+}
+
+.mode-tabs::-webkit-scrollbar {
+  display: none;
 }
 
 .tab {
@@ -69,6 +120,8 @@ body {
   color: var(--muted);
   cursor: pointer;
   font-size: 0.9rem;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .tab--active {
@@ -90,7 +143,16 @@ body {
 .position-tabs {
   display: flex;
   gap: 0.5rem;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  margin: 0 -1rem;
+  padding: 0.15rem 1rem;
+}
+
+.position-tabs::-webkit-scrollbar {
+  display: none;
 }
 
 .slot-row {
