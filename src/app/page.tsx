@@ -68,6 +68,9 @@ interface PickEntry {
   build?: BuildResult | null;
   /** Set only when the caller declared a champion pool — see ChampionPool below. */
   tier?: 1 | 2 | 3;
+  /** How well this candidate fits the full enemy roster filled in so far
+   * (tags/stats heuristic, not a win rate) — 0.5 neutral, up to 1. */
+  compFit?: number;
 }
 
 interface CombinedPickEntry {
@@ -80,6 +83,7 @@ interface CombinedPickEntry {
   synergyGames: number;
   score: number;
   tier?: 1 | 2 | 3;
+  compFit?: number;
 }
 
 interface LaneSynergyEntry {
@@ -225,6 +229,19 @@ function PowerCurveBadge({ earlyWinRate, lateWinRate }: { earlyWinRate?: number 
       {lean}
     </span>
   );
+}
+
+/** Shown when the server's tag-based heuristic found this candidate a good
+ * fit against the FULL enemy roster filled in so far (not just the laner) —
+ * see scoreEnemyCompFit in teamComp.ts. compFit is 0.5 at neutral (nothing
+ * to say) and only ever goes up from there, so this only renders when it's
+ * actually above neutral — no badge is itself information (means neither of
+ * the two signals applied). Explicitly NOT a win rate, so it's worded and
+ * styled differently from WinRateBar/PowerCurveBadge. */
+function CompFitBadge({ compFit }: { compFit?: number }) {
+  if (compFit == null || compFit <= 0.5) return null;
+  const label = compFit >= 1 ? "상대팀 조합에 매우 적합" : "상대팀 조합에 적합";
+  return <span className="comp-fit-badge">{label}</span>;
 }
 
 /** Shown next to a recommendation entry's name when a champion pool is
@@ -649,7 +666,8 @@ export default function Home() {
 
       {mode === "advice" && (
         <p className="empty-hint">
-          우리팀/상대팀 각 라인에 이미 정해진 챔피언이 있으면 채워보세요. <strong>내 픽 추천</strong>은
+          우리팀/상대팀 각 라인에 이미 정해진 챔피언이 있으면 채워보세요. <strong>내 픽 추천</strong>의 실제
+          승률은
           <strong> 상대 {POSITIONS.find((p) => p.value === position)?.label} 라이너</strong>
           {position === "support" && (
             <>
@@ -657,8 +675,11 @@ export default function Home() {
               와 <strong>우리팀 원거리 딜러</strong>
             </>
           )}
-          만 보고 계산돼요. 그 외에 이미 양 팀 다 채워진 라인이 있거나 우리팀 원딜+서포터가 둘 다 있으면{" "}
-          <strong>실측 데이터 기반 전체 시너지</strong>(실제 스크래핑한 승률을 조합)와{" "}
+          와의 매치업에서만 가져와요(사이트에 다른 포지션 상대와의 실측 데이터는 없어요). 대신 순위를 매길 때는{" "}
+          <strong>상대팀에 채워둔 다른 챔피언들도</strong> 함께 봐서, 상대에 탱커가 없으면 암살자를, 상대가
+          전사/암살자 위주면 튼튼한 후보를 조금 더 우선해요(<span className="comp-fit-badge">상대팀 조합에 적합</span>{" "}
+          배지로 표시 — 실제 승률보다는 낮은 비중). 그 외에 이미 양 팀 다 채워진 라인이 있거나 우리팀 원딜+서포터가
+          둘 다 있으면 <strong>실측 데이터 기반 전체 시너지</strong>(실제 스크래핑한 승률을 조합)와{" "}
           <strong>챔피언 특성 기반 조합 분석</strong>(승률이 아니라 Riot 공식 챔피언 태그/능력치로 보는
           역할군·데미지 타입 균형)도 아래에 따로 보여드려요.
         </p>
@@ -813,6 +834,7 @@ export default function Home() {
                       라인전 {(c.counterWinRate * 100).toFixed(1)}% · 시너지{" "}
                       {(c.synergyWinRate * 100).toFixed(1)}%
                     </p>
+                    <CompFitBadge compFit={c.compFit} />
                   </li>
                 ))}
               </ol>
@@ -835,6 +857,7 @@ export default function Home() {
                       </div>
                       <SourceBreakdown sources={c.bySource} />
                       <PowerCurveBadge earlyWinRate={c.earlyWinRate} lateWinRate={c.lateWinRate} />
+                      <CompFitBadge compFit={c.compFit} />
                       {c.build && <BuildCardCompact build={c.build} />}
                     </li>
                   ))}
@@ -866,6 +889,7 @@ export default function Home() {
                       </div>
                       <SourceBreakdown sources={c.bySource} />
                       <PowerCurveBadge earlyWinRate={c.earlyWinRate} lateWinRate={c.lateWinRate} />
+                      <CompFitBadge compFit={c.compFit} />
                       {c.build && <BuildCardCompact build={c.build} />}
                     </li>
                   ))}

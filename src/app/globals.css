@@ -283,6 +283,21 @@ textarea {
   color: var(--muted);
 }
 
+/* Explicitly NOT a win-rate color (good/bad/accent) — this is the tag-based
+   "fits the enemy comp" heuristic, so it gets its own neutral-but-visible
+   treatment to avoid reading as a percentage or a real stat. */
+.comp-fit-badge {
+  display: inline-block;
+  margin-top: 0.35rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--neutral);
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.15rem 0.55rem;
+}
+
 .tier-badge {
   display: inline-block;
   font-size: 0.75rem;

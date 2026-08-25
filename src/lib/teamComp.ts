@@ -60,3 +60,41 @@ export function analyzeTeamComp(champs: DDragonChampion[]): TeamCompAnalysis | n
     hasFrontline: champs.some((c) => c.tags.includes("Tank")),
   };
 }
+
+/** How well a not-yet-picked candidate's own tags/stats complement what's
+ * already filled in on the enemy side — same "official static data only,
+ * no invented win rate" principle as analyzeTeamComp above, just pointed at
+ * a single candidate instead of summarizing an existing comp. Deliberately
+ * limited to two well-understood, defensible signals (no CC/mobility/init
+ * scoring — Data Dragon doesn't publish that, same restraint as above):
+ *
+ *  - enemy side has no frontline (no Tank tag among the champions filled
+ *    in so far) → burst/assassin candidates get a bonus, since a comp with
+ *    no tank dies faster to burst.
+ *  - enemy side is majority Fighter/Assassin (dive-heavy) → tanky or
+ *    high-`info.defense` candidates get a bonus, since that's a safer pick
+ *    into repeated all-ins.
+ *
+ * Returns 0..1 where 0.5 is neutral (nothing filled in yet on the enemy
+ * side, or neither signal applies to this candidate) — see the caller for
+ * how small a weight this carries next to real scraped win rates. */
+export function scoreEnemyCompFit(candidate: DDragonChampion, enemyChamps: DDragonChampion[]): number {
+  if (enemyChamps.length === 0) return 0.5;
+  let score = 0.5;
+
+  const enemyHasFrontline = enemyChamps.some((c) => c.tags.includes("Tank"));
+  if (!enemyHasFrontline && candidate.tags.includes("Assassin")) {
+    score += 0.25;
+  }
+
+  const diveTaggedCount = enemyChamps.filter(
+    (c) => c.tags.includes("Fighter") || c.tags.includes("Assassin"),
+  ).length;
+  const enemyIsDiveHeavy = diveTaggedCount / enemyChamps.length >= 0.5;
+  if (enemyIsDiveHeavy) {
+    const candidateIsTanky = candidate.tags.includes("Tank") || (candidate.info?.defense ?? 0) >= 6;
+    if (candidateIsTanky) score += 0.25;
+  }
+
+  return Math.min(1, Math.max(0, score));
+}
