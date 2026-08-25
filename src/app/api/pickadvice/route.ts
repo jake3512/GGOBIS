@@ -3,7 +3,14 @@ import { getChampionsWithFallback, type DDragonChampion } from "@/lib/ddragon";
 import { POSITIONS, type Position } from "@/lib/positions";
 import { getAggregatedDuoCandidates, getAggregatedLaneCounters } from "@/lib/sources/aggregate";
 import type { AggregatedCounters } from "@/lib/sources/aggregate";
+import { getPowerCurvesForPosition } from "@/lib/sources/lolps";
 import { analyzeTeamComp } from "@/lib/teamComp";
+
+// Only the top handful of each recommendation list gets a power-curve
+// lookup — the list itself can be 20-40 champions long, and fetching
+// lol.ps's per-champion graphs.json for all of them on every request would
+// be wasteful. The top picks are what the user actually looks at.
+const POWER_CURVE_CANDIDATE_LIMIT = 5;
 
 const VALID_POSITIONS = new Set(POSITIONS.map((p) => p.value));
 
@@ -27,6 +34,35 @@ interface PickEntry {
   winRate: number;
   games: number;
   bySource: SourceValueOut[];
+  /** lol.ps power-curve early/late-game win rate — only attached to the
+   * top few entries (see POWER_CURVE_CANDIDATE_LIMIT), and only when that
+   * champion's lol.ps data actually covers this position. */
+  earlyWinRate?: number | null;
+  lateWinRate?: number | null;
+}
+
+/** Mutates the top N entries of `picks` in place, attaching lol.ps
+ * power-curve early/late-game win rates where available. Best-effort: any
+ * failure (lol.ps down, no matching lane data) just leaves those fields
+ * unset rather than failing the whole request. */
+async function annotateWithPowerCurve(picks: PickEntry[], position: Position): Promise<void> {
+  const top = picks.slice(0, POWER_CURVE_CANDIDATE_LIMIT);
+  if (top.length === 0) return;
+  try {
+    const curves = await getPowerCurvesForPosition(
+      top.map((p) => p.championId),
+      position,
+    );
+    for (const entry of top) {
+      const curve = curves.get(entry.championId);
+      if (curve) {
+        entry.earlyWinRate = curve.earlyWinRate;
+        entry.lateWinRate = curve.lateWinRate;
+      }
+    }
+  } catch {
+    // lol.ps unreachable or shape changed — leave power-curve fields unset.
+  }
 }
 
 function toBrief(c: DDragonChampion): ChampionBrief {
@@ -132,6 +168,7 @@ export async function GET(req: Request) {
     try {
       const result = await getAggregatedLaneCounters(enemyLaneChampion.slug, position, champions);
       counterPicks = toPickEntries(result, champById, "asc");
+      await annotateWithPowerCurve(counterPicks, position);
     } catch (err) {
       counterError = err instanceof Error ? err.message : "라인전 카운터 조회에 실패했습니다.";
     }
@@ -143,6 +180,7 @@ export async function GET(req: Request) {
     try {
       const result = await getAggregatedDuoCandidates(supportAdcChampion.slug, champions);
       synergyPicks = toPickEntries(result, champById, "desc");
+      await annotateWithPowerCurve(synergyPicks, position);
     } catch (err) {
       synergyError = err instanceof Error ? err.message : "시너지 조회에 실패했습니다.";
     }

@@ -62,6 +62,8 @@ interface PickEntry {
   winRate: number;
   games: number;
   bySource: SourceValue[];
+  earlyWinRate?: number | null;
+  lateWinRate?: number | null;
 }
 
 interface CombinedPickEntry {
@@ -193,6 +195,20 @@ function CompCard({ title, analysis }: { title: string; analysis: TeamCompAnalys
         </p>
       )}
     </div>
+  );
+}
+
+/** lol.ps power-curve badge — only present on the top few recommendation
+ * entries (see POWER_CURVE_CANDIDATE_LIMIT server-side). */
+function PowerCurveBadge({ earlyWinRate, lateWinRate }: { earlyWinRate?: number | null; lateWinRate?: number | null }) {
+  if (earlyWinRate == null || lateWinRate == null) return null;
+  const diff = lateWinRate - earlyWinRate;
+  const lean = diff >= 0.03 ? " (후반형)" : diff <= -0.03 ? " (초반형)" : "";
+  return (
+    <span className="power-curve-badge">
+      lol.ps 파워 커브 · 초반 {(earlyWinRate * 100).toFixed(1)}% · 후반 {(lateWinRate * 100).toFixed(1)}%
+      {lean}
+    </span>
   );
 }
 
@@ -580,6 +596,7 @@ export default function Home() {
                         <WinRateBar rate={c.winRate} games={c.games} />
                       </div>
                       <SourceBreakdown sources={c.bySource} />
+                      <PowerCurveBadge earlyWinRate={c.earlyWinRate} lateWinRate={c.lateWinRate} />
                     </li>
                   ))}
                   {adviceResult.counterPicks.length === 0 && (
@@ -604,6 +621,7 @@ export default function Home() {
                         <WinRateBar rate={c.winRate} games={c.games} />
                       </div>
                       <SourceBreakdown sources={c.bySource} />
+                      <PowerCurveBadge earlyWinRate={c.earlyWinRate} lateWinRate={c.lateWinRate} />
                     </li>
                   ))}
                   {adviceResult.synergyPicks.length === 0 && (

@@ -155,6 +155,13 @@ body {
   gap: 0.6rem;
 }
 
+.power-curve-badge {
+  display: inline-block;
+  margin-top: 0.35rem;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
 .comp-heuristic-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
