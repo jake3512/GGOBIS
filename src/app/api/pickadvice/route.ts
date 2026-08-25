@@ -50,6 +50,48 @@ interface PickEntry {
   /** lol.ps build recommendation — same top-N-only, same-position-only
    * limits as the power curve above. */
   build?: BuildResult | null;
+  /** User-declared mastery tier (1 = most proficient) — only set when the
+   * caller supplied a champion pool (tier1/tier2/tier3 query params). */
+  tier?: 1 | 2 | 3;
+}
+
+/** Parses a comma-separated list of champion IDs from a tier1/tier2/tier3
+ * query param. Unknown/malformed values are silently dropped — they simply
+ * won't match any real entry later. */
+function parseTierIds(raw: string | null): number[] {
+  if (!raw) return [];
+  return raw
+    .split(",")
+    .map((s) => Number(s.trim()))
+    .filter((n) => Number.isInteger(n));
+}
+
+/** Builds a championId → tier map from the three tier param lists. A
+ * champion listed in more than one tier keeps its best (lowest-numbered)
+ * tier. */
+function buildTierMap(tier1: number[], tier2: number[], tier3: number[]): Map<number, 1 | 2 | 3> {
+  const map = new Map<number, 1 | 2 | 3>();
+  for (const id of tier1) map.set(id, 1);
+  for (const id of tier2) if (!map.has(id)) map.set(id, 2);
+  for (const id of tier3) if (!map.has(id)) map.set(id, 3);
+  return map;
+}
+
+/** Restricts a recommendation list to the caller's declared champion pool
+ * and ranks mastery tier ABOVE the underlying win-rate ranking: tier 1
+ * candidates come first, then tier 2, then tier 3, and only within the same
+ * tier does the existing win-rate order (asc/desc, already applied by
+ * toPickEntries) break ties — Array.prototype.sort is stable, so a
+ * tier-only comparator preserves that secondary order automatically. When
+ * the pool is empty (tierMap.size === 0, i.e. the caller didn't set one up),
+ * this is a no-op and every candidate is returned unrestricted, exactly like
+ * before this feature existed. */
+function restrictToPool(entries: PickEntry[], tierMap: Map<number, 1 | 2 | 3>): PickEntry[] {
+  if (tierMap.size === 0) return entries;
+  return entries
+    .filter((e) => tierMap.has(e.championId))
+    .map((e) => ({ ...e, tier: tierMap.get(e.championId) }))
+    .sort((a, b) => a.tier! - b.tier!);
 }
 
 /** Mutates the top N entries of `picks` in place, attaching lol.ps
@@ -171,6 +213,13 @@ export async function GET(req: Request) {
   const champions = await getChampionsWithFallback();
   const champById = new Map(champions.map((c) => [c.id, c]));
 
+  const tierMap = buildTierMap(
+    parseTierIds(searchParams.get("tier1")),
+    parseTierIds(searchParams.get("tier2")),
+    parseTierIds(searchParams.get("tier3")),
+  );
+  const championPoolActive = tierMap.size > 0;
+
   // Full 10-slot draft board: ally-{position} / enemy-{position} for each
   // of the 5 positions, all optional.
   const slotIds: Record<string, number> = {};
@@ -207,7 +256,7 @@ export async function GET(req: Request) {
   if (enemyLaneChampion) {
     try {
       const result = await getAggregatedLaneCounters(enemyLaneChampion.slug, position, champions);
-      counterPicks = toPickEntries(result, champById, "asc");
+      counterPicks = restrictToPool(toPickEntries(result, champById, "asc"), tierMap);
       await annotateWithPowerCurve(counterPicks, position);
       await annotateWithBuild(counterPicks, position);
     } catch (err) {
@@ -220,7 +269,7 @@ export async function GET(req: Request) {
   if (position === "support" && supportAdcChampion) {
     try {
       const result = await getAggregatedDuoCandidates(supportAdcChampion.slug, champions);
-      synergyPicks = toPickEntries(result, champById, "desc");
+      synergyPicks = restrictToPool(toPickEntries(result, champById, "desc"), tierMap);
       await annotateWithPowerCurve(synergyPicks, position);
       await annotateWithBuild(synergyPicks, position);
     } catch (err) {
@@ -245,10 +294,18 @@ export async function GET(req: Request) {
                 synergyWinRate: s.winRate,
                 synergyGames: s.games,
                 score,
+                tier: c.tier,
               },
             ];
           })
+          // Stable sort trick for a two-key ordering: sort by the
+          // secondary key (score desc) first, then by the primary key
+          // (mastery tier asc) — the tier pass preserves each tier's
+          // internal score-desc order because Array.prototype.sort is
+          // stable. When no pool is set every tier is undefined and this
+          // second sort is a no-op, so behavior is unchanged.
           .sort((a, b) => b.score - a.score)
+          .sort((a, b) => (a.tier ?? 0) - (b.tier ?? 0))
           .slice(0, 5)
       : [];
 
@@ -350,6 +407,7 @@ export async function GET(req: Request) {
     position,
     enemyLaneChampion: enemyLaneChampion ? toBrief(enemyLaneChampion) : null,
     allyAdcChampion: position === "support" && supportAdcChampion ? toBrief(supportAdcChampion) : null,
+    championPoolActive,
     counterPicks,
     counterError,
     synergyPicks,

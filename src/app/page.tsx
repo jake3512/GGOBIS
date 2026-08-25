@@ -66,6 +66,8 @@ interface PickEntry {
   earlyWinRate?: number | null;
   lateWinRate?: number | null;
   build?: BuildResult | null;
+  /** Set only when the caller declared a champion pool — see ChampionPool below. */
+  tier?: 1 | 2 | 3;
 }
 
 interface CombinedPickEntry {
@@ -77,6 +79,7 @@ interface CombinedPickEntry {
   synergyWinRate: number;
   synergyGames: number;
   score: number;
+  tier?: 1 | 2 | 3;
 }
 
 interface LaneSynergyEntry {
@@ -126,6 +129,7 @@ interface AdviceResult {
   position: string;
   enemyLaneChampion: ChampionBrief | null;
   allyAdcChampion: ChampionBrief | null;
+  championPoolActive: boolean;
   counterPicks: PickEntry[] | null;
   counterError: string | null;
   synergyPicks: PickEntry[] | null;
@@ -134,6 +138,15 @@ interface AdviceResult {
   measuredSynergy: MeasuredSynergy;
   compHeuristic: CompHeuristic;
 }
+
+/** User-declared champion pool for 픽 추천, split by mastery tier (1 =
+ * most proficient). Persisted to localStorage so it survives reloads —
+ * there's no backend/DB in this app, so the browser is the only place it
+ * can live. Empty pool (all three tiers empty) means "no restriction",
+ * matching the server's default behavior. */
+type ChampionPool = Record<1 | 2 | 3, number[]>;
+const EMPTY_POOL: ChampionPool = { 1: [], 2: [], 3: [] };
+const POOL_STORAGE_KEY = "semips-champion-pool";
 
 interface Slot {
   key: string;
@@ -214,6 +227,116 @@ function PowerCurveBadge({ earlyWinRate, lateWinRate }: { earlyWinRate?: number 
   );
 }
 
+/** Shown next to a recommendation entry's name when a champion pool is
+ * active — mirrors the priority the server already baked into the sort
+ * order, just so it's visible why one pick outranks another despite a
+ * lower win rate. */
+function TierBadge({ tier }: { tier?: 1 | 2 | 3 }) {
+  if (!tier) return null;
+  return <span className={`tier-badge tier-badge--${tier}`}>{tier}티어</span>;
+}
+
+const POOL_TIER_LABELS: Record<1 | 2 | 3, string> = {
+  1: "1티어 (가장 숙련)",
+  2: "2티어",
+  3: "3티어",
+};
+
+function ChampionPoolTier({
+  tier,
+  champions,
+  championById,
+  selectedIds,
+  isOpen,
+  onToggleOpen,
+  onToggleChampion,
+}: {
+  tier: 1 | 2 | 3;
+  champions: ChampionSummary[];
+  championById: Map<number, ChampionSummary>;
+  selectedIds: number[];
+  isOpen: boolean;
+  onToggleOpen: () => void;
+  onToggleChampion: (championId: number) => void;
+}) {
+  return (
+    <div className="pool-tier">
+      <div className="pool-tier-header">
+        <span className="pool-tier-label">{POOL_TIER_LABELS[tier]}</span>
+        <button type="button" className="pool-tier-edit-btn" onClick={onToggleOpen}>
+          {isOpen ? "닫기" : "+ 편집"}
+        </button>
+      </div>
+      <div className="pool-chip-row">
+        {selectedIds.length === 0 && <span className="empty-hint">챔피언 없음</span>}
+        {selectedIds.map((id) => {
+          const champ = championById.get(id);
+          if (!champ) return null;
+          return (
+            <span key={id} className="pool-chip">
+              <ChampionIcon src={champ.iconUrl} name={champ.name} className="pool-chip-icon" />
+              {champ.name}
+              <button
+                type="button"
+                className="pool-chip-remove"
+                onClick={() => onToggleChampion(id)}
+                aria-label={`${champ.name} 제거`}
+              >
+                ×
+              </button>
+            </span>
+          );
+        })}
+      </div>
+      {isOpen && (
+        <ChampionPicker champions={champions} selectedIds={selectedIds} onToggle={onToggleChampion} maxSelect={Infinity} />
+      )}
+    </div>
+  );
+}
+
+/** 픽 추천 전용: 사용자가 실제로 플레이하는 챔피언만 1~3티어로 등록해두면
+ * 서버가 그 안에서만, 그리고 티어 순서를 승률보다 우선해서 추천하도록
+ * tier1/tier2/tier3 쿼리 파라미터로 넘긴다. 아무것도 등록하지 않으면
+ * 지금까지처럼 전체 챔피언 대상 추천으로 동작한다(EMPTY_POOL). */
+function ChampionPoolEditor({
+  champions,
+  championById,
+  pool,
+  onToggleChampion,
+}: {
+  champions: ChampionSummary[];
+  championById: Map<number, ChampionSummary>;
+  pool: ChampionPool;
+  onToggleChampion: (tier: 1 | 2 | 3, championId: number) => void;
+}) {
+  const [openTier, setOpenTier] = useState<1 | 2 | 3 | null>(null);
+  const total = pool[1].length + pool[2].length + pool[3].length;
+
+  return (
+    <details className="champion-pool-editor">
+      <summary>내 챔피언 풀 (숙련도 우선순위){total > 0 ? ` — ${total}명 설정됨` : " — 설정 안 함 (전체 챔피언 대상)"}</summary>
+      <p className="empty-hint">
+        챔피언을 등록하면 아래 픽 추천이 이 안에서만 나오고, 1티어 → 2티어 → 3티어 순으로 우선 추천됩니다. 같은
+        티어 안에서는 지금까지와 같은 승률 순위가 적용됩니다. 아무것도 등록하지 않으면 전체 챔피언을 대상으로
+        추천합니다.
+      </p>
+      {([1, 2, 3] as const).map((tier) => (
+        <ChampionPoolTier
+          key={tier}
+          tier={tier}
+          champions={champions}
+          championById={championById}
+          selectedIds={pool[tier]}
+          isOpen={openTier === tier}
+          onToggleOpen={() => setOpenTier((cur) => (cur === tier ? null : tier))}
+          onToggleChampion={(championId) => onToggleChampion(tier, championId)}
+        />
+      ))}
+    </details>
+  );
+}
+
 function SourceStatusNote({
   succeeded,
   attempted,
@@ -257,6 +380,8 @@ export default function Home() {
   const [counterBuild, setCounterBuild] = useState<BuildResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [championPool, setChampionPool] = useState<ChampionPool>(EMPTY_POOL);
+  const [poolLoaded, setPoolLoaded] = useState(false);
 
   useEffect(() => {
     fetch("/api/champions")
@@ -264,6 +389,51 @@ export default function Home() {
       .then((data) => setChampions(data.champions))
       .catch(() => setChampLoadError("챔피언 목록을 불러오지 못했습니다."));
   }, []);
+
+  // localStorage read must happen after mount (SSR has no window) — this
+  // deliberately runs once, before the write-back effect below is armed via
+  // poolLoaded, so an empty initial state never overwrites a saved pool.
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(POOL_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        // Must run after mount (SSR has no localStorage); reading it any
+        // earlier would make the server/client hydration render disagree.
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        setChampionPool({
+          1: Array.isArray(parsed[1]) ? parsed[1] : [],
+          2: Array.isArray(parsed[2]) ? parsed[2] : [],
+          3: Array.isArray(parsed[3]) ? parsed[3] : [],
+        });
+      }
+    } catch {
+      // corrupt or unavailable storage — keep the default empty pool
+    }
+    setPoolLoaded(true);
+  }, []);
+
+  useEffect(() => {
+    if (!poolLoaded) return;
+    try {
+      localStorage.setItem(POOL_STORAGE_KEY, JSON.stringify(championPool));
+    } catch {
+      // storage unavailable (private browsing, quota) — pool just won't persist
+    }
+  }, [championPool, poolLoaded]);
+
+  function toggleChampionInPool(tier: 1 | 2 | 3, championId: number) {
+    setChampionPool((prev) => {
+      const inThisTier = prev[tier].includes(championId);
+      const next: ChampionPool = {
+        1: prev[1].filter((id) => id !== championId),
+        2: prev[2].filter((id) => id !== championId),
+        3: prev[3].filter((id) => id !== championId),
+      };
+      if (!inThisTier) next[tier] = [...next[tier], championId];
+      return next;
+    });
+  }
 
   const championById = useMemo(() => {
     const map = new Map<number, ChampionSummary>();
@@ -378,6 +548,9 @@ export default function Home() {
         for (const slot of slots) {
           if (slot.championId !== null) params.set(slot.key, String(slot.championId));
         }
+        if (championPool[1].length > 0) params.set("tier1", championPool[1].join(","));
+        if (championPool[2].length > 0) params.set("tier2", championPool[2].join(","));
+        if (championPool[3].length > 0) params.set("tier3", championPool[3].join(","));
         const res = await fetch(`/api/pickadvice?${params.toString()}`);
         const data = await res.json();
         if (!res.ok) throw new Error(data.error ?? "조회에 실패했습니다.");
@@ -487,6 +660,15 @@ export default function Home() {
           <strong>챔피언 특성 기반 조합 분석</strong>(승률이 아니라 Riot 공식 챔피언 태그/능력치로 보는
           역할군·데미지 타입 균형)도 아래에 따로 보여드려요.
         </p>
+      )}
+
+      {mode === "advice" && (
+        <ChampionPoolEditor
+          champions={champions}
+          championById={championById}
+          pool={championPool}
+          onToggleChampion={toggleChampionInPool}
+        />
       )}
 
       <section className="selected-bar">
@@ -606,6 +788,9 @@ export default function Home() {
       {mode === "advice" && adviceResult && (
         <section className="results">
           <h2>{POSITIONS.find((p) => p.value === adviceResult.position)?.label} 픽 추천</h2>
+          {adviceResult.championPoolActive && (
+            <p className="empty-hint">내 챔피언 풀 안에서만, 티어 순서를 우선해서 추천 중입니다.</p>
+          )}
 
           {adviceResult.combinedPicks.length > 0 && (
             <>
@@ -620,6 +805,7 @@ export default function Home() {
                     <div className="recommend-row-main">
                       <ChampionIcon src={c.iconUrl} name={c.name} />
                       <span className="recommend-name">{c.name}</span>
+                      <TierBadge tier={c.tier} />
                     </div>
                     <p className="empty-hint">
                       라인전 {(c.counterWinRate * 100).toFixed(1)}% · 시너지{" "}
@@ -642,6 +828,7 @@ export default function Home() {
                       <div className="recommend-row-main">
                         <ChampionIcon src={c.iconUrl} name={c.name} />
                         <span className="recommend-name">{c.name}</span>
+                        <TierBadge tier={c.tier} />
                         <WinRateBar rate={c.winRate} games={c.games} />
                       </div>
                       <SourceBreakdown sources={c.bySource} />
@@ -650,7 +837,11 @@ export default function Home() {
                     </li>
                   ))}
                   {adviceResult.counterPicks.length === 0 && (
-                    <p className="empty-hint">카운터 데이터를 찾지 못했습니다.</p>
+                    <p className="empty-hint">
+                      {adviceResult.championPoolActive
+                        ? "내 챔피언 풀 안에는 이 상대에 대한 카운터 데이터가 없습니다. 풀을 넓혀보세요."
+                        : "카운터 데이터를 찾지 못했습니다."}
+                    </p>
                   )}
                 </ol>
               )}
@@ -668,6 +859,7 @@ export default function Home() {
                       <div className="recommend-row-main">
                         <ChampionIcon src={c.iconUrl} name={c.name} />
                         <span className="recommend-name">{c.name}</span>
+                        <TierBadge tier={c.tier} />
                         <WinRateBar rate={c.winRate} games={c.games} />
                       </div>
                       <SourceBreakdown sources={c.bySource} />
@@ -676,7 +868,11 @@ export default function Home() {
                     </li>
                   ))}
                   {adviceResult.synergyPicks.length === 0 && (
-                    <p className="empty-hint">시너지 데이터를 찾지 못했습니다.</p>
+                    <p className="empty-hint">
+                      {adviceResult.championPoolActive
+                        ? "내 챔피언 풀 안에는 이 조합에 대한 시너지 데이터가 없습니다. 풀을 넓혀보세요."
+                        : "시너지 데이터를 찾지 못했습니다."}
+                    </p>
                   )}
                 </ol>
               )}
