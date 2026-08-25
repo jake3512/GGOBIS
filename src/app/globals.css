@@ -1,14 +1,19 @@
 :root {
-  --background: #0f1115;
-  --surface: #171a21;
-  --surface-alt: #1f232c;
-  --border: #2a2f3a;
-  --foreground: #e8e9ec;
-  --muted: #9aa0ac;
-  --accent: #4c8bf5;
-  --good: #3ecf8e;
-  --bad: #f2545b;
-  --neutral: #8f97a6;
+  --background: #0b0d11;
+  --surface: #1a1e27;
+  --surface-alt: #242a37;
+  /* Noticeably lighter than --surface (not just a half-step) so card edges,
+     tab outlines, and dividers are actually visible against the dark
+     background instead of blending into it. */
+  --border: #414a5e;
+  --foreground: #f4f5f7;
+  /* Brighter than the old #9aa0ac — still clearly secondary next to
+     --foreground, but legible at the small sizes used for badges/hints. */
+  --muted: #b7bec9;
+  --accent: #5b9bff;
+  --good: #45dc9a;
+  --bad: #ff6b74;
+  --neutral: #a3abba;
 }
 
 html {
@@ -116,10 +121,11 @@ textarea {
   min-height: 44px;
   border-radius: 999px;
   border: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--muted);
+  background: var(--surface-alt);
+  color: var(--foreground);
   cursor: pointer;
   font-size: 0.9rem;
+  font-weight: 500;
   flex-shrink: 0;
   white-space: nowrap;
 }
@@ -128,6 +134,8 @@ textarea {
   background: var(--accent);
   color: white;
   border-color: var(--accent);
+  font-weight: 700;
+  box-shadow: 0 2px 8px rgba(91, 155, 255, 0.35);
 }
 
 .selected-bar {
@@ -138,6 +146,7 @@ textarea {
   border: 1px solid var(--border);
   border-radius: 12px;
   padding: 1rem;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
 }
 
 .position-tabs {
@@ -176,9 +185,10 @@ textarea {
 }
 
 .slot img {
-  width: 26px;
-  height: 26px;
+  width: 28px;
+  height: 28px;
   border-radius: 50%;
+  border: 1px solid var(--border);
 }
 
 .slot--empty {
@@ -189,7 +199,7 @@ textarea {
 
 .slot--active {
   border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgba(76, 139, 245, 0.4);
+  box-shadow: 0 0 0 2px rgba(91, 155, 255, 0.45);
 }
 
 .draft-board {
@@ -275,25 +285,25 @@ textarea {
 
 .tier-badge {
   display: inline-block;
-  font-size: 0.72rem;
-  font-weight: 600;
-  padding: 0.1rem 0.5rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 0.15rem 0.55rem;
   border-radius: 999px;
   white-space: nowrap;
 }
 
 .tier-badge--1 {
-  background: rgba(62, 207, 142, 0.18);
+  background: rgba(69, 220, 154, 0.28);
   color: var(--good);
 }
 
 .tier-badge--2 {
-  background: rgba(76, 139, 245, 0.18);
+  background: rgba(91, 155, 255, 0.28);
   color: var(--accent);
 }
 
 .tier-badge--3 {
-  background: rgba(143, 151, 166, 0.18);
+  background: rgba(163, 171, 186, 0.28);
   color: var(--neutral);
 }
 
@@ -302,12 +312,14 @@ textarea {
   border: 1px solid var(--border);
   border-radius: 12px;
   padding: 1rem 1.25rem;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
 }
 
 .champion-pool-editor summary {
   cursor: pointer;
-  font-weight: 600;
+  font-weight: 700;
   font-size: 0.95rem;
+  color: var(--foreground);
 }
 
 .champion-pool-editor .empty-hint {
@@ -456,12 +468,13 @@ textarea {
 }
 
 .source-badge {
-  font-size: 0.75rem;
-  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--foreground);
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 999px;
-  padding: 0.15rem 0.6rem;
+  padding: 0.2rem 0.6rem;
 }
 
 .source-badge-games {
@@ -488,7 +501,7 @@ textarea {
 }
 
 .error-banner {
-  background: rgba(242, 84, 91, 0.12);
+  background: rgba(255, 107, 116, 0.14);
   border: 1px solid var(--bad);
   color: var(--bad);
   padding: 0.75rem 1rem;
@@ -509,16 +522,21 @@ textarea {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
 }
 
 .results h2 {
-  font-size: 1.2rem;
+  font-size: 1.25rem;
+  font-weight: 700;
 }
 
 .results h3 {
-  font-size: 1rem;
-  margin-top: 0.75rem;
-  color: var(--muted);
+  font-size: 1.05rem;
+  font-weight: 700;
+  margin-top: 0.9rem;
+  padding-left: 0.6rem;
+  border-left: 3px solid var(--accent);
+  color: var(--foreground);
 }
 
 .recommend-list {
@@ -533,20 +551,23 @@ textarea {
   align-items: center;
   gap: 0.75rem;
   background: var(--surface-alt);
+  border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 0.5rem 0.75rem;
+  padding: 0.6rem 0.75rem;
 }
 
 .recommend-row img {
-  width: 32px;
-  height: 32px;
+  width: 38px;
+  height: 38px;
   border-radius: 50%;
+  border: 1px solid var(--border);
   flex-shrink: 0;
 }
 
 .recommend-name {
   min-width: 90px;
-  font-size: 0.9rem;
+  font-size: 0.95rem;
+  font-weight: 600;
 }
 
 .winrate {
@@ -559,8 +580,9 @@ textarea {
 
 .winrate-track {
   flex: 1;
-  height: 8px;
-  background: var(--border);
+  height: 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
   border-radius: 999px;
   overflow: hidden;
 }
@@ -583,8 +605,9 @@ textarea {
 }
 
 .winrate-label {
-  font-size: 0.8rem;
-  color: var(--muted);
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--foreground);
   white-space: nowrap;
 }
 
@@ -593,6 +616,7 @@ textarea {
   border: 1px solid var(--border);
   border-radius: 12px;
   padding: 1.25rem;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
 }
 
 .champion-search {
@@ -630,13 +654,15 @@ textarea {
 }
 
 .champion-tile img {
-  width: 44px;
-  height: 44px;
+  width: 46px;
+  height: 46px;
   border-radius: 50%;
+  border: 1px solid var(--border);
 }
 
 .champion-tile span {
-  font-size: 0.72rem;
+  font-size: 0.75rem;
+  font-weight: 500;
   text-align: center;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -646,7 +672,7 @@ textarea {
 
 .champion-tile--selected {
   border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgba(76, 139, 245, 0.4);
+  box-shadow: 0 0 0 2px rgba(91, 155, 255, 0.45);
 }
 
 .champion-tile:disabled {
