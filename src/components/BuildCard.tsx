@@ -17,7 +17,7 @@ function IconRow({ items, size = 32 }: { items: IconRef[]; size?: number }) {
     <div className="build-icon-row">
       {items.map((it, i) => (
         // eslint-disable-next-line @next/next/no-img-element -- external CDN icons, no next/image domain config needed
-        <img key={`${it.id}-${i}`} src={it.iconUrl} alt={it.name} title={it.name} width={size} height={size} />
+        <img key={`${it.id}-${i}`} src={it.iconUrl} alt={it.name} title={it.name} width={size} height={size} referrerPolicy="no-referrer" />
       ))}
     </div>
   );
@@ -31,17 +31,17 @@ export function BuildCardCompact({ build }: { build: BuildResult }) {
     <div className="build-icon-row build-icon-row--compact">
       {keystone && (
         // eslint-disable-next-line @next/next/no-img-element -- external CDN icons, no next/image domain config needed
-        <img src={keystone.iconUrl} alt={keystone.name} title={keystone.name} width={22} height={22} />
+        <img src={keystone.iconUrl} alt={keystone.name} title={keystone.name} width={22} height={22} referrerPolicy="no-referrer" />
       )}
       {[build.spell1, build.spell2]
         .filter((s): s is IconRef => s !== null)
         .map((s) => (
           // eslint-disable-next-line @next/next/no-img-element -- external CDN icons, no next/image domain config needed
-          <img key={s.id} src={s.iconUrl} alt={s.name} title={s.name} width={20} height={20} />
+          <img key={s.id} src={s.iconUrl} alt={s.name} title={s.name} width={20} height={20} referrerPolicy="no-referrer" />
         ))}
       {build.coreItems.map((it) => (
         // eslint-disable-next-line @next/next/no-img-element -- external CDN icons, no next/image domain config needed
-        <img key={it.id} src={it.iconUrl} alt={it.name} title={it.name} width={22} height={22} />
+        <img key={it.id} src={it.iconUrl} alt={it.name} title={it.name} width={22} height={22} referrerPolicy="no-referrer" />
       ))}
       {build.coreWinRate !== null && (
         <span className="build-rate">핵심 아이템 {(build.coreWinRate * 100).toFixed(1)}%</span>
@@ -63,20 +63,20 @@ export function BuildCard({ build }: { build: BuildResult }) {
         <div className="build-icon-row">
           {build.mainRuneTree && (
             // eslint-disable-next-line @next/next/no-img-element -- external CDN icons, no next/image domain config needed
-            <img src={build.mainRuneTree.iconUrl} alt={build.mainRuneTree.name} title={build.mainRuneTree.name} width={28} height={28} />
+            <img src={build.mainRuneTree.iconUrl} alt={build.mainRuneTree.name} title={build.mainRuneTree.name} width={28} height={28} referrerPolicy="no-referrer" />
           )}
           {build.mainRunes.map((r) => (
             // eslint-disable-next-line @next/next/no-img-element -- external CDN icons, no next/image domain config needed
-            <img key={r.id} src={r.iconUrl} alt={r.name} title={r.name} width={32} height={32} />
+            <img key={r.id} src={r.iconUrl} alt={r.name} title={r.name} width={32} height={32} referrerPolicy="no-referrer" />
           ))}
           <span className="build-divider" />
           {build.subRuneTree && (
             // eslint-disable-next-line @next/next/no-img-element -- external CDN icons, no next/image domain config needed
-            <img src={build.subRuneTree.iconUrl} alt={build.subRuneTree.name} title={build.subRuneTree.name} width={22} height={22} />
+            <img src={build.subRuneTree.iconUrl} alt={build.subRuneTree.name} title={build.subRuneTree.name} width={22} height={22} referrerPolicy="no-referrer" />
           )}
           {build.subRunes.map((r) => (
             // eslint-disable-next-line @next/next/no-img-element -- external CDN icons, no next/image domain config needed
-            <img key={r.id} src={r.iconUrl} alt={r.name} title={r.name} width={26} height={26} />
+            <img key={r.id} src={r.iconUrl} alt={r.name} title={r.name} width={26} height={26} referrerPolicy="no-referrer" />
           ))}
         </div>
         <Rate rate={build.runeWinRate} games={build.runeGames} />
