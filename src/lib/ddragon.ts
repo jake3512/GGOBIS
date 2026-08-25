@@ -18,6 +18,12 @@ export interface DDragonChampion {
   title: string;
   tags: string[];
   iconUrl: string;
+  /** Riot's own 0-10 champion attribute ratings (attack/defense/magic —
+   * difficulty omitted, not used here). Used as a rough, official-data-only
+   * proxy for physical/magic damage balance in team-comp analysis — not
+   * real per-match damage stats, just Riot's own published ratings.
+   * Optional because the offline fallback snapshot doesn't carry it. */
+  info?: { attack: number; defense: number; magic: number };
 }
 
 let cachedVersion: { value: string; fetchedAt: number } | null = null;
@@ -62,6 +68,7 @@ export async function getChampions(
       title: string;
       tags: string[];
       image: { full: string };
+      info: { attack: number; defense: number; magic: number };
     }
   >;
 
@@ -73,6 +80,7 @@ export async function getChampions(
       title: c.title,
       tags: c.tags,
       iconUrl: championIconUrl(v, c.image.full),
+      info: { attack: c.info.attack, defense: c.info.defense, magic: c.info.magic },
     }))
     .sort((a, b) => a.name.localeCompare(b.name, "ko"));
 }
@@ -115,4 +123,125 @@ export async function getChampionsWithFallback(locale = "ko_KR"): Promise<DDrago
     console.warn("Data Dragon unreachable, using offline fallback champion list:", err);
     return loadFallbackChampions();
   }
+}
+
+// --- Items / summoner spells / runes: only needed to turn lol.ps's build
+// data (item/spell/rune IDs) into names+icons for display. No offline
+// fallback for these (unlike champions) — if Data Dragon is unreachable the
+// build feature just fails for that request, same as any other source
+// outage in this app.
+
+export interface DDragonItem {
+  id: number;
+  name: string;
+  iconUrl: string;
+}
+
+let cachedItems: { value: Map<number, DDragonItem>; fetchedAt: number } | null = null;
+
+export async function getItemsWithCache(locale = "ko_KR"): Promise<Map<number, DDragonItem>> {
+  if (cachedItems && Date.now() - cachedItems.fetchedAt < CHAMPIONS_TTL_MS) {
+    return cachedItems.value;
+  }
+  const v = await getLatestVersion();
+  const res = await fetch(`${DDRAGON_BASE}/cdn/${v}/data/${locale}/item.json`, {
+    next: { revalidate: 3600 },
+  });
+  if (!res.ok) throw new Error(`Data Dragon item.json request failed: ${res.status}`);
+  const body = await res.json();
+  const data = body.data as Record<string, { name: string; image: { full: string } }>;
+  const map = new Map<number, DDragonItem>();
+  for (const [id, item] of Object.entries(data)) {
+    map.set(Number(id), {
+      id: Number(id),
+      name: item.name,
+      iconUrl: `${DDRAGON_BASE}/cdn/${v}/img/item/${item.image.full}`,
+    });
+  }
+  cachedItems = { value: map, fetchedAt: Date.now() };
+  return map;
+}
+
+export interface DDragonSpell {
+  id: number;
+  name: string;
+  iconUrl: string;
+}
+
+let cachedSpells: { value: Map<number, DDragonSpell>; fetchedAt: number } | null = null;
+
+export async function getSummonerSpellsWithCache(locale = "ko_KR"): Promise<Map<number, DDragonSpell>> {
+  if (cachedSpells && Date.now() - cachedSpells.fetchedAt < CHAMPIONS_TTL_MS) {
+    return cachedSpells.value;
+  }
+  const v = await getLatestVersion();
+  const res = await fetch(`${DDRAGON_BASE}/cdn/${v}/data/${locale}/summoner.json`, {
+    next: { revalidate: 3600 },
+  });
+  if (!res.ok) throw new Error(`Data Dragon summoner.json request failed: ${res.status}`);
+  const body = await res.json();
+  const data = body.data as Record<string, { key: string; name: string; image: { full: string } }>;
+  const map = new Map<number, DDragonSpell>();
+  for (const spell of Object.values(data)) {
+    map.set(Number(spell.key), {
+      id: Number(spell.key),
+      name: spell.name,
+      iconUrl: `${DDRAGON_BASE}/cdn/${v}/img/spell/${spell.image.full}`,
+    });
+  }
+  cachedSpells = { value: map, fetchedAt: Date.now() };
+  return map;
+}
+
+export interface DDragonRune {
+  id: number;
+  name: string;
+  iconUrl: string;
+}
+
+export interface RunesData {
+  /** Keyed by rune TREE id (e.g. 8000 = Precision) — mainRuneCategory /
+   * subRuneCategory in lol.ps's data refer to these, not individual runes. */
+  trees: Map<number, DDragonRune>;
+  /** Keyed by individual rune id (keystones and minor runes alike). */
+  runes: Map<number, DDragonRune>;
+}
+
+let cachedRunes: { value: RunesData; fetchedAt: number } | null = null;
+
+// Rune icon paths are served from a version-less /cdn/img/ prefix, unlike
+// every other Data Dragon asset — a known quirk of this particular file.
+function runeIconUrl(icon: string): string {
+  return `${DDRAGON_BASE}/cdn/img/${icon}`;
+}
+
+export async function getRunesDataWithCache(locale = "ko_KR"): Promise<RunesData> {
+  if (cachedRunes && Date.now() - cachedRunes.fetchedAt < CHAMPIONS_TTL_MS) {
+    return cachedRunes.value;
+  }
+  const v = await getLatestVersion();
+  const res = await fetch(`${DDRAGON_BASE}/cdn/${v}/data/${locale}/runesReforged.json`, {
+    next: { revalidate: 3600 },
+  });
+  if (!res.ok) throw new Error(`Data Dragon runesReforged.json request failed: ${res.status}`);
+  const body = (await res.json()) as {
+    id: number;
+    name: string;
+    icon: string;
+    slots: { runes: { id: number; name: string; icon: string }[] }[];
+  }[];
+
+  const trees = new Map<number, DDragonRune>();
+  const runes = new Map<number, DDragonRune>();
+  for (const tree of body) {
+    trees.set(tree.id, { id: tree.id, name: tree.name, iconUrl: runeIconUrl(tree.icon) });
+    for (const slot of tree.slots) {
+      for (const rune of slot.runes) {
+        runes.set(rune.id, { id: rune.id, name: rune.name, iconUrl: runeIconUrl(rune.icon) });
+      }
+    }
+  }
+  const value = { trees, runes };
+  cachedRunes = { value, fetchedAt: Date.now() };
+  return value;
 }

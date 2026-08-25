@@ -5,9 +5,10 @@ import { ChampionPicker, type ChampionSummary } from "@/components/ChampionPicke
 import { ChampionIcon } from "@/components/ChampionIcon";
 import { WinRateBar } from "@/components/WinRateBar";
 import { SourceBreakdown } from "@/components/SourceBreakdown";
+import { BuildCard, BuildCardCompact, type BuildResult } from "@/components/BuildCard";
 import { POSITIONS } from "@/lib/positions";
 
-type Mode = "counter" | "duo" | "advice";
+type Mode = "counter" | "duo" | "advice" | "build";
 
 interface ChampionBrief {
   id: number;
@@ -62,6 +63,14 @@ interface PickEntry {
   winRate: number;
   games: number;
   bySource: SourceValue[];
+  earlyWinRate?: number | null;
+  lateWinRate?: number | null;
+  build?: BuildResult | null;
+  /** Set only when the caller declared a champion pool — see ChampionPool below. */
+  tier?: 1 | 2 | 3;
+  /** How well this candidate fits the full enemy roster filled in so far
+   * (tags/stats heuristic, not a win rate) — 0.5 neutral, up to 1. */
+  compFit?: number;
 }
 
 interface CombinedPickEntry {
@@ -73,31 +82,443 @@ interface CombinedPickEntry {
   synergyWinRate: number;
   synergyGames: number;
   score: number;
+  tier?: 1 | 2 | 3;
+  compFit?: number;
+}
+
+interface LaneSynergyEntry {
+  position: string;
+  ally: ChampionBrief;
+  enemy: ChampionBrief;
+  winRate: number | null;
+  games: number | null;
+  bySource: SourceValue[];
+  error: string | null;
+}
+
+interface DuoSynergyEntry {
+  adc: ChampionBrief;
+  support: ChampionBrief;
+  winRate: number | null;
+  games: number | null;
+  bySource: SourceValue[];
+  error: string | null;
+}
+
+interface MeasuredSynergy {
+  lanes: LaneSynergyEntry[];
+  duo: DuoSynergyEntry | null;
+  overallScore: number | null;
+}
+
+interface DamageBalance {
+  physicalPct: number;
+  magicPct: number;
+  sampledCount: number;
+}
+
+interface TeamCompAnalysis {
+  filledCount: number;
+  tagCounts: Record<string, number>;
+  damageBalance: DamageBalance | null;
+  hasFrontline: boolean;
+}
+
+interface CompHeuristic {
+  ally: TeamCompAnalysis | null;
+  enemy: TeamCompAnalysis | null;
+}
+
+type CompConceptId = "engage" | "poke" | "protect" | "teamfight" | "splitPush";
+
+interface CompConceptScore {
+  id: CompConceptId;
+  matchCount: number;
+  matchedChampionIds: number[];
+}
+
+interface CompConceptAnalysis {
+  filledCount: number;
+  scores: CompConceptScore[];
+  dominant: CompConceptId | null;
+}
+
+interface ConceptMatchup {
+  favors: CompConceptId;
+  against: CompConceptId;
+  reason: string;
+}
+
+interface CompConcepts {
+  ally: CompConceptAnalysis | null;
+  enemy: CompConceptAnalysis | null;
+  matchup: ConceptMatchup | null;
 }
 
 interface AdviceResult {
   position: string;
   enemyLaneChampion: ChampionBrief | null;
   allyAdcChampion: ChampionBrief | null;
+  championPoolActive: boolean;
   counterPicks: PickEntry[] | null;
   counterError: string | null;
   synergyPicks: PickEntry[] | null;
   synergyError: string | null;
   combinedPicks: CombinedPickEntry[];
+  measuredSynergy: MeasuredSynergy;
+  compHeuristic: CompHeuristic;
+  compConcepts: CompConcepts;
 }
+
+const COMP_CONCEPT_LABELS: Record<CompConceptId, string> = {
+  engage: "돌진/이니시",
+  poke: "포킹",
+  protect: "쌍포/보호",
+  teamfight: "한타",
+  splitPush: "스플릿 푸시",
+};
+
+/** How to pilot each comp concept, shown under our own team's card when
+ * that concept is dominant. Same footing as CONCEPT_MATCHUPS server-side —
+ * general LoL strategy knowledge (not measured data, not computed from any
+ * per-request signal), kept here since it's purely static presentational
+ * content, matching how COMP_CONCEPT_LABELS/TAG_LABELS are also just
+ * frontend-local lookup tables rather than round-tripped through the API. */
+const CONCEPT_PILOT_TIPS: Record<CompConceptId, string[]> = {
+  engage: [
+    "핵심 딜러(원거리 딜러·마법사)부터 끊는 각을 보고 들어가세요 — 아무나 물면 역으로 둘러싸입니다.",
+    "혼자 다이브하지 말고 팀 CC와 함께 들어가야 이니시가 오래 유지됩니다.",
+    "상대 진형이 흩어졌을 때를 노리세요 — 뭉쳐있을 때 들어가면 받아쳐집니다.",
+  ],
+  poke: [
+    "정면 교전을 피하고 사거리 밖에서 스킬로 지속적으로 딜을 넣으세요.",
+    "상대가 무리하게 들어올 때만 짧게 교전하고 바로 빠지세요.",
+    "오브젝트 앞에서 미리 소모시킨 뒤 유리할 때만 싸움을 여세요.",
+  ],
+  protect: [
+    "캐리를 팀원들이 감싸고, 캐리는 안전 거리에서 딜만 넣으세요.",
+    "보호막·CC는 캐리에게 우선 사용하고, 무리한 선타는 자제하세요.",
+    "한타에서 캐리가 죽지 않으면 시간이 지날수록 유리해집니다 — 서두르지 마세요.",
+  ],
+  teamfight: [
+    "진형을 잡고 5:5를 유도하세요 — 무리한 단독 교전은 피하세요.",
+    "핵심 CC(궁극기)를 먼저 쓰기보다 상대가 먼저 쓰게 유도하세요.",
+    "오브젝트(바론·드래곤) 앞 교전을 적극적으로 노리세요.",
+  ],
+  splitPush: [
+    "사이드 라인을 지속적으로 압박하고, 상대가 몰려오면 빠지세요.",
+    "텔레포트·귀환 타이밍을 계산해서 다른 라인 교전에 합류하세요.",
+    "무리하게 혼자 오브젝트를 다투지 말고 라인 CS·타워를 우선하세요.",
+  ],
+};
+
+/** How to play AGAINST each comp concept, shown under the enemy team's card
+ * when that concept is dominant on their side. Same static-knowledge
+ * footing as CONCEPT_PILOT_TIPS above. */
+const CONCEPT_COUNTER_TIPS: Record<CompConceptId, string[]> = {
+  engage: [
+    "무리하게 앞으로 나가지 말고, 스킬 CC로 이니시 각을 미리 끊으세요.",
+    "핵심 캐리는 항상 팀원 뒤에 두고, 플래시·보호기를 아끼세요.",
+    "그룹 상태에서 갑자기 갭클로저가 들어오면 흩어져서 각개 대응하세요.",
+  ],
+  poke: [
+    "뭉쳐서 스킬을 오래 맞지 말고, 사거리 안에서만 짧게 교전하세요.",
+    "장막·은신 등으로 스킬 각을 피하며 접근하세요.",
+    "빠르게 거리를 좁혀서 포킹 챔피언을 근접전으로 끌어들이세요.",
+  ],
+  protect: [
+    "캐리를 직접 노리기보다 보호막·CC를 먼저 소모시키세요.",
+    "여러 방향에서 접근해 보호를 분산시키세요.",
+    "장기전보다 빠른 승부(오브젝트 스틸, 스플릿)로 게임을 짧게 가져가세요.",
+  ],
+  teamfight: [
+    "5:5를 피하고 갈라져서 사이드 라인 이득을 챙기세요.",
+    "시야로 상대 동선을 파악해 불리한 한타를 피하세요.",
+    "핵심 CC 궁극기 쿨타임을 파악하고 그 타이밍에만 교전하세요.",
+  ],
+  splitPush: [
+    "1:1로 상대하지 말고 2인 이상으로 스플릿 챔피언을 견제하세요.",
+    "스플릿 챔피언이 혼자 있을 때 팀 전체가 다른 목표(오브젝트)를 챙기세요.",
+    "시야로 스플릿 챔피언 위치를 계속 확인해 기습을 피하세요.",
+  ],
+};
+
+/** User-declared champion pool for 픽 추천, split by mastery tier (1 =
+ * most proficient). Persisted to localStorage so it survives reloads —
+ * there's no backend/DB in this app, so the browser is the only place it
+ * can live. Empty pool (all three tiers empty) means "no restriction",
+ * matching the server's default behavior. */
+type ChampionPool = Record<1 | 2 | 3, number[]>;
+const EMPTY_POOL: ChampionPool = { 1: [], 2: [], 3: [] };
+const POOL_STORAGE_KEY = "semips-champion-pool";
 
 interface Slot {
   key: string;
   label: string;
   championId: number | null;
+  /** True for the one slot advice mode is recommending a pick for — not a
+   * fillable input. */
+  disabled?: boolean;
 }
 
-function adviceSlotsFor(position: string): Slot[] {
-  const slots: Slot[] = [{ key: "enemyLane", label: "상대 라이너", championId: null }];
-  if (position === "support") {
-    slots.push({ key: "allyAdc", label: "우리팀 원거리 딜러", championId: null });
-  }
-  return slots;
+/** Advice mode shows a full 10-slot draft board (5 ally + 5 enemy
+ * positions) so it feels like an actual champion-select screen. Two of
+ * those ten slots feed the single-pick recommendation (the enemy pick in my
+ * own position, and — when I'm picking support — our ADC); beyond that,
+ * whichever ally/enemy pairs are filled in also feed the "measured"
+ * lane-by-lane + duo synergy comparison and the tag-based comp analysis
+ * further down the results — see the hint text rendered alongside the
+ * board for exactly which. */
+function adviceSlotsFor(myPosition: string): Slot[] {
+  return [
+    ...POSITIONS.map((p) => ({
+      key: `ally-${p.value}`,
+      label: `우리팀 ${p.label}`,
+      championId: null,
+      disabled: p.value === myPosition,
+    })),
+    ...POSITIONS.map((p) => ({
+      key: `enemy-${p.value}`,
+      label: `상대 ${p.label}`,
+      championId: null,
+    })),
+  ];
+}
+
+const TAG_LABELS: Record<string, string> = {
+  Fighter: "전사",
+  Tank: "탱커",
+  Mage: "마법사",
+  Assassin: "암살자",
+  Support: "서포터",
+  Marksman: "원거리 딜러",
+};
+
+function CompCard({ title, analysis }: { title: string; analysis: TeamCompAnalysis }) {
+  return (
+    <div className="comp-card">
+      <h4>
+        {title} ({analysis.filledCount}명 입력됨)
+      </h4>
+      <p className="empty-hint">
+        {Object.entries(analysis.tagCounts)
+          .map(([tag, count]) => `${TAG_LABELS[tag] ?? tag} ${count}`)
+          .join(" · ")}
+      </p>
+      <p className="empty-hint">프론트라인(탱커): {analysis.hasFrontline ? "있음" : "없음"}</p>
+      {analysis.damageBalance && (
+        <p className="empty-hint">
+          물리 {analysis.damageBalance.physicalPct}% · 마법 {analysis.damageBalance.magicPct}%
+          {(analysis.damageBalance.physicalPct >= 75 || analysis.damageBalance.magicPct >= 75) &&
+            " (한쪽으로 치우침 — 상대가 방어구/마법저항 몰아주기 쉬워요)"}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** How many of the filled champions fit each of the five known comp
+ * concepts (돌진/포킹/쌍포/한타/스플릿) — see compConcepts.ts server-side.
+ * Not a percentage or a rate; deliberately shown as a plain "N/필요 인원"
+ * count so it doesn't read as more precise than the underlying heuristic
+ * actually is. When a concept is dominant, also shows play tips — "pilot"
+ * (how to play this comp) for our own team, "counter" (how to play against
+ * it) for the enemy's — from the static CONCEPT_PILOT_TIPS/
+ * CONCEPT_COUNTER_TIPS tables above. */
+function CompConceptCard({
+  title,
+  analysis,
+  tipsVariant,
+}: {
+  title: string;
+  analysis: CompConceptAnalysis;
+  tipsVariant: "pilot" | "counter";
+}) {
+  const tips = analysis.dominant
+    ? (tipsVariant === "pilot" ? CONCEPT_PILOT_TIPS : CONCEPT_COUNTER_TIPS)[analysis.dominant]
+    : null;
+  return (
+    <div className="comp-card">
+      <h4>{title} 조합 컨셉</h4>
+      {analysis.dominant ? (
+        <p className="concept-dominant-label">{COMP_CONCEPT_LABELS[analysis.dominant]} 성향</p>
+      ) : (
+        <p className="empty-hint">뚜렷한 컨셉 없음 (혼합형)</p>
+      )}
+      <ul className="concept-score-list">
+        {analysis.scores.map((s) => (
+          <li key={s.id}>
+            <span>{COMP_CONCEPT_LABELS[s.id]}</span>
+            <span className="empty-hint">
+              {s.matchCount}/{analysis.filledCount}명
+            </span>
+          </li>
+        ))}
+      </ul>
+      {tips && (
+        <>
+          <p className="concept-tips-label">{tipsVariant === "pilot" ? "플레이 팁" : "대처 팁"}</p>
+          <ul className="concept-tips-list">
+            {tips.map((tip) => (
+              <li key={tip}>{tip}</li>
+            ))}
+          </ul>
+        </>
+      )}
+    </div>
+  );
+}
+
+/** Static concept-vs-concept strategic note (see CONCEPT_MATCHUPS in
+ * compConcepts.ts) — only shown when BOTH sides have a clear dominant
+ * concept AND there's an established note for that specific pair
+ * (most cross-pairs involving 한타/스플릿 don't have one, by design). */
+function ConceptMatchupNote({ matchup }: { matchup: ConceptMatchup | null }) {
+  if (!matchup) return null;
+  return (
+    <p className="concept-matchup-note">
+      일반적으로 <strong>{COMP_CONCEPT_LABELS[matchup.favors]}</strong>이(가){" "}
+      <strong>{COMP_CONCEPT_LABELS[matchup.against]}</strong>에 유리한 편이에요 — {matchup.reason}. (실제 승률
+      데이터가 아니라 일반적인 전략 경향입니다)
+    </p>
+  );
+}
+
+/** lol.ps power-curve badge — only present on the top few recommendation
+ * entries (see POWER_CURVE_CANDIDATE_LIMIT server-side). */
+function PowerCurveBadge({ earlyWinRate, lateWinRate }: { earlyWinRate?: number | null; lateWinRate?: number | null }) {
+  if (earlyWinRate == null || lateWinRate == null) return null;
+  const diff = lateWinRate - earlyWinRate;
+  const lean = diff >= 0.03 ? " (후반형)" : diff <= -0.03 ? " (초반형)" : "";
+  return (
+    <span className="power-curve-badge">
+      lol.ps 파워 커브 · 초반 {(earlyWinRate * 100).toFixed(1)}% · 후반 {(lateWinRate * 100).toFixed(1)}%
+      {lean}
+    </span>
+  );
+}
+
+/** Shown when the server's tag-based heuristic found this candidate a good
+ * fit against the FULL enemy roster filled in so far (not just the laner) —
+ * see scoreEnemyCompFit in teamComp.ts. compFit is 0.5 at neutral (nothing
+ * to say) and only ever goes up from there, so this only renders when it's
+ * actually above neutral — no badge is itself information (means neither of
+ * the two signals applied). Explicitly NOT a win rate, so it's worded and
+ * styled differently from WinRateBar/PowerCurveBadge. */
+function CompFitBadge({ compFit }: { compFit?: number }) {
+  if (compFit == null || compFit <= 0.5) return null;
+  const label = compFit >= 1 ? "상대팀 조합에 매우 적합" : "상대팀 조합에 적합";
+  return <span className="comp-fit-badge">{label}</span>;
+}
+
+/** Shown next to a recommendation entry's name when a champion pool is
+ * active — mirrors the priority the server already baked into the sort
+ * order, just so it's visible why one pick outranks another despite a
+ * lower win rate. */
+function TierBadge({ tier }: { tier?: 1 | 2 | 3 }) {
+  if (!tier) return null;
+  return <span className={`tier-badge tier-badge--${tier}`}>{tier}티어</span>;
+}
+
+const POOL_TIER_LABELS: Record<1 | 2 | 3, string> = {
+  1: "1티어 (가장 숙련)",
+  2: "2티어",
+  3: "3티어",
+};
+
+function ChampionPoolTier({
+  tier,
+  champions,
+  championById,
+  selectedIds,
+  isOpen,
+  onToggleOpen,
+  onToggleChampion,
+}: {
+  tier: 1 | 2 | 3;
+  champions: ChampionSummary[];
+  championById: Map<number, ChampionSummary>;
+  selectedIds: number[];
+  isOpen: boolean;
+  onToggleOpen: () => void;
+  onToggleChampion: (championId: number) => void;
+}) {
+  return (
+    <div className="pool-tier">
+      <div className="pool-tier-header">
+        <span className="pool-tier-label">{POOL_TIER_LABELS[tier]}</span>
+        <button type="button" className="pool-tier-edit-btn" onClick={onToggleOpen}>
+          {isOpen ? "닫기" : "+ 편집"}
+        </button>
+      </div>
+      <div className="pool-chip-row">
+        {selectedIds.length === 0 && <span className="empty-hint">챔피언 없음</span>}
+        {selectedIds.map((id) => {
+          const champ = championById.get(id);
+          if (!champ) return null;
+          return (
+            <span key={id} className="pool-chip">
+              <ChampionIcon src={champ.iconUrl} name={champ.name} className="pool-chip-icon" />
+              {champ.name}
+              <button
+                type="button"
+                className="pool-chip-remove"
+                onClick={() => onToggleChampion(id)}
+                aria-label={`${champ.name} 제거`}
+              >
+                ×
+              </button>
+            </span>
+          );
+        })}
+      </div>
+      {isOpen && (
+        <ChampionPicker champions={champions} selectedIds={selectedIds} onToggle={onToggleChampion} maxSelect={Infinity} />
+      )}
+    </div>
+  );
+}
+
+/** 픽 추천 전용: 사용자가 실제로 플레이하는 챔피언만 1~3티어로 등록해두면
+ * 서버가 그 안에서만, 그리고 티어 순서를 승률보다 우선해서 추천하도록
+ * tier1/tier2/tier3 쿼리 파라미터로 넘긴다. 아무것도 등록하지 않으면
+ * 지금까지처럼 전체 챔피언 대상 추천으로 동작한다(EMPTY_POOL). */
+function ChampionPoolEditor({
+  champions,
+  championById,
+  pool,
+  onToggleChampion,
+}: {
+  champions: ChampionSummary[];
+  championById: Map<number, ChampionSummary>;
+  pool: ChampionPool;
+  onToggleChampion: (tier: 1 | 2 | 3, championId: number) => void;
+}) {
+  const [openTier, setOpenTier] = useState<1 | 2 | 3 | null>(null);
+  const total = pool[1].length + pool[2].length + pool[3].length;
+
+  return (
+    <details className="champion-pool-editor">
+      <summary>내 챔피언 풀 (숙련도 우선순위){total > 0 ? ` — ${total}명 설정됨` : " — 설정 안 함 (전체 챔피언 대상)"}</summary>
+      <p className="empty-hint">
+        챔피언을 등록하면 아래 픽 추천이 이 안에서만 나오고, 1티어 → 2티어 → 3티어 순으로 우선 추천됩니다. 같은
+        티어 안에서는 지금까지와 같은 승률 순위가 적용됩니다. 아무것도 등록하지 않으면 전체 챔피언을 대상으로
+        추천합니다.
+      </p>
+      {([1, 2, 3] as const).map((tier) => (
+        <ChampionPoolTier
+          key={tier}
+          tier={tier}
+          champions={champions}
+          championById={championById}
+          selectedIds={pool[tier]}
+          isOpen={openTier === tier}
+          onToggleOpen={() => setOpenTier((cur) => (cur === tier ? null : tier))}
+          onToggleChampion={(championId) => onToggleChampion(tier, championId)}
+        />
+      ))}
+    </details>
+  );
 }
 
 function SourceStatusNote({
@@ -136,8 +557,15 @@ export default function Home() {
   const [counterResult, setCounterResult] = useState<CounterResult | null>(null);
   const [duoResult, setDuoResult] = useState<DuoResult | null>(null);
   const [adviceResult, setAdviceResult] = useState<AdviceResult | null>(null);
+  const [buildResult, setBuildResult] = useState<BuildResult | null>(null);
+  /** Build recommendation auto-fetched alongside 라인 카운터's own result, for
+   * the same champion+position — separate from buildResult (the dedicated
+   * 빌드 tab's own fetch) so switching modes doesn't clobber either. */
+  const [counterBuild, setCounterBuild] = useState<BuildResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [championPool, setChampionPool] = useState<ChampionPool>(EMPTY_POOL);
+  const [poolLoaded, setPoolLoaded] = useState(false);
 
   useEffect(() => {
     fetch("/api/champions")
@@ -145,6 +573,51 @@ export default function Home() {
       .then((data) => setChampions(data.champions))
       .catch(() => setChampLoadError("챔피언 목록을 불러오지 못했습니다."));
   }, []);
+
+  // localStorage read must happen after mount (SSR has no window) — this
+  // deliberately runs once, before the write-back effect below is armed via
+  // poolLoaded, so an empty initial state never overwrites a saved pool.
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(POOL_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        // Must run after mount (SSR has no localStorage); reading it any
+        // earlier would make the server/client hydration render disagree.
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        setChampionPool({
+          1: Array.isArray(parsed[1]) ? parsed[1] : [],
+          2: Array.isArray(parsed[2]) ? parsed[2] : [],
+          3: Array.isArray(parsed[3]) ? parsed[3] : [],
+        });
+      }
+    } catch {
+      // corrupt or unavailable storage — keep the default empty pool
+    }
+    setPoolLoaded(true);
+  }, []);
+
+  useEffect(() => {
+    if (!poolLoaded) return;
+    try {
+      localStorage.setItem(POOL_STORAGE_KEY, JSON.stringify(championPool));
+    } catch {
+      // storage unavailable (private browsing, quota) — pool just won't persist
+    }
+  }, [championPool, poolLoaded]);
+
+  function toggleChampionInPool(tier: 1 | 2 | 3, championId: number) {
+    setChampionPool((prev) => {
+      const inThisTier = prev[tier].includes(championId);
+      const next: ChampionPool = {
+        1: prev[1].filter((id) => id !== championId),
+        2: prev[2].filter((id) => id !== championId),
+        3: prev[3].filter((id) => id !== championId),
+      };
+      if (!inThisTier) next[tier] = [...next[tier], championId];
+      return next;
+    });
+  }
 
   const championById = useMemo(() => {
     const map = new Map<number, ChampionSummary>();
@@ -158,7 +631,9 @@ export default function Home() {
     setCounterResult(null);
     setDuoResult(null);
     setAdviceResult(null);
-    if (next === "counter") {
+    setBuildResult(null);
+    setCounterBuild(null);
+    if (next === "counter" || next === "build") {
       const nextSlots: Slot[] = [{ key: "target", label: "기준 챔피언", championId: null }];
       setSlots(nextSlots);
       setActiveSlotKey(nextSlots[0].key);
@@ -172,25 +647,24 @@ export default function Home() {
     } else {
       const nextSlots = adviceSlotsFor(position);
       setSlots(nextSlots);
-      setActiveSlotKey(nextSlots[0].key);
+      setActiveSlotKey(`enemy-${position}`);
     }
   }
 
   /** Position tabs are shared by counter mode and advice mode. In advice
-   * mode, changing position also reshapes the slot list (the ally-ADC slot
-   * only makes sense when picking support) while preserving any selection
-   * still relevant. */
+   * mode, changing position moves which ally slot is "my pick" (disabled,
+   * not fillable) — the slot keys themselves stay stable, so existing
+   * selections in every other slot are preserved. */
   function changePosition(next: string) {
     setPosition(next);
     if (mode === "advice") {
-      setSlots((prev) => {
-        const nextSlots = adviceSlotsFor(next);
-        return nextSlots.map((s) => ({
-          ...s,
-          championId: prev.find((p) => p.key === s.key)?.championId ?? null,
-        }));
-      });
-      setActiveSlotKey("enemyLane");
+      setSlots((prev) =>
+        prev.map((s) => {
+          const isSelf = s.key === `ally-${next}`;
+          return { ...s, disabled: isSelf, championId: isSelf ? null : s.championId };
+        }),
+      );
+      setActiveSlotKey(`enemy-${next}`);
       setAdviceResult(null);
     }
   }
@@ -198,7 +672,9 @@ export default function Home() {
   function assignActiveSlot(championId: number) {
     setSlots((prev) => {
       const next = prev.map((s) => (s.key === activeSlotKey ? { ...s, championId } : s));
-      const nextEmpty = next.find((s) => s.key !== activeSlotKey && s.championId === null);
+      const nextEmpty = next.find(
+        (s) => s.key !== activeSlotKey && s.championId === null && !s.disabled,
+      );
       if (nextEmpty) setActiveSlotKey(nextEmpty.key);
       return next;
     });
@@ -213,7 +689,7 @@ export default function Home() {
   const pickerSelectedIds = activeSlotChampionId !== null ? [activeSlotChampionId] : [];
 
   const canRun =
-    mode === "counter"
+    mode === "counter" || mode === "build"
       ? slots[0]?.championId !== null
       : mode === "duo"
         ? slots.every((s) => s.championId !== null)
@@ -229,6 +705,21 @@ export default function Home() {
         const data = await res.json();
         if (!res.ok) throw new Error(data.error ?? "조회에 실패했습니다.");
         setCounterResult(data);
+        setCounterBuild(null);
+        fetch(`/api/build?championId=${championId}&position=${position}`)
+          .then((r) => r.json().then((d) => ({ ok: r.ok, data: d })))
+          .then(({ ok, data: buildData }) => {
+            if (ok) setCounterBuild(buildData);
+          })
+          .catch(() => {
+            // Best-effort — 라인 카운터 결과 자체는 이미 떴으니 조용히 무시.
+          });
+      } else if (mode === "build") {
+        const championId = slots[0].championId;
+        const res = await fetch(`/api/build?championId=${championId}&position=${position}`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error ?? "빌드 조회에 실패했습니다.");
+        setBuildResult(data);
       } else if (mode === "duo") {
         const adcId = slots.find((s) => s.key === "adc")?.championId;
         const supportId = slots.find((s) => s.key === "support")?.championId;
@@ -237,15 +728,13 @@ export default function Home() {
         if (!res.ok) throw new Error(data.error ?? "조회에 실패했습니다.");
         setDuoResult(data);
       } else {
-        const enemyLaneId = slots.find((s) => s.key === "enemyLane")?.championId;
-        const allyAdcId = slots.find((s) => s.key === "allyAdc")?.championId;
         const params = new URLSearchParams({ position });
-        if (enemyLaneId !== null && enemyLaneId !== undefined) {
-          params.set("enemyLaneChampionId", String(enemyLaneId));
+        for (const slot of slots) {
+          if (slot.championId !== null) params.set(slot.key, String(slot.championId));
         }
-        if (allyAdcId !== null && allyAdcId !== undefined) {
-          params.set("allyAdcChampionId", String(allyAdcId));
-        }
+        if (championPool[1].length > 0) params.set("tier1", championPool[1].join(","));
+        if (championPool[2].length > 0) params.set("tier2", championPool[2].join(","));
+        if (championPool[3].length > 0) params.set("tier3", championPool[3].join(","));
         const res = await fetch(`/api/pickadvice?${params.toString()}`);
         const data = await res.json();
         if (!res.ok) throw new Error(data.error ?? "조회에 실패했습니다.");
@@ -258,10 +747,41 @@ export default function Home() {
     }
   }
 
+  function renderSlot(slot: Slot) {
+    if (slot.disabled) {
+      return (
+        <div key={slot.key} className="slot slot--disabled" title="추천 대상 자리">
+          <span>{slot.label} (내 픽)</span>
+        </div>
+      );
+    }
+    const champ = slot.championId !== null ? championById.get(slot.championId) : null;
+    const active = slot.key === activeSlotKey;
+    return (
+      <button
+        key={slot.key}
+        type="button"
+        className={`slot${active ? " slot--active" : ""}${champ ? "" : " slot--empty"}`}
+        onClick={() => (champ ? clearSlot(slot.key) : setActiveSlotKey(slot.key))}
+      >
+        {champ ? (
+          <>
+            <ChampionIcon src={champ.iconUrl} name={champ.name} />
+            <span>{champ.name}</span>
+          </>
+        ) : (
+          <span>{slot.label} 선택</span>
+        )}
+      </button>
+    );
+  }
+
   return (
     <main className="page">
       <header className="page-header">
-        <h1>LoL 라인 카운터 / 바텀 듀오 / 픽 추천</h1>
+        <h1>
+          GGOBIS <span className="page-header-kr">꼬비스</span>
+        </h1>
         <p>op.gg, u.gg, lolalytics 등 여러 사이트의 실제 통계를 요청할 때마다 실시간으로 가져와 보여줍니다 (자체 DB 없음).</p>
       </header>
 
@@ -287,9 +807,16 @@ export default function Home() {
         >
           픽 추천
         </button>
+        <button
+          type="button"
+          className={mode === "build" ? "tab tab--active" : "tab"}
+          onClick={() => switchMode("build")}
+        >
+          빌드
+        </button>
       </div>
 
-      {(mode === "counter" || mode === "advice") && (
+      {(mode === "counter" || mode === "advice" || mode === "build") && (
         <div className="position-tabs">
           {POSITIONS.map((p) => (
             <button
@@ -306,36 +833,53 @@ export default function Home() {
 
       {mode === "advice" && (
         <p className="empty-hint">
-          내가 픽할 포지션을 고른 뒤, 상대가 같은 라인에 이미 픽한 챔피언과(있다면) 우리팀 원거리 딜러를
-          입력하면 좋은 픽을 추천해드려요. 시너지 추천은 서포터를 픽할 때만 제공됩니다(원딜 쪽에서 시너지
-          좋은 서포터 목록을 보여주는 페이지만 확인됐어요).
+          우리팀/상대팀 각 라인에 이미 정해진 챔피언이 있으면 채워보세요. <strong>내 픽 추천</strong>의 실제
+          승률은
+          <strong> 상대 {POSITIONS.find((p) => p.value === position)?.label} 라이너</strong>
+          {position === "support" && (
+            <>
+              {" "}
+              와 <strong>우리팀 원거리 딜러</strong>
+            </>
+          )}
+          와의 매치업에서만 가져와요(사이트에 다른 포지션 상대와의 실측 데이터는 없어요). 대신 순위를 매길 때는{" "}
+          <strong>상대팀에 채워둔 다른 챔피언들도</strong> 함께 봐서, 상대에 탱커가 없으면 암살자를, 상대가
+          전사/암살자 위주면 튼튼한 후보를 조금 더 우선해요(<span className="comp-fit-badge">상대팀 조합에 적합</span>{" "}
+          배지로 표시 — 실제 승률보다는 낮은 비중). 그 외에 이미 양 팀 다 채워진 라인이 있거나 우리팀 원딜+서포터가
+          둘 다 있으면 <strong>실측 데이터 기반 전체 시너지</strong>(실제 스크래핑한 승률을 조합)와{" "}
+          <strong>챔피언 특성 기반 조합 분석</strong>(승률이 아니라 Riot 공식 챔피언 태그/능력치로 보는
+          역할군·데미지 타입 균형)도 아래에 따로 보여드려요.
         </p>
       )}
 
+      {mode === "advice" && (
+        <ChampionPoolEditor
+          champions={champions}
+          championById={championById}
+          pool={championPool}
+          onToggleChampion={toggleChampionInPool}
+        />
+      )}
+
       <section className="selected-bar">
-        <div className="slot-row">
-          {slots.map((slot) => {
-            const champ = slot.championId !== null ? championById.get(slot.championId) : null;
-            const active = slot.key === activeSlotKey;
-            return (
-              <button
-                key={slot.key}
-                type="button"
-                className={`slot${active ? " slot--active" : ""}${champ ? "" : " slot--empty"}`}
-                onClick={() => (champ ? clearSlot(slot.key) : setActiveSlotKey(slot.key))}
-              >
-                {champ ? (
-                  <>
-                    <ChampionIcon src={champ.iconUrl} name={champ.name} />
-                    <span>{champ.name}</span>
-                  </>
-                ) : (
-                  <span>{slot.label} 선택</span>
-                )}
-              </button>
-            );
-          })}
-        </div>
+        {mode === "advice" ? (
+          <div className="draft-board">
+            <div className="draft-team-row">
+              <span className="draft-team-label">우리팀</span>
+              <div className="draft-row">
+                {slots.filter((s) => s.key.startsWith("ally-")).map((slot) => renderSlot(slot))}
+              </div>
+            </div>
+            <div className="draft-team-row">
+              <span className="draft-team-label">상대팀</span>
+              <div className="draft-row">
+                {slots.filter((s) => s.key.startsWith("enemy-")).map((slot) => renderSlot(slot))}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="slot-row">{slots.map((slot) => renderSlot(slot))}</div>
+        )}
         <button type="button" className="run-button" disabled={!canRun || loading} onClick={runLookup}>
           {loading
             ? "조회 중..."
@@ -343,7 +887,9 @@ export default function Home() {
               ? "카운터 조회"
               : mode === "duo"
                 ? "듀오 시너지 조회"
-                : "픽 추천 받기"}
+                : mode === "build"
+                  ? "빌드 조회"
+                  : "픽 추천 받기"}
         </button>
       </section>
 
@@ -389,6 +935,22 @@ export default function Home() {
               <p className="empty-hint">카운터 데이터를 찾지 못했습니다.</p>
             )}
           </ol>
+
+          {counterBuild && (
+            <>
+              <h3>{counterResult.champion.name} 추천 빌드</h3>
+              <BuildCard build={counterBuild} />
+            </>
+          )}
+        </section>
+      )}
+
+      {mode === "build" && buildResult && (
+        <section className="results">
+          <h2>
+            {buildResult.champion.name} ({POSITIONS.find((p) => p.value === buildResult.position)?.label}) 빌드
+          </h2>
+          <BuildCard build={buildResult} />
         </section>
       )}
 
@@ -416,6 +978,9 @@ export default function Home() {
       {mode === "advice" && adviceResult && (
         <section className="results">
           <h2>{POSITIONS.find((p) => p.value === adviceResult.position)?.label} 픽 추천</h2>
+          {adviceResult.championPoolActive && (
+            <p className="empty-hint">내 챔피언 풀 안에서만, 티어 순서를 우선해서 추천 중입니다.</p>
+          )}
 
           {adviceResult.combinedPicks.length > 0 && (
             <>
@@ -430,11 +995,13 @@ export default function Home() {
                     <div className="recommend-row-main">
                       <ChampionIcon src={c.iconUrl} name={c.name} />
                       <span className="recommend-name">{c.name}</span>
+                      <TierBadge tier={c.tier} />
                     </div>
                     <p className="empty-hint">
                       라인전 {(c.counterWinRate * 100).toFixed(1)}% · 시너지{" "}
                       {(c.synergyWinRate * 100).toFixed(1)}%
                     </p>
+                    <CompFitBadge compFit={c.compFit} />
                   </li>
                 ))}
               </ol>
@@ -452,13 +1019,21 @@ export default function Home() {
                       <div className="recommend-row-main">
                         <ChampionIcon src={c.iconUrl} name={c.name} />
                         <span className="recommend-name">{c.name}</span>
+                        <TierBadge tier={c.tier} />
                         <WinRateBar rate={c.winRate} games={c.games} />
                       </div>
                       <SourceBreakdown sources={c.bySource} />
+                      <PowerCurveBadge earlyWinRate={c.earlyWinRate} lateWinRate={c.lateWinRate} />
+                      <CompFitBadge compFit={c.compFit} />
+                      {c.build && <BuildCardCompact build={c.build} />}
                     </li>
                   ))}
                   {adviceResult.counterPicks.length === 0 && (
-                    <p className="empty-hint">카운터 데이터를 찾지 못했습니다.</p>
+                    <p className="empty-hint">
+                      {adviceResult.championPoolActive
+                        ? "내 챔피언 풀 안에는 이 상대에 대한 카운터 데이터가 없습니다. 풀을 넓혀보세요."
+                        : "카운터 데이터를 찾지 못했습니다."}
+                    </p>
                   )}
                 </ol>
               )}
@@ -476,16 +1051,124 @@ export default function Home() {
                       <div className="recommend-row-main">
                         <ChampionIcon src={c.iconUrl} name={c.name} />
                         <span className="recommend-name">{c.name}</span>
+                        <TierBadge tier={c.tier} />
                         <WinRateBar rate={c.winRate} games={c.games} />
                       </div>
                       <SourceBreakdown sources={c.bySource} />
+                      <PowerCurveBadge earlyWinRate={c.earlyWinRate} lateWinRate={c.lateWinRate} />
+                      <CompFitBadge compFit={c.compFit} />
+                      {c.build && <BuildCardCompact build={c.build} />}
                     </li>
                   ))}
                   {adviceResult.synergyPicks.length === 0 && (
-                    <p className="empty-hint">시너지 데이터를 찾지 못했습니다.</p>
+                    <p className="empty-hint">
+                      {adviceResult.championPoolActive
+                        ? "내 챔피언 풀 안에는 이 조합에 대한 시너지 데이터가 없습니다. 풀을 넓혀보세요."
+                        : "시너지 데이터를 찾지 못했습니다."}
+                    </p>
                   )}
                 </ol>
               )}
+            </>
+          )}
+
+          {(adviceResult.measuredSynergy.lanes.length > 0 || adviceResult.measuredSynergy.duo) && (
+            <>
+              <h3>실측 데이터 기반 전체 시너지</h3>
+              <p className="empty-hint">
+                양 팀 다 채워진 라인의 실제 매치업 승률과 우리팀 원딜+서포터의 실제 듀오 승률을 그대로
+                보여줍니다(우리 시점 승률로 환산).
+                {adviceResult.measuredSynergy.overallScore !== null && (
+                  <>
+                    {" "}
+                    평균 <strong>{(adviceResult.measuredSynergy.overallScore * 100).toFixed(1)}%</strong>
+                  </>
+                )}
+              </p>
+              <ol className="recommend-list">
+                {adviceResult.measuredSynergy.lanes.map((l) => (
+                  <li key={l.position} className="recommend-row recommend-row--stacked">
+                    <div className="recommend-row-main">
+                      <ChampionIcon src={l.ally.iconUrl} name={l.ally.name} />
+                      <span className="recommend-name">
+                        {POSITIONS.find((p) => p.value === l.position)?.label}: {l.ally.name} vs{" "}
+                        {l.enemy.name}
+                      </span>
+                      {l.winRate !== null && l.games !== null ? (
+                        <WinRateBar rate={l.winRate} games={l.games} />
+                      ) : (
+                        <span className="empty-hint">{l.error ?? "이 매치업 데이터를 찾지 못했습니다."}</span>
+                      )}
+                    </div>
+                    {l.bySource.length > 0 && <SourceBreakdown sources={l.bySource} />}
+                  </li>
+                ))}
+                {adviceResult.measuredSynergy.duo && (
+                  <li className="recommend-row recommend-row--stacked">
+                    <div className="recommend-row-main">
+                      <ChampionIcon
+                        src={adviceResult.measuredSynergy.duo.adc.iconUrl}
+                        name={adviceResult.measuredSynergy.duo.adc.name}
+                      />
+                      <span className="recommend-name">
+                        바텀 듀오: {adviceResult.measuredSynergy.duo.adc.name} +{" "}
+                        {adviceResult.measuredSynergy.duo.support.name}
+                      </span>
+                      {adviceResult.measuredSynergy.duo.winRate !== null &&
+                      adviceResult.measuredSynergy.duo.games !== null ? (
+                        <WinRateBar
+                          rate={adviceResult.measuredSynergy.duo.winRate}
+                          games={adviceResult.measuredSynergy.duo.games}
+                        />
+                      ) : (
+                        <span className="empty-hint">
+                          {adviceResult.measuredSynergy.duo.error ?? "이 조합 데이터를 찾지 못했습니다."}
+                        </span>
+                      )}
+                    </div>
+                    {adviceResult.measuredSynergy.duo.bySource.length > 0 && (
+                      <SourceBreakdown sources={adviceResult.measuredSynergy.duo.bySource} />
+                    )}
+                  </li>
+                )}
+              </ol>
+            </>
+          )}
+
+          {(adviceResult.compHeuristic.ally || adviceResult.compHeuristic.enemy) && (
+            <>
+              <h3>챔피언 특성 기반 조합 분석</h3>
+              <p className="empty-hint">
+                승률이 아니라 Riot 공식 챔피언 태그·능력치(공격형/마법형 비중)만 이용한 참고용 체크입니다.
+                CC기·이니시 성향처럼 공식 데이터로 확인 안 되는 항목은 포함하지 않았습니다.
+              </p>
+              <div className="comp-heuristic-grid">
+                {adviceResult.compHeuristic.ally && (
+                  <CompCard title="우리팀" analysis={adviceResult.compHeuristic.ally} />
+                )}
+                {adviceResult.compHeuristic.enemy && (
+                  <CompCard title="상대팀" analysis={adviceResult.compHeuristic.enemy} />
+                )}
+              </div>
+            </>
+          )}
+
+          {(adviceResult.compConcepts.ally || adviceResult.compConcepts.enemy) && (
+            <>
+              <h3>조합 컨셉 (돌진 · 포킹 · 쌍포 · 한타 · 스플릿)</h3>
+              <p className="empty-hint">
+                실제 승률 데이터가 아니라, 채워진 챔피언들의 태그·스킬 구성만으로 어떤 컨셉에 가까운지 추정한
+                참고용 체크입니다.
+              </p>
+              <div className="comp-heuristic-grid">
+                {adviceResult.compConcepts.ally && (
+                  <CompConceptCard title="우리팀" analysis={adviceResult.compConcepts.ally} tipsVariant="pilot" />
+                )}
+                {adviceResult.compConcepts.enemy && (
+                  <CompConceptCard title="상대팀" analysis={adviceResult.compConcepts.enemy} tipsVariant="counter" />
+                )}
+              </div>
+              <ConceptMatchupNote matchup={adviceResult.compConcepts.matchup} />
             </>
           )}
         </section>
