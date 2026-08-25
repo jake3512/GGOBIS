@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import {
   getChampionsWithFallback,
   getItemsWithCache,
+  getLatestVersion,
   getRunesDataWithCache,
   getSummonerSpellsWithCache,
   type DDragonChampion,
@@ -11,20 +12,23 @@ import { getAggregatedDuoCandidates, getAggregatedLaneCounters } from "@/lib/sou
 import type { AggregatedCounters } from "@/lib/sources/aggregate";
 import { getChampionBuild, getPowerCurvesForPosition } from "@/lib/sources/lolps";
 import { toBuildResult, type BuildResult } from "@/lib/buildRefs";
-import { analyzeTeamComp, scoreEnemyCompFit } from "@/lib/teamComp";
+import { analyzeTeamComp, applySkillFitBonus, scoreEnemyCompFit } from "@/lib/teamComp";
+import { getChampionAbilitiesWithCache, type ChampionAbilities } from "@/lib/championSkills";
 
-// Only the top handful of each recommendation list gets a power-curve/build
-// lookup — the list itself can be 20-40 champions long, and fetching
-// lol.ps's per-champion pages for all of them on every request would be
-// wasteful. The top picks are what the user actually looks at.
+// Only the top handful of each recommendation list gets a power-curve/build/
+// skill-kit lookup — the list itself can be 20-40 champions long, and
+// fetching a per-champion page/detail file for all of them on every request
+// would be wasteful. The top picks are what the user actually looks at.
 const POWER_CURVE_CANDIDATE_LIMIT = 5;
 const BUILD_CANDIDATE_LIMIT = 5;
+const SKILL_FIT_CANDIDATE_LIMIT = 5;
 
-// How much the enemy-comp-fit heuristic (tags/stats vs the FULL filled-in
-// enemy roster) is allowed to move the ranking, next to real scraped win
-// rates. Real data stays dominant — this can only nudge order among close
-// picks, never flip a clear lane-counter/synergy edge. See
-// rerankByEnemyCompFit below and scoreEnemyCompFit in teamComp.ts.
+// How much the enemy-comp-fit heuristics (tags/stats, and separately actual
+// skill kits, vs the FULL filled-in enemy roster) are allowed to move the
+// ranking, next to real scraped win rates. Real data stays dominant — this
+// can only nudge order among close picks, never flip a clear lane-counter/
+// synergy edge. See rerankByEnemyCompFit/refineTopWithSkillFit below and
+// scoreEnemyCompFit/applySkillFitBonus in teamComp.ts.
 const PICK_REAL_WEIGHT = 0.75;
 const PICK_FIT_WEIGHT = 0.25;
 
@@ -138,6 +142,62 @@ function rerankByEnemyCompFit(
       const rankB = PICK_REAL_WEIGHT * goodnessB + PICK_FIT_WEIGHT * b.compFit!;
       return rankB - rankA;
     });
+}
+
+/** Refines the top N entries of `picks` (mutated in place, then re-sorted)
+ * using each side's ACTUAL passive/Q/W/E/R kit instead of just the coarse
+ * champion tags rerankByEnemyCompFit already applied — see
+ * applySkillFitBonus/championSkills.ts for what that adds and why it's
+ * bounded to a shortlist (one Data Dragon request per champion). Re-sorts
+ * only that shortlist, and tier (from a champion pool, if active) is kept
+ * as the dominant key so this never reorders across tiers — it only
+ * refines the order within whatever restrictToPool already grouped
+ * together. Best-effort: any failure (Data Dragon down, shape changed)
+ * just leaves the tag-based compFit from rerankByEnemyCompFit as-is. */
+async function refineTopWithSkillFit(
+  picks: PickEntry[],
+  champById: Map<number, DDragonChampion>,
+  enemyChamps: DDragonChampion[],
+  order: "asc" | "desc",
+): Promise<void> {
+  const top = picks.slice(0, SKILL_FIT_CANDIDATE_LIMIT);
+  if (top.length === 0 || enemyChamps.length === 0) return;
+  try {
+    const version = await getLatestVersion();
+    const enemyResults = await Promise.allSettled(
+      enemyChamps.map((c) => getChampionAbilitiesWithCache(c.slug, version)),
+    );
+    const enemyAbilities = enemyResults
+      .filter((r): r is PromiseFulfilledResult<ChampionAbilities> => r.status === "fulfilled")
+      .map((r) => r.value);
+    if (enemyAbilities.length === 0) return;
+
+    const candidateResults = await Promise.allSettled(
+      top.map((p) => {
+        const champ = champById.get(p.championId);
+        if (!champ) return Promise.reject(new Error("unknown champion"));
+        return getChampionAbilitiesWithCache(champ.slug, version);
+      }),
+    );
+    top.forEach((entry, i) => {
+      const r = candidateResults[i];
+      if (r.status !== "fulfilled") return;
+      entry.compFit = applySkillFitBonus(entry.compFit ?? 0.5, r.value, enemyAbilities);
+    });
+
+    top.sort((a, b) => {
+      const tierDiff = (a.tier ?? 0) - (b.tier ?? 0);
+      if (tierDiff !== 0) return tierDiff;
+      const goodnessA = order === "asc" ? 1 - a.winRate : a.winRate;
+      const goodnessB = order === "asc" ? 1 - b.winRate : b.winRate;
+      const rankA = PICK_REAL_WEIGHT * goodnessA + PICK_FIT_WEIGHT * (a.compFit ?? 0.5);
+      const rankB = PICK_REAL_WEIGHT * goodnessB + PICK_FIT_WEIGHT * (b.compFit ?? 0.5);
+      return rankB - rankA;
+    });
+    picks.splice(0, top.length, ...top);
+  } catch {
+    // Data Dragon unreachable or shape changed — tag-based compFit stands.
+  }
 }
 
 /** Mutates the top N entries of `picks` in place, attaching lol.ps
@@ -313,6 +373,7 @@ export async function GET(req: Request) {
       const result = await getAggregatedLaneCounters(enemyLaneChampion.slug, position, champions);
       const ranked = rerankByEnemyCompFit(toPickEntries(result, champById, "asc"), champById, enemyChamps, "asc");
       counterPicks = restrictToPool(ranked, tierMap);
+      await refineTopWithSkillFit(counterPicks, champById, enemyChamps, "asc");
       await annotateWithPowerCurve(counterPicks, position);
       await annotateWithBuild(counterPicks, position);
     } catch (err) {
@@ -327,6 +388,7 @@ export async function GET(req: Request) {
       const result = await getAggregatedDuoCandidates(supportAdcChampion.slug, champions);
       const ranked = rerankByEnemyCompFit(toPickEntries(result, champById, "desc"), champById, enemyChamps, "desc");
       synergyPicks = restrictToPool(ranked, tierMap);
+      await refineTopWithSkillFit(synergyPicks, champById, enemyChamps, "desc");
       await annotateWithPowerCurve(synergyPicks, position);
       await annotateWithBuild(synergyPicks, position);
     } catch (err) {

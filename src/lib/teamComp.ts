@@ -11,6 +11,7 @@
 // side of "team synergy".
 
 import type { DDragonChampion } from "@/lib/ddragon";
+import type { ChampionAbilities } from "@/lib/championSkills";
 
 export interface DamageBalance {
   physicalPct: number;
@@ -65,8 +66,9 @@ export function analyzeTeamComp(champs: DDragonChampion[]): TeamCompAnalysis | n
  * already filled in on the enemy side — same "official static data only,
  * no invented win rate" principle as analyzeTeamComp above, just pointed at
  * a single candidate instead of summarizing an existing comp. Deliberately
- * limited to two well-understood, defensible signals (no CC/mobility/init
- * scoring — Data Dragon doesn't publish that, same restraint as above):
+ * limited to two well-understood, defensible signals from Data Dragon's
+ * coarse per-champion `tags`/`info` (see applySkillFitBonus below for a
+ * finer-grained extension using actual per-ability text):
  *
  *  - enemy side has no frontline (no Tank tag among the champions filled
  *    in so far) → burst/assassin candidates get a bonus, since a comp with
@@ -94,6 +96,46 @@ export function scoreEnemyCompFit(candidate: DDragonChampion, enemyChamps: DDrag
   if (enemyIsDiveHeavy) {
     const candidateIsTanky = candidate.tags.includes("Tank") || (candidate.info?.defense ?? 0) >= 6;
     if (candidateIsTanky) score += 0.25;
+  }
+
+  return Math.min(1, Math.max(0, score));
+}
+
+/** Refines a compFit score (from scoreEnemyCompFit, or 0.5 to start fresh)
+ * using each side's ACTUAL passive/Q/W/E/R kit instead of just the coarse
+ * champion tag — see src/lib/championSkills.ts for where hasHardCC/
+ * hasMobility/hasShieldOrHeal come from and the caveat that they're a
+ * keyword-matched heuristic over Riot's own ability text, not an official
+ * taxonomy. Because fetching every champion's full kit is a per-champion
+ * network request, callers only do this for a bounded top-N shortlist (see
+ * SKILL_FIT_CANDIDATE_LIMIT in the pick-advice route) — everyone else keeps
+ * whatever scoreEnemyCompFit already gave them.
+ *
+ * Two signals, mirroring the tag-based ones in spirit but grounded in real
+ * kit content:
+ *  - enemy side has no hard CC of its own (nothing can lock the candidate
+ *    down) → mobility on the candidate is safer to commit, so it's rewarded.
+ *  - enemy side has no escape tools (no mobility, no shield/heal) → hard CC
+ *    on the candidate reliably catches them, so it's rewarded.
+ *
+ * Same clamp-at-1 behavior as scoreEnemyCompFit — this only ever adds on
+ * top of the base score, never subtracts, and the result stays in 0..1. */
+export function applySkillFitBonus(
+  baseScore: number,
+  candidateAbilities: ChampionAbilities,
+  enemyAbilitiesList: ChampionAbilities[],
+): number {
+  if (enemyAbilitiesList.length === 0) return baseScore;
+  let score = baseScore;
+
+  const enemyHasHardCC = enemyAbilitiesList.some((a) => a.hasHardCC);
+  if (!enemyHasHardCC && candidateAbilities.hasMobility) {
+    score += 0.2;
+  }
+
+  const enemyHasEscapeTools = enemyAbilitiesList.some((a) => a.hasMobility || a.hasShieldOrHeal);
+  if (!enemyHasEscapeTools && candidateAbilities.hasHardCC) {
+    score += 0.2;
   }
 
   return Math.min(1, Math.max(0, score));
