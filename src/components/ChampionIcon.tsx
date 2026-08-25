@@ -14,6 +14,11 @@ export function ChampionIcon({
       alt={name}
       className={className}
       loading="lazy"
+      // Data Dragon's rune-icon path in particular has been reported to
+      // mishandle requests carrying a Referer from an unrecognized site
+      // (returns a malformed response instead of a clean 4xx) — omitting
+      // the Referer sidesteps that regardless of the exact cause.
+      referrerPolicy="no-referrer"
       onError={(e) => {
         e.currentTarget.style.visibility = "hidden";
       }}
