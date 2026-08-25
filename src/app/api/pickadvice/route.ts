@@ -14,6 +14,7 @@ import { getChampionBuild, getPowerCurvesForPosition } from "@/lib/sources/lolps
 import { toBuildResult, type BuildResult } from "@/lib/buildRefs";
 import { analyzeTeamComp, applySkillFitBonus, scoreEnemyCompFit } from "@/lib/teamComp";
 import { getChampionAbilitiesWithCache, type ChampionAbilities } from "@/lib/championSkills";
+import { analyzeCompConcepts, lookupConceptMatchup } from "@/lib/compConcepts";
 
 // Only the top handful of each recommendation list gets a power-curve/build/
 // skill-kit lookup — the list itself can be 20-40 champions long, and
@@ -198,6 +199,24 @@ async function refineTopWithSkillFit(
   } catch {
     // Data Dragon unreachable or shape changed — tag-based compFit stands.
   }
+}
+
+/** Best-effort fetches abilities for a bounded set of already-picked
+ * champions (at most 5 per side — the draft board, not a candidate list),
+ * for the comp-concept analysis below. Failures for individual champions
+ * are silently dropped (Promise.allSettled) — analyzeCompConcepts already
+ * treats a missing entry as "no ability data for this one", not a hard
+ * failure, same as every other best-effort annotation in this route. */
+async function fetchAbilitiesMap(
+  champs: DDragonChampion[],
+  version: string,
+): Promise<Map<number, ChampionAbilities>> {
+  const results = await Promise.allSettled(champs.map((c) => getChampionAbilitiesWithCache(c.slug, version)));
+  const map = new Map<number, ChampionAbilities>();
+  results.forEach((r, i) => {
+    if (r.status === "fulfilled") map.set(champs[i].id, r.value);
+  });
+  return map;
 }
 
 /** Mutates the top N entries of `picks` in place, attaching lol.ps
@@ -524,6 +543,35 @@ export async function GET(req: Request) {
     enemy: analyzeTeamComp(enemyChamps),
   };
 
+  // --- 조합 컨셉(돌진/포킹/쌍포/한타/스플릿) 감지 + 정적 상성 참고표.
+  // src/lib/compConcepts.ts 참고 — 실측 승률이 아니라 전략 지식 참고표임을
+  // 응답에도 명시. 픽 추천(counterPicks 등)과 달리 이미 채워진 최대 10명
+  // (양 팀 5명씩)만 다루므로 후보 리스트 규모 걱정 없이 매 요청 시도. ---
+  let compConcepts: {
+    ally: ReturnType<typeof analyzeCompConcepts>;
+    enemy: ReturnType<typeof analyzeCompConcepts>;
+    matchup: ReturnType<typeof lookupConceptMatchup>;
+  } = { ally: null, enemy: null, matchup: null };
+  try {
+    const version = await getLatestVersion();
+    const [allyAbilities, enemyAbilities] = await Promise.all([
+      fetchAbilitiesMap(allyChamps, version),
+      fetchAbilitiesMap(enemyChamps, version),
+    ]);
+    const allyConcepts = analyzeCompConcepts(allyChamps, allyAbilities);
+    const enemyConcepts = analyzeCompConcepts(enemyChamps, enemyAbilities);
+    compConcepts = {
+      ally: allyConcepts,
+      enemy: enemyConcepts,
+      matchup:
+        allyConcepts?.dominant && enemyConcepts?.dominant
+          ? lookupConceptMatchup(allyConcepts.dominant, enemyConcepts.dominant)
+          : null,
+    };
+  } catch {
+    // Data Dragon unreachable — leave compConcepts at the all-null default.
+  }
+
   return NextResponse.json({
     position,
     enemyLaneChampion: enemyLaneChampion ? toBrief(enemyLaneChampion) : null,
@@ -536,5 +584,6 @@ export async function GET(req: Request) {
     combinedPicks,
     measuredSynergy,
     compHeuristic,
+    compConcepts,
   });
 }

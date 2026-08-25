@@ -129,6 +129,32 @@ interface CompHeuristic {
   enemy: TeamCompAnalysis | null;
 }
 
+type CompConceptId = "engage" | "poke" | "protect" | "teamfight" | "splitPush";
+
+interface CompConceptScore {
+  id: CompConceptId;
+  matchCount: number;
+  matchedChampionIds: number[];
+}
+
+interface CompConceptAnalysis {
+  filledCount: number;
+  scores: CompConceptScore[];
+  dominant: CompConceptId | null;
+}
+
+interface ConceptMatchup {
+  favors: CompConceptId;
+  against: CompConceptId;
+  reason: string;
+}
+
+interface CompConcepts {
+  ally: CompConceptAnalysis | null;
+  enemy: CompConceptAnalysis | null;
+  matchup: ConceptMatchup | null;
+}
+
 interface AdviceResult {
   position: string;
   enemyLaneChampion: ChampionBrief | null;
@@ -141,7 +167,16 @@ interface AdviceResult {
   combinedPicks: CombinedPickEntry[];
   measuredSynergy: MeasuredSynergy;
   compHeuristic: CompHeuristic;
+  compConcepts: CompConcepts;
 }
+
+const COMP_CONCEPT_LABELS: Record<CompConceptId, string> = {
+  engage: "돌진/이니시",
+  poke: "포킹",
+  protect: "쌍포/보호",
+  teamfight: "한타",
+  splitPush: "스플릿 푸시",
+};
 
 /** User-declared champion pool for 픽 추천, split by mastery tier (1 =
  * most proficient). Persisted to localStorage so it survives reloads —
@@ -214,6 +249,49 @@ function CompCard({ title, analysis }: { title: string; analysis: TeamCompAnalys
         </p>
       )}
     </div>
+  );
+}
+
+/** How many of the filled champions fit each of the five known comp
+ * concepts (돌진/포킹/쌍포/한타/스플릿) — see compConcepts.ts server-side.
+ * Not a percentage or a rate; deliberately shown as a plain "N/필요 인원"
+ * count so it doesn't read as more precise than the underlying heuristic
+ * actually is. */
+function CompConceptCard({ title, analysis }: { title: string; analysis: CompConceptAnalysis }) {
+  return (
+    <div className="comp-card">
+      <h4>{title} 조합 컨셉</h4>
+      {analysis.dominant ? (
+        <p className="concept-dominant-label">{COMP_CONCEPT_LABELS[analysis.dominant]} 성향</p>
+      ) : (
+        <p className="empty-hint">뚜렷한 컨셉 없음 (혼합형)</p>
+      )}
+      <ul className="concept-score-list">
+        {analysis.scores.map((s) => (
+          <li key={s.id}>
+            <span>{COMP_CONCEPT_LABELS[s.id]}</span>
+            <span className="empty-hint">
+              {s.matchCount}/{analysis.filledCount}명
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/** Static concept-vs-concept strategic note (see CONCEPT_MATCHUPS in
+ * compConcepts.ts) — only shown when BOTH sides have a clear dominant
+ * concept AND there's an established note for that specific pair
+ * (most cross-pairs involving 한타/스플릿 don't have one, by design). */
+function ConceptMatchupNote({ matchup }: { matchup: ConceptMatchup | null }) {
+  if (!matchup) return null;
+  return (
+    <p className="concept-matchup-note">
+      일반적으로 <strong>{COMP_CONCEPT_LABELS[matchup.favors]}</strong>이(가){" "}
+      <strong>{COMP_CONCEPT_LABELS[matchup.against]}</strong>에 유리한 편이에요 — {matchup.reason}. (실제 승률
+      데이터가 아니라 일반적인 전략 경향입니다)
+    </p>
   );
 }
 
@@ -983,6 +1061,25 @@ export default function Home() {
                   <CompCard title="상대팀" analysis={adviceResult.compHeuristic.enemy} />
                 )}
               </div>
+            </>
+          )}
+
+          {(adviceResult.compConcepts.ally || adviceResult.compConcepts.enemy) && (
+            <>
+              <h3>조합 컨셉 (돌진 · 포킹 · 쌍포 · 한타 · 스플릿)</h3>
+              <p className="empty-hint">
+                실제 승률 데이터가 아니라, 채워진 챔피언들의 태그·스킬 구성만으로 어떤 컨셉에 가까운지 추정한
+                참고용 체크입니다.
+              </p>
+              <div className="comp-heuristic-grid">
+                {adviceResult.compConcepts.ally && (
+                  <CompConceptCard title="우리팀" analysis={adviceResult.compConcepts.ally} />
+                )}
+                {adviceResult.compConcepts.enemy && (
+                  <CompConceptCard title="상대팀" analysis={adviceResult.compConcepts.enemy} />
+                )}
+              </div>
+              <ConceptMatchupNote matchup={adviceResult.compConcepts.matchup} />
             </>
           )}
         </section>

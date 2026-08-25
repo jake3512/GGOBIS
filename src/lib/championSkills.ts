@@ -28,6 +28,11 @@ export interface AbilitySummary {
   /** HTML-stripped description text, official Riot copy (Korean by default). */
   description: string;
   tags: AbilityTag[];
+  /** Max cast range across ranks, straight from Data Dragon's numeric
+   * `range` field (real data, not inferred) — 0/undefined for passives and
+   * self-cast spells. Used as the poke signal in compConcepts.ts: a
+   * champion whose kit has no long-range spell can't really "poke". */
+  maxRange?: number;
 }
 
 export interface ChampionAbilities {
@@ -37,6 +42,8 @@ export interface ChampionAbilities {
   hasHardCC: boolean;
   hasMobility: boolean;
   hasShieldOrHeal: boolean;
+  /** Any non-ultimate spell (Q/W/E) with maxRange >= LONG_RANGE_THRESHOLD. */
+  hasLongRange: boolean;
 }
 
 // Root Korean terms for each tag. Matched as plain substrings (not full
@@ -51,6 +58,12 @@ const SLOW_TERMS = ["둔화"];
 const MOBILITY_TERMS = ["돌진", "도약", "순간 이동"];
 const SHIELD_TERMS = ["보호막"];
 const HEAL_TERMS = ["체력을 회복", "체력 회복", "체력을 재생", "생명력을 흡수"];
+
+// Riot's own numeric spell range (not a keyword heuristic) — 900 is a
+// common rough cutoff between "has to walk up" and "can hit from a real
+// distance" in LoL's own terms (basic attacks/melee range top out well
+// below this; most auto-attack-range-ish abilities sit under it too).
+const LONG_RANGE_THRESHOLD = 900;
 
 function stripHtml(s: string): string {
   return s
@@ -73,10 +86,17 @@ function classify(text: string): AbilityTag[] {
 
 function toAbilitySummary(
   key: AbilitySummary["key"],
-  raw: { name: string; description?: string; tooltip?: string },
+  raw: { name: string; description?: string; tooltip?: string; range?: number[] },
 ): AbilitySummary {
   const text = stripHtml(`${raw.description ?? ""} ${raw.tooltip ?? ""}`);
-  return { key, name: raw.name, description: stripHtml(raw.description ?? ""), tags: classify(text) };
+  const maxRange = Array.isArray(raw.range) && raw.range.length > 0 ? Math.max(...raw.range) : undefined;
+  return {
+    key,
+    name: raw.name,
+    description: stripHtml(raw.description ?? ""),
+    tags: classify(text),
+    maxRange,
+  };
 }
 
 const cache = new Map<string, { value: ChampionAbilities; fetchedAt: number }>();
@@ -95,9 +115,13 @@ async function fetchChampionAbilities(slug: string, locale: string, version: str
 
   const passive = toAbilitySummary("P", raw.passive);
   const spellKeys: AbilitySummary["key"][] = ["Q", "W", "E", "R"];
-  const spells = (raw.spells as { name: string; description?: string; tooltip?: string }[]).map((s, i) =>
-    toAbilitySummary(spellKeys[i], s),
+  const spells = (raw.spells as { name: string; description?: string; tooltip?: string; range?: number[] }[]).map(
+    (s, i) => toAbilitySummary(spellKeys[i], s),
   );
+  // Poke reads on the basic-ability arsenal (Q/W/E), not the ultimate —
+  // most champions have at least one long-range R (global/near-global
+  // ultimates), which would make hasLongRange meaningless if it counted.
+  const nonUltimateSpells = spells.slice(0, 3);
 
   return {
     slug,
@@ -106,6 +130,7 @@ async function fetchChampionAbilities(slug: string, locale: string, version: str
     hasHardCC: [passive, ...spells].some((a) => a.tags.includes("hardCC")),
     hasMobility: [passive, ...spells].some((a) => a.tags.includes("mobility")),
     hasShieldOrHeal: [passive, ...spells].some((a) => a.tags.includes("shield") || a.tags.includes("heal")),
+    hasLongRange: nonUltimateSpells.some((a) => (a.maxRange ?? 0) >= LONG_RANGE_THRESHOLD),
   };
 }
 
