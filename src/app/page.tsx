@@ -178,6 +178,71 @@ const COMP_CONCEPT_LABELS: Record<CompConceptId, string> = {
   splitPush: "스플릿 푸시",
 };
 
+/** How to pilot each comp concept, shown under our own team's card when
+ * that concept is dominant. Same footing as CONCEPT_MATCHUPS server-side —
+ * general LoL strategy knowledge (not measured data, not computed from any
+ * per-request signal), kept here since it's purely static presentational
+ * content, matching how COMP_CONCEPT_LABELS/TAG_LABELS are also just
+ * frontend-local lookup tables rather than round-tripped through the API. */
+const CONCEPT_PILOT_TIPS: Record<CompConceptId, string[]> = {
+  engage: [
+    "핵심 딜러(원거리 딜러·마법사)부터 끊는 각을 보고 들어가세요 — 아무나 물면 역으로 둘러싸입니다.",
+    "혼자 다이브하지 말고 팀 CC와 함께 들어가야 이니시가 오래 유지됩니다.",
+    "상대 진형이 흩어졌을 때를 노리세요 — 뭉쳐있을 때 들어가면 받아쳐집니다.",
+  ],
+  poke: [
+    "정면 교전을 피하고 사거리 밖에서 스킬로 지속적으로 딜을 넣으세요.",
+    "상대가 무리하게 들어올 때만 짧게 교전하고 바로 빠지세요.",
+    "오브젝트 앞에서 미리 소모시킨 뒤 유리할 때만 싸움을 여세요.",
+  ],
+  protect: [
+    "캐리를 팀원들이 감싸고, 캐리는 안전 거리에서 딜만 넣으세요.",
+    "보호막·CC는 캐리에게 우선 사용하고, 무리한 선타는 자제하세요.",
+    "한타에서 캐리가 죽지 않으면 시간이 지날수록 유리해집니다 — 서두르지 마세요.",
+  ],
+  teamfight: [
+    "진형을 잡고 5:5를 유도하세요 — 무리한 단독 교전은 피하세요.",
+    "핵심 CC(궁극기)를 먼저 쓰기보다 상대가 먼저 쓰게 유도하세요.",
+    "오브젝트(바론·드래곤) 앞 교전을 적극적으로 노리세요.",
+  ],
+  splitPush: [
+    "사이드 라인을 지속적으로 압박하고, 상대가 몰려오면 빠지세요.",
+    "텔레포트·귀환 타이밍을 계산해서 다른 라인 교전에 합류하세요.",
+    "무리하게 혼자 오브젝트를 다투지 말고 라인 CS·타워를 우선하세요.",
+  ],
+};
+
+/** How to play AGAINST each comp concept, shown under the enemy team's card
+ * when that concept is dominant on their side. Same static-knowledge
+ * footing as CONCEPT_PILOT_TIPS above. */
+const CONCEPT_COUNTER_TIPS: Record<CompConceptId, string[]> = {
+  engage: [
+    "무리하게 앞으로 나가지 말고, 스킬 CC로 이니시 각을 미리 끊으세요.",
+    "핵심 캐리는 항상 팀원 뒤에 두고, 플래시·보호기를 아끼세요.",
+    "그룹 상태에서 갑자기 갭클로저가 들어오면 흩어져서 각개 대응하세요.",
+  ],
+  poke: [
+    "뭉쳐서 스킬을 오래 맞지 말고, 사거리 안에서만 짧게 교전하세요.",
+    "장막·은신 등으로 스킬 각을 피하며 접근하세요.",
+    "빠르게 거리를 좁혀서 포킹 챔피언을 근접전으로 끌어들이세요.",
+  ],
+  protect: [
+    "캐리를 직접 노리기보다 보호막·CC를 먼저 소모시키세요.",
+    "여러 방향에서 접근해 보호를 분산시키세요.",
+    "장기전보다 빠른 승부(오브젝트 스틸, 스플릿)로 게임을 짧게 가져가세요.",
+  ],
+  teamfight: [
+    "5:5를 피하고 갈라져서 사이드 라인 이득을 챙기세요.",
+    "시야로 상대 동선을 파악해 불리한 한타를 피하세요.",
+    "핵심 CC 궁극기 쿨타임을 파악하고 그 타이밍에만 교전하세요.",
+  ],
+  splitPush: [
+    "1:1로 상대하지 말고 2인 이상으로 스플릿 챔피언을 견제하세요.",
+    "스플릿 챔피언이 혼자 있을 때 팀 전체가 다른 목표(오브젝트)를 챙기세요.",
+    "시야로 스플릿 챔피언 위치를 계속 확인해 기습을 피하세요.",
+  ],
+};
+
 /** User-declared champion pool for 픽 추천, split by mastery tier (1 =
  * most proficient). Persisted to localStorage so it survives reloads —
  * there's no backend/DB in this app, so the browser is the only place it
@@ -256,8 +321,22 @@ function CompCard({ title, analysis }: { title: string; analysis: TeamCompAnalys
  * concepts (돌진/포킹/쌍포/한타/스플릿) — see compConcepts.ts server-side.
  * Not a percentage or a rate; deliberately shown as a plain "N/필요 인원"
  * count so it doesn't read as more precise than the underlying heuristic
- * actually is. */
-function CompConceptCard({ title, analysis }: { title: string; analysis: CompConceptAnalysis }) {
+ * actually is. When a concept is dominant, also shows play tips — "pilot"
+ * (how to play this comp) for our own team, "counter" (how to play against
+ * it) for the enemy's — from the static CONCEPT_PILOT_TIPS/
+ * CONCEPT_COUNTER_TIPS tables above. */
+function CompConceptCard({
+  title,
+  analysis,
+  tipsVariant,
+}: {
+  title: string;
+  analysis: CompConceptAnalysis;
+  tipsVariant: "pilot" | "counter";
+}) {
+  const tips = analysis.dominant
+    ? (tipsVariant === "pilot" ? CONCEPT_PILOT_TIPS : CONCEPT_COUNTER_TIPS)[analysis.dominant]
+    : null;
   return (
     <div className="comp-card">
       <h4>{title} 조합 컨셉</h4>
@@ -276,6 +355,16 @@ function CompConceptCard({ title, analysis }: { title: string; analysis: CompCon
           </li>
         ))}
       </ul>
+      {tips && (
+        <>
+          <p className="concept-tips-label">{tipsVariant === "pilot" ? "플레이 팁" : "대처 팁"}</p>
+          <ul className="concept-tips-list">
+            {tips.map((tip) => (
+              <li key={tip}>{tip}</li>
+            ))}
+          </ul>
+        </>
+      )}
     </div>
   );
 }
@@ -1073,10 +1162,10 @@ export default function Home() {
               </p>
               <div className="comp-heuristic-grid">
                 {adviceResult.compConcepts.ally && (
-                  <CompConceptCard title="우리팀" analysis={adviceResult.compConcepts.ally} />
+                  <CompConceptCard title="우리팀" analysis={adviceResult.compConcepts.ally} tipsVariant="pilot" />
                 )}
                 {adviceResult.compConcepts.enemy && (
-                  <CompConceptCard title="상대팀" analysis={adviceResult.compConcepts.enemy} />
+                  <CompConceptCard title="상대팀" analysis={adviceResult.compConcepts.enemy} tipsVariant="counter" />
                 )}
               </div>
               <ConceptMatchupNote matchup={adviceResult.compConcepts.matchup} />

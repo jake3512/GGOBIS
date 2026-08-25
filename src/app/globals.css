@@ -457,6 +457,24 @@ textarea {
   font-size: 0.85rem;
 }
 
+.concept-tips-label {
+  margin: 0.7rem 0 0.3rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.concept-tips-list {
+  margin: 0;
+  padding-left: 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.85rem;
+}
+
 .concept-matchup-note {
   color: var(--muted);
   font-size: 0.85rem;
