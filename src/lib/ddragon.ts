@@ -2,8 +2,14 @@
 // icons, and — importantly for src/lib/sources/ — the canonical slug used
 // to build each stat site's champion URLs).
 
-import { readFile } from "node:fs/promises";
-import path from "node:path";
+// Static import, not fs.readFile(path.join(process.cwd(), ...)) — a
+// runtime-constructed fs path like that is invisible to Next.js's file
+// tracing, so Vercel's serverless bundler has no way to know this JSON file
+// needs to ship with the function. It silently works in `next dev` (full
+// filesystem available) and just as silently 404s/ENOENTs in production,
+// which is a well-known Vercel/Next.js gotcha. A static import is bundled
+// like any other module import, so it's guaranteed to be present.
+import fallbackChampionsData from "../../data/fallback-champions.json";
 
 const DDRAGON_BASE = "https://ddragon.leagueoflegends.com";
 
@@ -88,12 +94,8 @@ export async function getChampions(
 let cachedChampions: { value: DDragonChampion[]; fetchedAt: number } | null = null;
 const CHAMPIONS_TTL_MS = 60 * 60 * 1000; // 1 hour
 
-async function loadFallbackChampions(): Promise<DDragonChampion[]> {
-  const raw = await readFile(
-    path.join(process.cwd(), "data", "fallback-champions.json"),
-    "utf-8",
-  );
-  const snapshot = JSON.parse(raw) as {
+function loadFallbackChampions(): DDragonChampion[] {
+  const snapshot = fallbackChampionsData as {
     ddragonVersion: string;
     champions: { id: number; slug: string; name: string; title: string; tags: string[] }[];
   };
