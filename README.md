@@ -48,7 +48,7 @@ DB도, API 키도 필요 없습니다. `npm install && npm run dev`만으로 뜹
 
 ## 동작 원리
 
-1. 챔피언 목록/아이콘은 Data Dragon에서 가져옵니다 (`src/lib/ddragon.ts`, 1시간 캐시, 오프라인이면 `data/fallback-champions.json`으로 대체).
+1. 챔피언 목록/아이콘은 Data Dragon에서 가져옵니다 (`src/lib/ddragon.ts`, 1시간 캐시, 오프라인이면 `data/fallback-champions.json`으로 대체 — 이 파일은 `fs.readFile(path.join(process.cwd(), ...))`가 아니라 정적 `import`로 불러옵니다. 런타임에 조립한 파일 경로는 Next.js가 추적을 못 해서 Vercel 서버리스 번들에 안 딸려갈 수 있는 잘 알려진 함정이라, 로컬(`next dev`)에서는 멀쩡히 동작하다가 배포 후에만 깨질 수 있습니다).
 2. 카운터/듀오를 조회하면 등록된 6개 소스에 **동시에** 요청을 보냅니다 (`src/lib/sources/aggregate.ts`, `Promise.allSettled`로 일부가 실패해도 나머지로 계속 진행).
 3. 각 소스는 해당 챔피언의 페이지를 fetch해서, 페이지에 내장된 상태를 파싱해 통계를 뽑아냅니다 (`src/lib/scrape.ts`). 두 가지 임베딩 방식을 지원합니다: 구형 `__NEXT_DATA__`/`__NUXT__` 단일 JSON 블록, 그리고 최신 Next.js App Router가 쓰는 `self.__next_f.push(...)` RSC Flight 스트림(여러 개의 `id:value` 줄로 쪼개져 있고, 값 부분만 따로 JSON 파싱). op.gg가 실제로 후자 방식이라는 걸 실제 페이지 소스로 확인했습니다.
 4. 같은 상대 챔피언에 대해 여러 소스가 값을 준 경우, **게임 수가 가장 많은 소스**를 대표값으로 쓰고 상위 3개 소스를 같이 보여줍니다.
