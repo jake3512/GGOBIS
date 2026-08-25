@@ -1,16 +1,24 @@
 import { NextResponse } from "next/server";
-import { getChampionsWithFallback, type DDragonChampion } from "@/lib/ddragon";
+import {
+  getChampionsWithFallback,
+  getItemsWithCache,
+  getRunesDataWithCache,
+  getSummonerSpellsWithCache,
+  type DDragonChampion,
+} from "@/lib/ddragon";
 import { POSITIONS, type Position } from "@/lib/positions";
 import { getAggregatedDuoCandidates, getAggregatedLaneCounters } from "@/lib/sources/aggregate";
 import type { AggregatedCounters } from "@/lib/sources/aggregate";
-import { getPowerCurvesForPosition } from "@/lib/sources/lolps";
+import { getChampionBuild, getPowerCurvesForPosition } from "@/lib/sources/lolps";
+import { toBuildResult, type BuildResult } from "@/lib/buildRefs";
 import { analyzeTeamComp } from "@/lib/teamComp";
 
-// Only the top handful of each recommendation list gets a power-curve
+// Only the top handful of each recommendation list gets a power-curve/build
 // lookup — the list itself can be 20-40 champions long, and fetching
-// lol.ps's per-champion graphs.json for all of them on every request would
-// be wasteful. The top picks are what the user actually looks at.
+// lol.ps's per-champion pages for all of them on every request would be
+// wasteful. The top picks are what the user actually looks at.
 const POWER_CURVE_CANDIDATE_LIMIT = 5;
+const BUILD_CANDIDATE_LIMIT = 5;
 
 const VALID_POSITIONS = new Set(POSITIONS.map((p) => p.value));
 
@@ -39,6 +47,9 @@ interface PickEntry {
    * champion's lol.ps data actually covers this position. */
   earlyWinRate?: number | null;
   lateWinRate?: number | null;
+  /** lol.ps build recommendation — same top-N-only, same-position-only
+   * limits as the power curve above. */
+  build?: BuildResult | null;
 }
 
 /** Mutates the top N entries of `picks` in place, attaching lol.ps
@@ -62,6 +73,35 @@ async function annotateWithPowerCurve(picks: PickEntry[], position: Position): P
     }
   } catch {
     // lol.ps unreachable or shape changed — leave power-curve fields unset.
+  }
+}
+
+/** Mutates the top N entries of `picks` in place, attaching a lol.ps build
+ * recommendation where available. Best-effort like annotateWithPowerCurve —
+ * failures (lol.ps or Data Dragon down, no matching lane data for that
+ * candidate) just leave `build` unset for that entry. */
+async function annotateWithBuild(picks: PickEntry[], position: Position): Promise<void> {
+  const top = picks.slice(0, BUILD_CANDIDATE_LIMIT);
+  if (top.length === 0) return;
+  try {
+    const [items, spells, runesData] = await Promise.all([
+      getItemsWithCache(),
+      getSummonerSpellsWithCache(),
+      getRunesDataWithCache(),
+    ]);
+    const results = await Promise.allSettled(top.map((p) => getChampionBuild(p.championId, position)));
+    results.forEach((r, i) => {
+      if (r.status !== "fulfilled") return;
+      const entry = top[i];
+      entry.build = toBuildResult(
+        { id: entry.championId, name: entry.name, iconUrl: entry.iconUrl },
+        position,
+        r.value,
+        { items, spells, runes: runesData.runes, trees: runesData.trees },
+      );
+    });
+  } catch {
+    // Data Dragon or lol.ps unreachable — leave build fields unset.
   }
 }
 
@@ -169,6 +209,7 @@ export async function GET(req: Request) {
       const result = await getAggregatedLaneCounters(enemyLaneChampion.slug, position, champions);
       counterPicks = toPickEntries(result, champById, "asc");
       await annotateWithPowerCurve(counterPicks, position);
+      await annotateWithBuild(counterPicks, position);
     } catch (err) {
       counterError = err instanceof Error ? err.message : "라인전 카운터 조회에 실패했습니다.";
     }
@@ -181,6 +222,7 @@ export async function GET(req: Request) {
       const result = await getAggregatedDuoCandidates(supportAdcChampion.slug, champions);
       synergyPicks = toPickEntries(result, champById, "desc");
       await annotateWithPowerCurve(synergyPicks, position);
+      await annotateWithBuild(synergyPicks, position);
     } catch (err) {
       synergyError = err instanceof Error ? err.message : "시너지 조회에 실패했습니다.";
     }

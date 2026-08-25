@@ -12,6 +12,12 @@
   나머지 칸(예: 서로 채워지지 않은 라인)은 지금 당장은 위 세 계산 어디에도 쓰이지 않는, 더 많은 사이트를 연동하면 활용할 수 있도록 미리 마련해둔 자리라는 걸 화면에도 명시해뒀습니다. 1번 시너지 추천이 서포터를 픽할 때만 제공되는 이유는, 확인된 사이트 데이터가 "원거리 딜러 → 시너지 좋은 서포터" 방향의 목록만 있고 반대 방향이나 탑/정글/미드의 팀 시너지 데이터는 확인된 소스가 없기 때문입니다.
 
   **파워 커브(초반/후반 성향)**: 1번 "내 픽 추천" 목록의 상위 5개 후보에는 lol.ps의 분당 승률 그래프(`/api/champ/{id}/graphs.json`)를 추가로 붙여서 "초반 몇 %, 후반 몇 %"를 함께 보여줍니다. 둘의 차이가 크면 "(초반형)"/"(후반형)" 표시도 붙습니다. 이 데이터는 op.gg 등의 카운터/승률 데이터와는 별개로, lol.ps만 제공하는 값입니다. 사용자가 브라우저에서 HAR(전체 네트워크 캡처)을 떠서 찾아준 덕분에 발견한 엔드포인트라, `version`/`tier`/`region` 파라미터는 op.gg의 `patch`와 같은 이유로 일부러 뺐습니다(생략 시 최신 데이터로 기본 동작하길 기대하는 것으로, 아직 확정은 아님) — 그리고 champSummary와 같은 한계로 이 값도 그 챔피언 자신의 주 라인 데이터만 주기 때문에, 요청한 포지션과 일치할 때만 붙습니다. 표본이 많은 상위 5개에만 붙는 이유는 후보 목록 전체(20~40명)에 대해 매번 추가로 그래프를 조회하는 게 낭비이기 때문입니다.
+- **빌드 추천** (룬/스펠/아이템/스킬 순서): lol.ps 챔피언 페이지에 이미 내장돼 있던 같은 `champSummary` 블록에서 카운터 데이터와 함께 뽑아냅니다 — 별도 네트워크 요청이 추가로 필요 없습니다. 세 곳에서 볼 수 있습니다.
+  1. **빌드 탭**: 챔피언+라인만 고르면 룬(메인/서브 트리+개별 룬), 스펠 조합, 시작 아이템, 핵심 3아이템, 전체 빌드 순서(신발 포함), 스킬 마스터리 순서, 레벨 1~15 스킬업 순서를 각각의 승률/표본 수와 함께 보여줍니다.
+  2. **라인 카운터 결과**: 조회한 기준 챔피언의 빌드 카드가 카운터 목록 아래에 자동으로 같이 붙습니다.
+  3. **픽 추천 결과**: "내 픽 추천"의 상위 5개 후보에 한해, 룬 키스톤+스펠+핵심 아이템만 담은 축약 카드가 각 후보 옆에 붙습니다 (파워 커브와 동일하게 상위 5개·같은 라인일 때만 — 아래 참고).
+
+  아이템/스펠/룬 이름·아이콘은 Riot Data Dragon의 공식 정적 데이터(`item.json`/`summoner.json`/`runesReforged.json`)로 채웁니다. 룬 아이콘 경로만 다른 Data Dragon 이미지들과 달리 패치 버전이 안 붙는 `/cdn/img/` 접두사를 쓴다는 걸 확인해서 별도 처리했습니다. champSummary 데이터를 재사용하다 보니 파워 커브/카운터와 완전히 같은 한계를 그대로 물려받습니다: 그 챔피언의 **주 라인 데이터만** 제공되므로 요청한 포지션과 다르면 에러로 표시되고(`getChampionBuild`), 파워 커브와 마찬가지로 픽 추천에서는 표본이 있는 상위 5개 후보에만 조회를 붙입니다.
 - 매칭당 표본(게임 수)이 가장 많은 소스를 대표값으로 쓰고, **표본이 많은 순으로 최대 3개 소스**를 함께 보여줍니다.
 
 > ⚠️ 이런 전적 사이트들은 자동 수집을 약관으로 제한하는 경우가 많습니다. 이 앱은 **개인용 학습 프로젝트**를 전제로 최소한의 페이지만, 짧은 캐시를 두고 가져옵니다. 실사용/공개 배포 전에 각 사이트의 이용약관을 직접 확인하세요.
@@ -43,7 +49,7 @@ DB도, API 키도 필요 없습니다. `npm install && npm run dev`만으로 뜹
 | lolalytics | 중간 | 라인 매치업 데이터로 유명. `lane` 파라미터명 추정. "Could not find embedded page data" 에러가 났던 걸 보면 이쪽도 App Router/Flight 방식일 가능성이 있음 (op.gg와 같은 원인일 수 있음) |
 | Mobalytics | 낮음 | 챔피언 슬러그가 하이픈(kebab-case)을 쓴다는 것만 어느 정도 확신, 나머지는 일반 패턴 추정 |
 | DeepLoL | 낮음 | 요청하신 "deep.lol"은 아마 **deeplol.gg**를 말씀하신 것 같아 그쪽으로 연동했습니다. 도메인이 다르면 알려주세요 |
-| lol.ps | 중간 | **URL과 데이터 구조 확정**: `https://lol.ps/champ/{championId}` — 슬러그가 아니라 Riot 공식 숫자 championId를 그대로 씀. op.gg와 완전히 다른 SvelteKit 사이트라 전용 어댑터로 따로 구현(`src/lib/sources/lolps.ts`, `genericSource.ts` 안 씀). 페이지에 내장된 `champSummary` 데이터에 카운터 목록이 병렬 배열(`counterChampionIdList`/`counterWinrateList`/`counterCountList`, "쉬운 상대"용 `counterEasy*` 세트)로 미리 계산되어 들어있어서 다른 소스보다 오히려 깔끔함. **알려진 제약**: 화면의 라인 탭(탑/정글/미드/바텀/서폿)을 눌러 라인을 바꾸는 게 어떤 요청으로 이루어지는지 여러 방법(쿼리 파라미터, Network 탭 전체 필터)으로도 못 찾았음 — `https://lol.ps/champ/{id}`로 요청하면 그 챔피언이 **가장 많이 가는 라인**의 데이터만 받아옴. 그래서 이 소스는 사용자가 고른 라인이 챔피언의 주 라인과 일치할 때만(응답의 `laneId`로 확인) 데이터를 보여주고, 안 맞으면 조용히 스킵함(틀린 라인 데이터를 보여주지 않기 위함). 바텀 듀오 시너지 페이지는 아직 위치를 못 찾아서 미지원. **추가 발견**: 사용자가 브라우저 Network 탭 전체를 HAR로 캡처해서 찾아준 덕분에, "통계" 탭의 분당 승률 그래프가 `https://lol.ps/api/champ/{id}/graphs.json?range=two_weeks` 라는 별도의 깨끗한 JSON API(`timelineWinrates`, 분당 승률 배열)에서 온다는 것도 확인해서 픽 추천의 초반/후반 성향 표시에 반영함(`getPowerCurvesForPosition`) — 이것도 champSummary와 같은 이유로 라인 일치 여부를 확인함 |
+| lol.ps | 중간 | **URL과 데이터 구조 확정**: `https://lol.ps/champ/{championId}` — 슬러그가 아니라 Riot 공식 숫자 championId를 그대로 씀. op.gg와 완전히 다른 SvelteKit 사이트라 전용 어댑터로 따로 구현(`src/lib/sources/lolps.ts`, `genericSource.ts` 안 씀). 페이지에 내장된 `champSummary` 데이터에 카운터 목록이 병렬 배열(`counterChampionIdList`/`counterWinrateList`/`counterCountList`, "쉬운 상대"용 `counterEasy*` 세트)로 미리 계산되어 들어있어서 다른 소스보다 오히려 깔끔함. **알려진 제약**: 화면의 라인 탭(탑/정글/미드/바텀/서폿)을 눌러 라인을 바꾸는 게 어떤 요청으로 이루어지는지 여러 방법(쿼리 파라미터, Network 탭 전체 필터)으로도 못 찾았음 — `https://lol.ps/champ/{id}`로 요청하면 그 챔피언이 **가장 많이 가는 라인**의 데이터만 받아옴. 그래서 이 소스는 사용자가 고른 라인이 챔피언의 주 라인과 일치할 때만(응답의 `laneId`로 확인) 데이터를 보여주고, 안 맞으면 조용히 스킵함(틀린 라인 데이터를 보여주지 않기 위함). 바텀 듀오 시너지 페이지는 아직 위치를 못 찾아서 미지원. **추가 발견**: 사용자가 브라우저 Network 탭 전체를 HAR로 캡처해서 찾아준 덕분에, "통계" 탭의 분당 승률 그래프가 `https://lol.ps/api/champ/{id}/graphs.json?range=two_weeks` 라는 별도의 깨끗한 JSON API(`timelineWinrates`, 분당 승률 배열)에서 온다는 것도 확인해서 픽 추천의 초반/후반 성향 표시에 반영함(`getPowerCurvesForPosition`) — 이것도 champSummary와 같은 이유로 라인 일치 여부를 확인함. **빌드 추천 데이터도 같은 champSummary 블록 안에 이미 들어있었음**: 룬(`mainRuneCategory`/`mainRune1~4`/`subRuneCategory`/`subRune1~2`), 스펠(`spell1Id`/`spell2Id`), 시작/핵심/전체 아이템(`startingItemIdList`/`top1ThreeCoreIdList`/`coreItemIdList`/`shoesId`), 스킬 순서(`skillMasterList`/`skillLv15List`)까지 전부 파싱해서 씀(`parseChampionBuild`, `getChampionBuild`). 이 과정에서 기존 `extractNumberField` 파서의 버그도 하나 발견해 고쳤음: `championId`/`laneId`류 필드는 순수 숫자로 박혀있지만 `runeTotalWinrate`/`startingWinrate`/`top1ThreeCoreWinrate`/`skillMasterWinrate` 같은 **승률 필드는 `"52.72"`처럼 따옴표로 감싼 문자열**이라 기존 정규식(순수 숫자만 매치)이 이 필드들만 조용히 `null`로 반환하고 있었음 — 정규식에 선택적 따옴표(`"?`)를 추가해서 두 형태를 모두 매치하도록 수정, 실제 저장해둔 나서스(챔피언ID 75) 페이지 HTML로 수정 전/후 값을 직접 대조해서 확인함(카운터 쪽 필드는 이미 순수 숫자라 회귀 없음도 같은 방식으로 확인) |
 
 **공통 파싱 로직**(`src/lib/scrape.ts`)은 정확한 JSON 경로를 하드코딩하지 않고, 챔피언 식별 필드(평평한 `championId`류, 또는 op.gg처럼 `champion: {key: "..."}`형태로 중첩된 슬러그) + `winRate`/`wins`류 필드를 동시에 가진 객체가 2개 이상 들어있는 배열을 페이지의 내장 데이터에서 찾는 방식이라 필드명이 조금 달라도, 배열에 마커 값이 섞여 있어도 버틸 여지가 있지만, 근본적으로는 여전히 추정입니다. 중첩 슬러그는 각 소스가 URL을 만들 때 쓰는 것과 동일한 슬러그 변환 함수로 Data Dragon 챔피언 목록을 돌려서 역매핑합니다(`genericSource.ts`의 `buildSlugResolver`).
 
@@ -71,16 +77,19 @@ npm run dev
 ```
 src/
   app/
-    page.tsx                # 메인 UI (라인 카운터 / 바텀 듀오 / 픽 추천 모드)
+    page.tsx                # 메인 UI (라인 카운터 / 바텀 듀오 / 픽 추천 / 빌드 모드)
     api/champions/          # GET 챔피언 목록 (Data Dragon, 폴백 포함)
     api/counters/           # GET 챔피언+라인 → 소스별 카운터 리스트 집계
     api/duo/                # GET ADC+서포터 → 소스별 듀오 시너지 집계
-    api/pickadvice/         # GET 포지션+10칸 드래프트 보드(선택) → 픽 추천 + 실측 전체 시너지 + 조합 분석
+    api/pickadvice/         # GET 포지션+10칸 드래프트 보드(선택) → 픽 추천 + 실측 전체 시너지 + 조합 분석 + (상위 5개) 빌드
+    api/build/               # GET 챔피언+라인 → lol.ps 빌드 추천(룬/스펠/아이템/스킬 순서)
   components/
     ChampionPicker.tsx, ChampionIcon.tsx, WinRateBar.tsx
     SourceBreakdown.tsx      # "op.gg 54% (320게임) · u.gg 52% (150게임)" 배지
+    BuildCard.tsx             # 빌드 카드 (전체용 BuildCard / 픽 추천용 축약형 BuildCardCompact)
   lib/
-    ddragon.ts               # Data Dragon 클라이언트 (+ 오프라인 폴백)
+    ddragon.ts               # Data Dragon 클라이언트 (+ 오프라인 폴백; 챔피언 외에 아이템/스펠/룬 데이터도 여기서 캐시)
+    buildRefs.ts              # lol.ps 빌드 원시 ID → {id, name, iconUrl} 매핑 (api/build, api/pickadvice 공용)
     positions.ts             # 라인(포지션) 목록/타입
     cache.ts                 # 짧은 TTL 인메모리 캐시
     scrape.ts                # 공통 HTML fetch + 내장 JSON 파싱/탐색 유틸
@@ -89,7 +98,7 @@ src/
       types.ts               # StatSource 인터페이스
       genericSource.ts        # 사이트 설정 → StatSource 팩토리
       registry.ts             # 6개 사이트 설정 (여기서 URL/슬러그 규칙 수정)
-      lolps.ts                 # lol.ps 전용 어댑터 (genericSource로 안 되는 구조라 직접 구현)
+      lolps.ts                 # lol.ps 전용 어댑터 (genericSource로 안 되는 구조라 직접 구현; 카운터/파워커브/빌드 모두 여기서 파싱)
       aggregate.ts             # 여러 소스를 챔피언별로 합치고 상위 3개만 추림 (라인 카운터 + 듀오 후보 목록 둘 다)
 data/fallback-champions.json # Data Dragon 접근 불가 시 쓰는 오프라인 챔피언 스냅샷
 ```
@@ -116,4 +125,6 @@ data/fallback-champions.json # Data Dragon 접근 불가 시 쓰는 오프라인
 - **소스별 페이지 구조 미검증** (위 "각 소스 연동 신뢰도" 표 참고) — 가장 먼저 확인이 필요한 부분입니다.
 - 인메모리 캐시는 서버리스/재배포 환경에서 인스턴스마다 따로 놀고 쉽게 초기화됩니다. 완전히 신뢰할 캐시가 필요하면 Redis 등 외부 캐시로 바꾸는 걸 권장합니다.
 - 어떤 사이트가 요청을 차단(403/429)하면 그대로 에러로 보여줍니다 — 우회를 시도하지 않습니다. 반복적으로 막힌다면 조회 빈도를 줄이거나 해당 사이트에 이용 허가를 문의하는 걸 권장합니다.
-- 5개 챔피언 전체 조합 평가, 아이템 빌드 추천처럼 이 사이트들의 카운터/듀오 페이지에 없는 통계는 제공하지 않습니다 (실제 존재하는 데이터만 보여주는 쪽으로 방향을 잡았습니다).
+- 5개 챔피언 전체 조합 평가처럼 이 사이트들의 카운터/듀오/빌드 페이지에 없는 통계는 제공하지 않습니다 (실제 존재하는 데이터만 보여주는 쪽으로 방향을 잡았습니다).
+- 빌드 추천은 lol.ps 한 곳의 값만 보여줍니다(다른 5개 소스와 평균/합산하지 않음) — 화면에도 "lol.ps 기준"이라고 명시해뒀습니다. 카운터/듀오처럼 여러 소스를 비교해서 보여주는 형태가 아닙니다.
+- 바텀 듀오 시너지는 op.gg 등에서만 지원되고 lol.ps는 아직 미지원입니다 — lol.ps에 `duo-list.json`이라는 별도 API가 있는 걸 URL로는 확인했지만 응답 본문(Brotli 압축)을 아직 못 받아서 필드 구조를 모릅니다.

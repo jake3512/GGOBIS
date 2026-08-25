@@ -155,6 +155,55 @@ body {
   gap: 0.6rem;
 }
 
+.build-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.build-section h4 {
+  margin: 0 0 0.35rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.build-icon-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.build-icon-row img {
+  border-radius: 6px;
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+}
+
+.build-icon-row--compact {
+  margin-top: 0.4rem;
+}
+
+.build-divider {
+  width: 1px;
+  height: 24px;
+  background: var(--border);
+  margin: 0 0.2rem;
+}
+
+.build-rate {
+  display: inline-block;
+  margin-top: 0.3rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.build-skill-order {
+  margin: 0;
+  font-size: 0.9rem;
+  letter-spacing: 0.02em;
+}
+
 .power-curve-badge {
   display: inline-block;
   margin-top: 0.35rem;

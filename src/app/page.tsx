@@ -5,9 +5,10 @@ import { ChampionPicker, type ChampionSummary } from "@/components/ChampionPicke
 import { ChampionIcon } from "@/components/ChampionIcon";
 import { WinRateBar } from "@/components/WinRateBar";
 import { SourceBreakdown } from "@/components/SourceBreakdown";
+import { BuildCard, BuildCardCompact, type BuildResult } from "@/components/BuildCard";
 import { POSITIONS } from "@/lib/positions";
 
-type Mode = "counter" | "duo" | "advice";
+type Mode = "counter" | "duo" | "advice" | "build";
 
 interface ChampionBrief {
   id: number;
@@ -64,6 +65,7 @@ interface PickEntry {
   bySource: SourceValue[];
   earlyWinRate?: number | null;
   lateWinRate?: number | null;
+  build?: BuildResult | null;
 }
 
 interface CombinedPickEntry {
@@ -248,6 +250,11 @@ export default function Home() {
   const [counterResult, setCounterResult] = useState<CounterResult | null>(null);
   const [duoResult, setDuoResult] = useState<DuoResult | null>(null);
   const [adviceResult, setAdviceResult] = useState<AdviceResult | null>(null);
+  const [buildResult, setBuildResult] = useState<BuildResult | null>(null);
+  /** Build recommendation auto-fetched alongside 라인 카운터's own result, for
+   * the same champion+position — separate from buildResult (the dedicated
+   * 빌드 tab's own fetch) so switching modes doesn't clobber either. */
+  const [counterBuild, setCounterBuild] = useState<BuildResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -270,7 +277,9 @@ export default function Home() {
     setCounterResult(null);
     setDuoResult(null);
     setAdviceResult(null);
-    if (next === "counter") {
+    setBuildResult(null);
+    setCounterBuild(null);
+    if (next === "counter" || next === "build") {
       const nextSlots: Slot[] = [{ key: "target", label: "기준 챔피언", championId: null }];
       setSlots(nextSlots);
       setActiveSlotKey(nextSlots[0].key);
@@ -326,7 +335,7 @@ export default function Home() {
   const pickerSelectedIds = activeSlotChampionId !== null ? [activeSlotChampionId] : [];
 
   const canRun =
-    mode === "counter"
+    mode === "counter" || mode === "build"
       ? slots[0]?.championId !== null
       : mode === "duo"
         ? slots.every((s) => s.championId !== null)
@@ -342,6 +351,21 @@ export default function Home() {
         const data = await res.json();
         if (!res.ok) throw new Error(data.error ?? "조회에 실패했습니다.");
         setCounterResult(data);
+        setCounterBuild(null);
+        fetch(`/api/build?championId=${championId}&position=${position}`)
+          .then((r) => r.json().then((d) => ({ ok: r.ok, data: d })))
+          .then(({ ok, data: buildData }) => {
+            if (ok) setCounterBuild(buildData);
+          })
+          .catch(() => {
+            // Best-effort — 라인 카운터 결과 자체는 이미 떴으니 조용히 무시.
+          });
+      } else if (mode === "build") {
+        const championId = slots[0].championId;
+        const res = await fetch(`/api/build?championId=${championId}&position=${position}`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error ?? "빌드 조회에 실패했습니다.");
+        setBuildResult(data);
       } else if (mode === "duo") {
         const adcId = slots.find((s) => s.key === "adc")?.championId;
         const supportId = slots.find((s) => s.key === "support")?.championId;
@@ -424,9 +448,16 @@ export default function Home() {
         >
           픽 추천
         </button>
+        <button
+          type="button"
+          className={mode === "build" ? "tab tab--active" : "tab"}
+          onClick={() => switchMode("build")}
+        >
+          빌드
+        </button>
       </div>
 
-      {(mode === "counter" || mode === "advice") && (
+      {(mode === "counter" || mode === "advice" || mode === "build") && (
         <div className="position-tabs">
           {POSITIONS.map((p) => (
             <button
@@ -484,7 +515,9 @@ export default function Home() {
               ? "카운터 조회"
               : mode === "duo"
                 ? "듀오 시너지 조회"
-                : "픽 추천 받기"}
+                : mode === "build"
+                  ? "빌드 조회"
+                  : "픽 추천 받기"}
         </button>
       </section>
 
@@ -530,6 +563,22 @@ export default function Home() {
               <p className="empty-hint">카운터 데이터를 찾지 못했습니다.</p>
             )}
           </ol>
+
+          {counterBuild && (
+            <>
+              <h3>{counterResult.champion.name} 추천 빌드</h3>
+              <BuildCard build={counterBuild} />
+            </>
+          )}
+        </section>
+      )}
+
+      {mode === "build" && buildResult && (
+        <section className="results">
+          <h2>
+            {buildResult.champion.name} ({POSITIONS.find((p) => p.value === buildResult.position)?.label}) 빌드
+          </h2>
+          <BuildCard build={buildResult} />
         </section>
       )}
 
@@ -597,6 +646,7 @@ export default function Home() {
                       </div>
                       <SourceBreakdown sources={c.bySource} />
                       <PowerCurveBadge earlyWinRate={c.earlyWinRate} lateWinRate={c.lateWinRate} />
+                      {c.build && <BuildCardCompact build={c.build} />}
                     </li>
                   ))}
                   {adviceResult.counterPicks.length === 0 && (
@@ -622,6 +672,7 @@ export default function Home() {
                       </div>
                       <SourceBreakdown sources={c.bySource} />
                       <PowerCurveBadge earlyWinRate={c.earlyWinRate} lateWinRate={c.lateWinRate} />
+                      {c.build && <BuildCardCompact build={c.build} />}
                     </li>
                   ))}
                   {adviceResult.synergyPicks.length === 0 && (

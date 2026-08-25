@@ -84,8 +84,29 @@ function extractNumberArray(source: string, key: string): number[] {
 }
 
 function extractNumberField(source: string, key: string): number | null {
-  const match = source.match(new RegExp(`${key}:(-?\\d+(?:\\.\\d+)?)`));
+  // Some fields (counts, ids) are raw numbers; others (win/pick/ban rates)
+  // are quoted strings like `"52.72"` — handle both.
+  const match = source.match(new RegExp(`${key}:"?(-?\\d+(?:\\.\\d+)?)"?`));
   return match ? Number(match[1]) : null;
+}
+
+/** Pulls every number out of a (possibly nested) bracketed array, e.g. both
+ * `foo:[1,2,3]` and `foo:[[1],[2,3]]` — used for fields like
+ * startingItemIdList that nest sub-arrays we don't need to distinguish for
+ * display purposes, just the ids in order. */
+function extractFlatNumberArray(source: string, key: string): number[] {
+  const block = extractBalancedArraySource(source, key);
+  if (!block) return [];
+  return (block.match(/-?\d+(?:\.\d+)?/g) ?? []).map(Number).filter((n) => Number.isFinite(n));
+}
+
+function extractStringArray(source: string, key: string): string[] {
+  const match = source.match(new RegExp(`${key}:\\[([^\\]]*)\\]`));
+  if (!match) return [];
+  return match[1]
+    .split(",")
+    .map((s) => s.trim().replace(/^"|"$/g, ""))
+    .filter(Boolean);
 }
 
 interface ChampSummary {
@@ -126,15 +147,126 @@ function parseChampSummary(html: string): ChampSummary | null {
   return { laneId, entries };
 }
 
+/** Both champSummary (counters) and the build data below live in the same
+ * champion-page HTML — fetched and cached once here so parsing either (or
+ * both) never double-fetches the page. */
+function fetchChampPageHtml(championId: number): Promise<string> {
+  return cached(`lolps:page:${championId}`, CACHE_TTL_MS, () =>
+    fetchHtml(`https://lol.ps/champ/${championId}`),
+  );
+}
+
 async function fetchChampSummary(championId: number): Promise<ChampSummary> {
-  return cached(`lolps:champ:${championId}`, CACHE_TTL_MS, async () => {
-    const html = await fetchHtml(`https://lol.ps/champ/${championId}`);
-    const summary = parseChampSummary(html);
-    if (!summary) {
-      throw new Error("lol.ps: fetched the page but couldn't locate matchup data in it.");
-    }
-    return summary;
-  });
+  const html = await fetchChampPageHtml(championId);
+  const summary = parseChampSummary(html);
+  if (!summary) {
+    throw new Error("lol.ps: fetched the page but couldn't locate matchup data in it.");
+  }
+  return summary;
+}
+
+// --- Champion build (items/runes/spells/skill order) ---
+//
+// All pulled from the same champSummary block used for counters above — no
+// extra request needed. Confirmed by hand against the real Nasus
+// champSummary dump (see scrape.ts/lolps.ts history): each entry carries
+// mainRuneCategory/mainRune1-4 (keystone + primary tree), subRuneCategory/
+// subRune1-2 (secondary tree), spell1Id/spell2Id, startingItemIdList,
+// top1ThreeCoreIdList (+ Winrate/Pickrate/Count — the single most-played
+// winning 3-item core), coreItemIdList (fuller 5-item reference order, no
+// dedicated win rate of its own), shoesId, skillMasterList (max-rank skill
+// order, e.g. ["Q","W","E"]) + skillMasterWinrate/Pickrate, and
+// skillLv15List (level 1-15 skill-up order). Same known limitation as
+// getLaneCounters: only reflects the champion's own primary lane.
+export interface ChampionBuild {
+  laneId: number;
+  mainRuneTreeId: number | null;
+  mainRunes: number[];
+  subRuneTreeId: number | null;
+  subRunes: number[];
+  runeWinRate: number | null;
+  runeGames: number | null;
+  spell1Id: number | null;
+  spell2Id: number | null;
+  startingItemIds: number[];
+  startingWinRate: number | null;
+  startingGames: number | null;
+  coreItemIds: number[];
+  coreWinRate: number | null;
+  coreGames: number | null;
+  fullBuildItemIds: number[];
+  shoesId: number | null;
+  skillMaxOrder: string[];
+  skillMaxWinRate: number | null;
+  skillMaxGames: number | null;
+  skillLevelOrder: string[];
+}
+
+function toRate(v: number | null): number | null {
+  if (v === null) return null;
+  return v > 1 ? v / 100 : v;
+}
+
+function parseChampionBuild(html: string): ChampionBuild | null {
+  const block = extractBalancedArraySource(html, "champSummary");
+  if (!block) return null;
+
+  const laneId = extractNumberField(block, "laneId");
+  if (laneId === null) return null;
+
+  return {
+    laneId,
+    mainRuneTreeId: extractNumberField(block, "mainRuneCategory"),
+    mainRunes: [1, 2, 3, 4]
+      .map((n) => extractNumberField(block, `mainRune${n}`))
+      .filter((n): n is number => n !== null),
+    subRuneTreeId: extractNumberField(block, "subRuneCategory"),
+    subRunes: [1, 2]
+      .map((n) => extractNumberField(block, `subRune${n}`))
+      .filter((n): n is number => n !== null),
+    runeWinRate: toRate(extractNumberField(block, "runeTotalWinrate")),
+    runeGames: extractNumberField(block, "runeTotalCount"),
+    spell1Id: extractNumberField(block, "spell1Id"),
+    spell2Id: extractNumberField(block, "spell2Id"),
+    startingItemIds: extractFlatNumberArray(block, "startingItemIdList"),
+    startingWinRate: toRate(extractNumberField(block, "startingWinrate")),
+    startingGames: extractNumberField(block, "startingCount"),
+    coreItemIds: extractFlatNumberArray(block, "top1ThreeCoreIdList"),
+    coreWinRate: toRate(extractNumberField(block, "top1ThreeCoreWinrate")),
+    coreGames: extractNumberField(block, "top1ThreeCoreCount"),
+    fullBuildItemIds: extractFlatNumberArray(block, "coreItemIdList"),
+    shoesId: extractNumberField(block, "shoesId"),
+    skillMaxOrder: extractStringArray(block, "skillMasterList"),
+    skillMaxWinRate: toRate(extractNumberField(block, "skillMasterWinrate")),
+    skillMaxGames: extractNumberField(block, "skillMasterCount"),
+    skillLevelOrder: extractStringArray(block, "skillLv15List"),
+  };
+}
+
+async function fetchChampionBuild(championId: number): Promise<ChampionBuild> {
+  const html = await fetchChampPageHtml(championId);
+  const build = parseChampionBuild(html);
+  if (!build) {
+    throw new Error("lol.ps: fetched the page but couldn't locate build data in it.");
+  }
+  return build;
+}
+
+/** Public entry point: this champion's build (items/runes/spells/skills)
+ * for `position`, or throws if lol.ps's data doesn't cover that position
+ * (same "only the champion's own primary lane" limitation as counters). */
+export async function getChampionBuild(
+  championId: number,
+  position: Position,
+): Promise<ChampionBuild> {
+  const build = await fetchChampionBuild(championId);
+  const actualPosition = LANE_ID_TO_POSITION[build.laneId];
+  if (actualPosition !== position) {
+    throw new Error(
+      `lol.ps: only shows this champion's own primary lane (${actualPosition ?? "알 수 없음"}) — ${position} build data isn't available from this source.`,
+    );
+  }
+  return build;
 }
 
 function resolveChampionId(slug: string, champions: ChampionRef[]): number {
