@@ -10,7 +10,7 @@ import {
 import { POSITIONS, type Position } from "@/lib/positions";
 import { getAggregatedDuoCandidates, getAggregatedLaneCounters } from "@/lib/sources/aggregate";
 import type { AggregatedCounters } from "@/lib/sources/aggregate";
-import { getChampionBuild, getPowerCurvesForPosition } from "@/lib/sources/lolps";
+import { getChampionBuild, getLaneShare, getPowerCurvesForPosition, laneIdToPosition } from "@/lib/sources/lolps";
 import { toBuildResult, type BuildResult } from "@/lib/buildRefs";
 import { analyzeTeamComp, applySkillFitBonus, scoreEnemyCompFit } from "@/lib/teamComp";
 import { getChampionAbilitiesWithCache, type ChampionAbilities } from "@/lib/championSkills";
@@ -23,6 +23,14 @@ import { analyzeCompConcepts, lookupConceptMatchup } from "@/lib/compConcepts";
 const POWER_CURVE_CANDIDATE_LIMIT = 5;
 const BUILD_CANDIDATE_LIMIT = 5;
 const SKILL_FIT_CANDIDATE_LIMIT = 5;
+
+// lol.ps only ever has build data for a champion's own primary lane. A
+// candidate recommended for a different position still gets that primary-
+// lane build shown here (rather than silently omitted) as long as the
+// *requested* position is at least this common among the candidate's own
+// games — filters out showing e.g. a support's build on a jungle
+// recommendation just because they were jungled once in a thousand games.
+const BUILD_LANE_MISMATCH_MIN_SHARE = 0.07;
 
 // How much the enemy-comp-fit heuristics (tags/stats, and separately actual
 // skill kits, vs the FULL filled-in enemy roster) are allowed to move the
@@ -245,8 +253,11 @@ async function annotateWithPowerCurve(picks: PickEntry[], position: Position): P
 
 /** Mutates the top N entries of `picks` in place, attaching a lol.ps build
  * recommendation where available. Best-effort like annotateWithPowerCurve —
- * failures (lol.ps or Data Dragon down, no matching lane data for that
- * candidate) just leave `build` unset for that entry. */
+ * failures (lol.ps or Data Dragon down) just leave `build` unset for that
+ * entry. Shows the champion's own primary-lane build even when it doesn't
+ * match `position`, same as the "빌드" tab, but only when `position` itself
+ * is at least BUILD_LANE_MISMATCH_MIN_SHARE of the candidate's own games —
+ * otherwise (as before) the mismatch just leaves `build` unset. */
 async function annotateWithBuild(picks: PickEntry[], position: Position): Promise<void> {
   const top = picks.slice(0, BUILD_CANDIDATE_LIMIT);
   if (top.length === 0) return;
@@ -256,17 +267,27 @@ async function annotateWithBuild(picks: PickEntry[], position: Position): Promis
       getSummonerSpellsWithCache(),
       getRunesDataWithCache(),
     ]);
-    const results = await Promise.allSettled(top.map((p) => getChampionBuild(p.championId, position)));
-    results.forEach((r, i) => {
-      if (r.status !== "fulfilled") return;
-      const entry = top[i];
-      entry.build = toBuildResult(
-        { id: entry.championId, name: entry.name, iconUrl: entry.iconUrl },
-        position,
-        r.value,
-        { items, spells, runes: runesData.runes, trees: runesData.trees },
-      );
-    });
+    const results = await Promise.allSettled(
+      top.map((p) => getChampionBuild(p.championId, position, { allowMismatch: true })),
+    );
+    await Promise.all(
+      results.map(async (r, i) => {
+        if (r.status !== "fulfilled") return;
+        const build = r.value;
+        const actualPosition = laneIdToPosition(build.laneId);
+        if (actualPosition && actualPosition !== position) {
+          const share = await getLaneShare(top[i].championId, position).catch(() => 0);
+          if (share < BUILD_LANE_MISMATCH_MIN_SHARE) return;
+        }
+        const entry = top[i];
+        entry.build = toBuildResult(
+          { id: entry.championId, name: entry.name, iconUrl: entry.iconUrl },
+          position,
+          build,
+          { items, spells, runes: runesData.runes, trees: runesData.trees },
+        );
+      }),
+    );
   } catch {
     // Data Dragon or lol.ps unreachable — leave build fields unset.
   }

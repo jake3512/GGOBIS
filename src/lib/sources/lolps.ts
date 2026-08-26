@@ -176,6 +176,40 @@ async function fetchChampSummary(championId: number): Promise<ChampSummary> {
   return summary;
 }
 
+/** Per-lane play-rate breakdown from champSummary's `top1LaneId`/
+ * `top1LaneRatio` .. `top5LaneId`/`top5LaneRatio` fields (same "topN"
+ * ranking convention as `top1ThreeCoreIdList` elsewhere in this blob — #1
+ * most-played lane through #5). This is what the file-header comment's
+ * "탑 78.7% / 정글 4.6% / 미드 15.7% / 바텀 0.5% / 서폿 0.6%"
+ * cross-reference was checking against. Returns a 0-1 fraction per
+ * position; a lane absent from the top 5 (essentially never played) isn't
+ * a key in the result. */
+function parseLaneShareRatios(html: string): Partial<Record<Position, number>> {
+  const block = extractBalancedArraySource(html, "champSummary");
+  if (!block) return {};
+  const shares: Partial<Record<Position, number>> = {};
+  for (let n = 1; n <= 5; n++) {
+    const laneId = extractNumberField(block, `top${n}LaneId`);
+    const ratioRaw = extractNumberField(block, `top${n}LaneRatio`);
+    if (laneId === null || ratioRaw === null) continue;
+    const position = LANE_ID_TO_POSITION[laneId];
+    if (!position) continue;
+    shares[position] = ratioRaw > 1 ? ratioRaw / 100 : ratioRaw;
+  }
+  return shares;
+}
+
+/** How often this champion is actually played at `position`, as a 0-1
+ * fraction of their games. Meant for gating "show lol.ps's data anyway on a
+ * lane mismatch" decisions elsewhere (e.g. pick-advice candidates) on
+ * whether `position` is even a real secondary lane for this champion,
+ * rather than a near-never-played fluke. Returns 0 if `position` isn't
+ * among the champion's top 5 played lanes. */
+export async function getLaneShare(championId: number, position: Position): Promise<number> {
+  const html = await fetchChampPageHtml(championId);
+  return parseLaneShareRatios(html)[position] ?? 0;
+}
+
 // --- Champion build (items/runes/spells/skill order) ---
 //
 // All pulled from the same champSummary block used for counters above — no
