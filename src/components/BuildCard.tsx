@@ -57,6 +57,7 @@ export function BuildCard({ build, sourceLabel = "lol.ps" }: { build: BuildResul
   return (
     <div className="build-card">
       <p className="empty-hint">{sourceLabel} 기준 가장 인기 있는 빌드입니다 (다른 소스와 합산된 값이 아님).</p>
+      {build.laneNote && <p className="build-lane-note">⚠ {build.laneNote}</p>}
       {build.overallWinRate !== null && (
         <p className="empty-hint">
           이 빌드 조합 전체:{" "}

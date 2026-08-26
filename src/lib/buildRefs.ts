@@ -41,6 +41,12 @@ export interface BuildResult {
   overallWinRate: number | null;
   overallPickRate: number | null;
   overallGames: number | null;
+  /** Set when this build is shown despite a lane mismatch (currently only
+   * possible for lol.ps, which only ever has data for a champion's own
+   * primary lane — see getChampionBuild's `allowMismatch`). A ready-to-
+   * display Korean caveat naming which lane the numbers actually reflect;
+   * null when the data genuinely matches the requested position. */
+  laneNote: string | null;
 }
 
 export interface BuildRefData {
@@ -55,6 +61,7 @@ export function toBuildResult(
   position: string,
   build: ChampionBuild,
   data: BuildRefData,
+  laneNote: string | null = null,
 ): BuildResult {
   const item = (id: number | null): IconRef | null => (id !== null ? (data.items.get(id) ?? null) : null);
   const items$ = (ids: number[]): IconRef[] => ids.map(item).filter((x): x is IconRef => x !== null);
@@ -89,5 +96,6 @@ export function toBuildResult(
     overallWinRate: build.overallWinRate ?? null,
     overallPickRate: build.overallPickRate ?? null,
     overallGames: build.overallGames ?? null,
+    laneNote,
   };
 }

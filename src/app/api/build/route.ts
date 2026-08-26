@@ -6,9 +6,11 @@ import {
   getSummonerSpellsWithCache,
 } from "@/lib/ddragon";
 import { POSITIONS, type Position } from "@/lib/positions";
-import { getChampionBuild as getLolpsChampionBuild } from "@/lib/sources/lolps";
+import { getChampionBuild as getLolpsChampionBuild, laneIdToPosition } from "@/lib/sources/lolps";
 import { getChampionBuild as getDeeplolChampionBuild } from "@/lib/sources/deeplol";
 import { toBuildResult } from "@/lib/buildRefs";
+
+const POSITION_LABEL = new Map(POSITIONS.map((p) => [p.value, p.label]));
 
 const VALID_POSITIONS = new Set(POSITIONS.map((p) => p.value));
 const VALID_SOURCES = new Set(["lolps", "deeplol"]);
@@ -42,13 +44,23 @@ export async function GET(req: Request) {
   }
 
   try {
-    const getBuild = source === "deeplol" ? getDeeplolChampionBuild : getLolpsChampionBuild;
     const [build, items, spells, runesData] = await Promise.all([
-      getBuild(championId, position),
+      source === "deeplol"
+        ? getDeeplolChampionBuild(championId, position)
+        // lol.ps only ever has data for a champion's own primary lane —
+        // allowMismatch shows it anyway (with a lane caveat below) instead
+        // of failing the whole request when it doesn't match `position`.
+        : getLolpsChampionBuild(championId, position, { allowMismatch: true }),
       getItemsWithCache(),
       getSummonerSpellsWithCache(),
       getRunesDataWithCache(),
     ]);
+
+    const actualPosition = source === "lolps" ? laneIdToPosition(build.laneId) : position;
+    const laneNote =
+      actualPosition && actualPosition !== position
+        ? `lol.ps는 이 챔피언의 ${POSITION_LABEL.get(actualPosition) ?? actualPosition} 라인 데이터만 갖고 있어요 (요청한 라인: ${POSITION_LABEL.get(position) ?? position}). 아래 빌드는 실제로 ${POSITION_LABEL.get(actualPosition) ?? actualPosition} 기준입니다.`
+        : null;
 
     return NextResponse.json(
       toBuildResult(
@@ -56,6 +68,7 @@ export async function GET(req: Request) {
         position,
         build,
         { items, spells, runes: runesData.runes, trees: runesData.trees },
+        laneNote,
       ),
     );
   } catch (err) {

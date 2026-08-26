@@ -36,7 +36,7 @@
 // source", never shown as if it were the requested lane's data.
 
 import { cached } from "@/lib/cache";
-import type { Position } from "@/lib/positions";
+import { POSITIONS, type Position } from "@/lib/positions";
 import { fetchHtml } from "@/lib/scrape";
 import type {
   ChampionRef,
@@ -57,6 +57,17 @@ const LANE_ID_TO_POSITION: Record<number, Position> = {
   3: "adc",
   4: "support",
 };
+
+/** Exposed so callers that opt into showing lol.ps's data even on a lane
+ * mismatch (see getChampionBuild's `allowMismatch`) can label which lane the
+ * data actually represents. */
+export function laneIdToPosition(laneId: number): Position | undefined {
+  return LANE_ID_TO_POSITION[laneId];
+}
+
+function positionLabel(position: Position | undefined): string {
+  return POSITIONS.find((p) => p.value === position)?.label ?? "알 수 없는 라인";
+}
 
 function extractBalancedArraySource(html: string, key: string): string | null {
   const marker = `${key}:[`;
@@ -263,15 +274,21 @@ async function fetchChampionBuild(championId: number): Promise<ChampionBuild> {
 }
 
 /** Public entry point: this champion's build (items/runes/spells/skills)
- * for `position`, or throws if lol.ps's data doesn't cover that position
- * (same "only the champion's own primary lane" limitation as counters). */
+ * for `position`. lol.ps only ever has data for the champion's own primary
+ * lane (see the file-header comment) — by default this throws when that
+ * doesn't match `position`, same as before. Pass `allowMismatch: true` to
+ * get the primary-lane build back anyway (e.g. a "빌드" tab where seeing
+ * the champion's real main-lane build off-lane is more useful than nothing)
+ * — callers doing this should surface `build.laneId` (via laneIdToPosition)
+ * to the user, since the numbers shown are for a different lane than asked. */
 export async function getChampionBuild(
   championId: number,
   position: Position,
+  opts?: { allowMismatch?: boolean },
 ): Promise<ChampionBuild> {
   const build = await fetchChampionBuild(championId);
   const actualPosition = LANE_ID_TO_POSITION[build.laneId];
-  if (actualPosition !== position) {
+  if (actualPosition !== position && !opts?.allowMismatch) {
     throw new Error(
       `lol.ps: only shows this champion's own primary lane (${actualPosition ?? "알 수 없음"}) — ${position} build data isn't available from this source.`,
     );
@@ -397,14 +414,15 @@ export const lolpsSource: StatSource = {
     const championId = resolveChampionId(dataDragonSlug, champions);
     const summary = await fetchChampSummary(championId);
     const actualPosition = LANE_ID_TO_POSITION[summary.laneId];
-    if (actualPosition !== position) {
-      throw new Error(
-        `lol.ps: only shows this champion's own primary lane (${actualPosition ?? "알 수 없음"}) — ${position} data isn't available from this source.`,
-      );
-    }
+    // lol.ps only ever has data for the champion's own primary lane — shown
+    // anyway on a mismatch (rather than skipped), but the label makes clear
+    // which lane the numbers actually come from so they aren't mistaken for
+    // `position`'s own data.
+    const sourceLabel =
+      actualPosition === position ? "lol.ps" : `lol.ps (${positionLabel(actualPosition)} 라인 데이터)`;
     return {
       sourceId: "lolps",
-      sourceLabel: "lol.ps",
+      sourceLabel,
       sourceUrl: `https://lol.ps/champ/${championId}`,
       counters: summary.entries,
     };

@@ -581,6 +581,15 @@ textarea {
   font-size: 0.85rem;
 }
 
+.build-lane-note {
+  background: rgba(91, 155, 255, 0.12);
+  border: 1px solid var(--accent);
+  color: var(--foreground);
+  padding: 0.6rem 0.85rem;
+  border-radius: 8px;
+  font-size: 0.85rem;
+}
+
 .results {
   background: var(--surface);
   border: 1px solid var(--border);
