@@ -1243,7 +1243,9 @@ export default function Home() {
                       라인전 {(c.counterWinRate * 100).toFixed(1)}% · 시너지{" "}
                       {(c.synergyWinRate * 100).toFixed(1)}%
                     </p>
-                    <CompFitBadge compFit={c.compFit} />
+                    <div className="badge-row">
+                      <CompFitBadge compFit={c.compFit} />
+                    </div>
                   </li>
                 ))}
               </ol>
@@ -1265,13 +1267,15 @@ export default function Home() {
                         <WinRateBar rate={c.winRate} games={c.games} />
                       </div>
                       <SourceBreakdown sources={c.bySource} />
-                      <PowerCurveBadge earlyWinRate={c.earlyWinRate} lateWinRate={c.lateWinRate} />
-                      <CompFitBadge compFit={c.compFit} />
-                      <AllySynergyBadge
-                        matchCount={c.allySynergyMatchCount}
-                        outOf={c.allySynergyOutOf}
-                        avgWinRate={c.allySynergyAvgWinRate}
-                      />
+                      <div className="badge-row">
+                        <PowerCurveBadge earlyWinRate={c.earlyWinRate} lateWinRate={c.lateWinRate} />
+                        <CompFitBadge compFit={c.compFit} />
+                        <AllySynergyBadge
+                          matchCount={c.allySynergyMatchCount}
+                          outOf={c.allySynergyOutOf}
+                          avgWinRate={c.allySynergyAvgWinRate}
+                        />
+                      </div>
                       {c.build && <BuildCardCompact build={c.build} />}
                     </li>
                   ))}
@@ -1302,13 +1306,15 @@ export default function Home() {
                         <WinRateBar rate={c.winRate} games={c.games} />
                       </div>
                       <SourceBreakdown sources={c.bySource} />
-                      <PowerCurveBadge earlyWinRate={c.earlyWinRate} lateWinRate={c.lateWinRate} />
-                      <CompFitBadge compFit={c.compFit} />
-                      <AllySynergyBadge
-                        matchCount={c.allySynergyMatchCount}
-                        outOf={c.allySynergyOutOf}
-                        avgWinRate={c.allySynergyAvgWinRate}
-                      />
+                      <div className="badge-row">
+                        <PowerCurveBadge earlyWinRate={c.earlyWinRate} lateWinRate={c.lateWinRate} />
+                        <CompFitBadge compFit={c.compFit} />
+                        <AllySynergyBadge
+                          matchCount={c.allySynergyMatchCount}
+                          outOf={c.allySynergyOutOf}
+                          avgWinRate={c.allySynergyAvgWinRate}
+                        />
+                      </div>
                       {c.build && <BuildCardCompact build={c.build} />}
                     </li>
                   ))}
