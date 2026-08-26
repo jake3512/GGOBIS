@@ -446,9 +446,13 @@ function average(values: number[]): number | null {
  * best-effort like the other lol.ps annotations (a champion lol.ps has no
  * curve for, or unreachable, just isn't counted rather than failing the
  * whole request). Each laner's numbers come from their own primary lane on
- * lol.ps; when that's not the slot's actual position, it's only used if
- * this position is at least LANE_MISMATCH_MIN_SHARE of that champion's own
- * games (flagged via laneNote), same leniency rule as annotateWithBuild. */
+ * lol.ps; when that's not the slot's actual position, it's shown anyway
+ * (flagged via laneNote) rather than gated behind LANE_MISMATCH_MIN_SHARE
+ * like annotateWithBuild — a champion's early/late-game tendency is still
+ * informative even off their main lane, and the lane check here would drop
+ * EVERY off-role pick (the common case, not the exception) since it relies
+ * on getLaneShare's still-unconfirmed field names — better to always show
+ * real numbers with a caveat than risk silently emptying this section. */
 async function computeTeamPowerCurve(
   allySlots: { position: Position; champ: DDragonChampion }[],
 ): Promise<TeamPowerCurve> {
@@ -457,27 +461,23 @@ async function computeTeamPowerCurve(
   }
   const settled = await Promise.allSettled(allySlots.map(({ champ }) => getPowerCurve(champ.id)));
   const laners: LanerPowerCurve[] = [];
-  await Promise.all(
-    settled.map(async (r, i) => {
-      if (r.status !== "fulfilled") return;
-      const { position, champ } = allySlots[i];
-      const curve = r.value;
-      let laneNote: string | null = null;
-      if (curve.actualPosition && curve.actualPosition !== position) {
-        const share = await getLaneShare(champ.id, position).catch(() => 0);
-        if (share < LANE_MISMATCH_MIN_SHARE) return;
-        laneNote = `lol.ps는 ${champ.name}의 ${POSITION_LABEL.get(curve.actualPosition) ?? curve.actualPosition} 라인 데이터만 갖고 있어요 — 아래 수치는 실제로 그 라인 기준입니다.`;
-      }
-      laners.push({
-        position,
-        champion: toBrief(champ),
-        earlyWinRate: curve.earlyWinRate,
-        midWinRate: curve.midWinRate,
-        lateWinRate: curve.lateWinRate,
-        laneNote,
-      });
-    }),
-  );
+  settled.forEach((r, i) => {
+    if (r.status !== "fulfilled") return;
+    const { position, champ } = allySlots[i];
+    const curve = r.value;
+    const laneNote =
+      curve.actualPosition && curve.actualPosition !== position
+        ? `lol.ps는 ${champ.name}의 ${POSITION_LABEL.get(curve.actualPosition) ?? curve.actualPosition} 라인 데이터만 갖고 있어요 — 아래 수치는 실제로 그 라인 기준입니다.`
+        : null;
+    laners.push({
+      position,
+      champion: toBrief(champ),
+      earlyWinRate: curve.earlyWinRate,
+      midWinRate: curve.midWinRate,
+      lateWinRate: curve.lateWinRate,
+      laneNote,
+    });
+  });
   laners.sort(
     (a, b) => POSITIONS.findIndex((p) => p.value === a.position) - POSITIONS.findIndex((p) => p.value === b.position),
   );
