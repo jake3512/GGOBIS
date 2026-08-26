@@ -10,7 +10,13 @@ import {
 import { POSITIONS, type Position } from "@/lib/positions";
 import { getAggregatedDuoCandidates, getAggregatedLaneCounters } from "@/lib/sources/aggregate";
 import type { AggregatedCounters } from "@/lib/sources/aggregate";
-import { getChampionBuild, getPowerCurvesForPosition } from "@/lib/sources/lolps";
+import {
+  getChampionBuild,
+  getLaneShare,
+  getPowerCurve,
+  getPowerCurvesForPosition,
+  laneIdToPosition,
+} from "@/lib/sources/lolps";
 import { toBuildResult, type BuildResult } from "@/lib/buildRefs";
 import { analyzeTeamComp, applySkillFitBonus, scoreEnemyCompFit } from "@/lib/teamComp";
 import { getChampionAbilitiesWithCache, type ChampionAbilities } from "@/lib/championSkills";
@@ -23,6 +29,17 @@ import { analyzeCompConcepts, lookupConceptMatchup } from "@/lib/compConcepts";
 const POWER_CURVE_CANDIDATE_LIMIT = 5;
 const BUILD_CANDIDATE_LIMIT = 5;
 const SKILL_FIT_CANDIDATE_LIMIT = 5;
+
+// lol.ps only ever has build/power-curve data for a champion's own primary
+// lane. A candidate (or, for the team power curve below, an already-picked
+// ally) recommended/placed at a different position still gets that
+// primary-lane data shown (rather than silently omitted) as long as the
+// *requested* position is at least this common among the champion's own
+// games — filters out showing e.g. a support's build on a jungle
+// recommendation just because they were jungled once in a thousand games.
+const LANE_MISMATCH_MIN_SHARE = 0.07;
+
+const POSITION_LABEL = new Map(POSITIONS.map((p) => [p.value, p.label]));
 
 // How much the enemy-comp-fit heuristics (tags/stats, and separately actual
 // skill kits, vs the FULL filled-in enemy roster) are allowed to move the
@@ -245,8 +262,11 @@ async function annotateWithPowerCurve(picks: PickEntry[], position: Position): P
 
 /** Mutates the top N entries of `picks` in place, attaching a lol.ps build
  * recommendation where available. Best-effort like annotateWithPowerCurve —
- * failures (lol.ps or Data Dragon down, no matching lane data for that
- * candidate) just leave `build` unset for that entry. */
+ * failures (lol.ps or Data Dragon down) just leave `build` unset for that
+ * entry. Shows the champion's own primary-lane build even when it doesn't
+ * match `position`, same as the "빌드" tab, but only when `position` itself
+ * is at least BUILD_LANE_MISMATCH_MIN_SHARE of the candidate's own games —
+ * otherwise (as before) the mismatch just leaves `build` unset. */
 async function annotateWithBuild(picks: PickEntry[], position: Position): Promise<void> {
   const top = picks.slice(0, BUILD_CANDIDATE_LIMIT);
   if (top.length === 0) return;
@@ -256,17 +276,27 @@ async function annotateWithBuild(picks: PickEntry[], position: Position): Promis
       getSummonerSpellsWithCache(),
       getRunesDataWithCache(),
     ]);
-    const results = await Promise.allSettled(top.map((p) => getChampionBuild(p.championId, position)));
-    results.forEach((r, i) => {
-      if (r.status !== "fulfilled") return;
-      const entry = top[i];
-      entry.build = toBuildResult(
-        { id: entry.championId, name: entry.name, iconUrl: entry.iconUrl },
-        position,
-        r.value,
-        { items, spells, runes: runesData.runes, trees: runesData.trees },
-      );
-    });
+    const results = await Promise.allSettled(
+      top.map((p) => getChampionBuild(p.championId, position, { allowMismatch: true })),
+    );
+    await Promise.all(
+      results.map(async (r, i) => {
+        if (r.status !== "fulfilled") return;
+        const build = r.value;
+        const actualPosition = laneIdToPosition(build.laneId);
+        if (actualPosition && actualPosition !== position) {
+          const share = await getLaneShare(top[i].championId, position).catch(() => 0);
+          if (share < LANE_MISMATCH_MIN_SHARE) return;
+        }
+        const entry = top[i];
+        entry.build = toBuildResult(
+          { id: entry.championId, name: entry.name, iconUrl: entry.iconUrl },
+          position,
+          build,
+          { items, spells, runes: runesData.runes, trees: runesData.trees },
+        );
+      }),
+    );
   } catch {
     // Data Dragon or lol.ps unreachable — leave build fields unset.
   }
@@ -274,6 +304,86 @@ async function annotateWithBuild(picks: PickEntry[], position: Position): Promis
 
 function toBrief(c: DDragonChampion): ChampionBrief {
   return { id: c.id, name: c.name, iconUrl: c.iconUrl };
+}
+
+interface LanerPowerCurve {
+  position: Position;
+  champion: ChampionBrief;
+  earlyWinRate: number | null;
+  midWinRate: number | null;
+  lateWinRate: number | null;
+  /** Set when this laner's numbers are actually lol.ps's data for a
+   * DIFFERENT lane (see LANE_MISMATCH_MIN_SHARE) — same idea as
+   * BuildResult.laneNote. */
+  laneNote: string | null;
+}
+
+interface TeamPowerCurve {
+  laners: LanerPowerCurve[];
+  teamEarlyWinRate: number | null;
+  teamMidWinRate: number | null;
+  teamLateWinRate: number | null;
+  /** How many of the 5 ally slots actually contributed a curve — the team
+   * averages above are only over these, not padded with anything for the
+   * missing slots. */
+  sampledCount: number;
+}
+
+function average(values: number[]): number | null {
+  return values.length > 0 ? values.reduce((a, b) => a + b, 0) / values.length : null;
+}
+
+/** Aggregates lol.ps power curves across every filled ally slot into a
+ * per-laner early/mid/late breakdown plus a team-wide average per phase —
+ * best-effort like the other lol.ps annotations (a champion lol.ps has no
+ * curve for, or unreachable, just isn't counted rather than failing the
+ * whole request). Each laner's numbers come from their own primary lane on
+ * lol.ps; when that's not the slot's actual position, it's only used if
+ * this position is at least LANE_MISMATCH_MIN_SHARE of that champion's own
+ * games (flagged via laneNote), same leniency rule as annotateWithBuild. */
+async function computeTeamPowerCurve(
+  allySlots: { position: Position; champ: DDragonChampion }[],
+): Promise<TeamPowerCurve> {
+  if (allySlots.length === 0) {
+    return { laners: [], teamEarlyWinRate: null, teamMidWinRate: null, teamLateWinRate: null, sampledCount: 0 };
+  }
+  const settled = await Promise.allSettled(allySlots.map(({ champ }) => getPowerCurve(champ.id)));
+  const laners: LanerPowerCurve[] = [];
+  await Promise.all(
+    settled.map(async (r, i) => {
+      if (r.status !== "fulfilled") return;
+      const { position, champ } = allySlots[i];
+      const curve = r.value;
+      let laneNote: string | null = null;
+      if (curve.actualPosition && curve.actualPosition !== position) {
+        const share = await getLaneShare(champ.id, position).catch(() => 0);
+        if (share < LANE_MISMATCH_MIN_SHARE) return;
+        laneNote = `lol.ps는 ${champ.name}의 ${POSITION_LABEL.get(curve.actualPosition) ?? curve.actualPosition} 라인 데이터만 갖고 있어요 — 아래 수치는 실제로 그 라인 기준입니다.`;
+      }
+      laners.push({
+        position,
+        champion: toBrief(champ),
+        earlyWinRate: curve.earlyWinRate,
+        midWinRate: curve.midWinRate,
+        lateWinRate: curve.lateWinRate,
+        laneNote,
+      });
+    }),
+  );
+  laners.sort(
+    (a, b) => POSITIONS.findIndex((p) => p.value === a.position) - POSITIONS.findIndex((p) => p.value === b.position),
+  );
+
+  const collect = (key: "earlyWinRate" | "midWinRate" | "lateWinRate") =>
+    average(laners.map((l) => l[key]).filter((v): v is number => v !== null));
+
+  return {
+    laners,
+    teamEarlyWinRate: collect("earlyWinRate"),
+    teamMidWinRate: collect("midWinRate"),
+    teamLateWinRate: collect("lateWinRate"),
+    sampledCount: laners.length,
+  };
 }
 
 function toPickEntries(
@@ -535,13 +645,18 @@ export async function GET(req: Request) {
   // 사용하는, 승률과 무관한 보조 지표. src/lib/teamComp.ts 참고.
   // (enemyChamps was already computed above, before counterPicks/synergyPicks,
   // so rerankByEnemyCompFit could use it too — reused here as-is.) ---
-  const allyChamps = POSITIONS.map((p) => slotChampion(`ally-${p.value}`)).filter(
-    (c): c is DDragonChampion => c !== null,
-  );
+  const allySlotsWithPosition = POSITIONS.map((p) => ({ position: p.value, champ: slotChampion(`ally-${p.value}`) }))
+    .filter((s): s is { position: Position; champ: DDragonChampion } => s.champ !== null);
+  const allyChamps = allySlotsWithPosition.map((s) => s.champ);
   const compHeuristic = {
     ally: analyzeTeamComp(allyChamps),
     enemy: analyzeTeamComp(enemyChamps),
   };
+
+  // --- lol.ps 파워 커브(분당 승률)를 우리팀 채워진 라인 전체에 걸쳐 종합해서
+  // 팀이 어느 구간(초반/중반/후반)에 가장 강한지, 각 라이너는 초반/후반 중
+  // 어느 쪽에 가까운지 보여줌. src 상단 computeTeamPowerCurve 참고. ---
+  const teamPowerCurve = await computeTeamPowerCurve(allySlotsWithPosition);
 
   // --- 조합 컨셉(돌진/포킹/쌍포/한타/스플릿) 감지 + 정적 상성 참고표.
   // src/lib/compConcepts.ts 참고 — 실측 승률이 아니라 전략 지식 참고표임을
@@ -585,5 +700,6 @@ export async function GET(req: Request) {
     measuredSynergy,
     compHeuristic,
     compConcepts,
+    teamPowerCurve,
   });
 }

@@ -57,6 +57,17 @@ export function BuildCard({ build, sourceLabel = "lol.ps" }: { build: BuildResul
   return (
     <div className="build-card">
       <p className="empty-hint">{sourceLabel} 기준 가장 인기 있는 빌드입니다 (다른 소스와 합산된 값이 아님).</p>
+      {build.laneNote && <p className="build-lane-note">⚠ {build.laneNote}</p>}
+      {build.overallWinRate !== null && (
+        <p className="empty-hint">
+          이 빌드 조합 전체:{" "}
+          <span className="build-rate">
+            {(build.overallWinRate * 100).toFixed(1)}%
+            {build.overallGames !== null ? ` · ${build.overallGames.toLocaleString()}게임` : ""}
+            {build.overallPickRate !== null ? ` · 픽률 ${(build.overallPickRate * 100).toFixed(1)}%` : ""}
+          </span>
+        </p>
+      )}
 
       <div className="build-section">
         <h4>룬</h4>

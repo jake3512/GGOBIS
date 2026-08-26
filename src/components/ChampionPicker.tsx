@@ -5,6 +5,7 @@ import { ChampionIcon } from "@/components/ChampionIcon";
 
 export interface ChampionSummary {
   id: number;
+  slug: string;
   name: string;
   iconUrl: string;
   tags: string[];

@@ -36,7 +36,7 @@
 // source", never shown as if it were the requested lane's data.
 
 import { cached } from "@/lib/cache";
-import type { Position } from "@/lib/positions";
+import { POSITIONS, type Position } from "@/lib/positions";
 import { fetchHtml } from "@/lib/scrape";
 import type {
   ChampionRef,
@@ -57,6 +57,17 @@ const LANE_ID_TO_POSITION: Record<number, Position> = {
   3: "adc",
   4: "support",
 };
+
+/** Exposed so callers that opt into showing lol.ps's data even on a lane
+ * mismatch (see getChampionBuild's `allowMismatch`) can label which lane the
+ * data actually represents. */
+export function laneIdToPosition(laneId: number): Position | undefined {
+  return LANE_ID_TO_POSITION[laneId];
+}
+
+function positionLabel(position: Position | undefined): string {
+  return POSITIONS.find((p) => p.value === position)?.label ?? "알 수 없는 라인";
+}
 
 function extractBalancedArraySource(html: string, key: string): string | null {
   const marker = `${key}:[`;
@@ -165,6 +176,40 @@ async function fetchChampSummary(championId: number): Promise<ChampSummary> {
   return summary;
 }
 
+/** Per-lane play-rate breakdown from champSummary's `top1LaneId`/
+ * `top1LaneRatio` .. `top5LaneId`/`top5LaneRatio` fields (same "topN"
+ * ranking convention as `top1ThreeCoreIdList` elsewhere in this blob — #1
+ * most-played lane through #5). This is what the file-header comment's
+ * "탑 78.7% / 정글 4.6% / 미드 15.7% / 바텀 0.5% / 서폿 0.6%"
+ * cross-reference was checking against. Returns a 0-1 fraction per
+ * position; a lane absent from the top 5 (essentially never played) isn't
+ * a key in the result. */
+function parseLaneShareRatios(html: string): Partial<Record<Position, number>> {
+  const block = extractBalancedArraySource(html, "champSummary");
+  if (!block) return {};
+  const shares: Partial<Record<Position, number>> = {};
+  for (let n = 1; n <= 5; n++) {
+    const laneId = extractNumberField(block, `top${n}LaneId`);
+    const ratioRaw = extractNumberField(block, `top${n}LaneRatio`);
+    if (laneId === null || ratioRaw === null) continue;
+    const position = LANE_ID_TO_POSITION[laneId];
+    if (!position) continue;
+    shares[position] = ratioRaw > 1 ? ratioRaw / 100 : ratioRaw;
+  }
+  return shares;
+}
+
+/** How often this champion is actually played at `position`, as a 0-1
+ * fraction of their games. Meant for gating "show lol.ps's data anyway on a
+ * lane mismatch" decisions elsewhere (e.g. pick-advice candidates) on
+ * whether `position` is even a real secondary lane for this champion,
+ * rather than a near-never-played fluke. Returns 0 if `position` isn't
+ * among the champion's top 5 played lanes. */
+export async function getLaneShare(championId: number, position: Position): Promise<number> {
+  const html = await fetchChampPageHtml(championId);
+  return parseLaneShareRatios(html)[position] ?? 0;
+}
+
 // --- Champion build (items/runes/spells/skill order) ---
 //
 // All pulled from the same champSummary block used for counters above — no
@@ -200,6 +245,16 @@ export interface ChampionBuild {
   skillMaxWinRate: number | null;
   skillMaxGames: number | null;
   skillLevelOrder: string[];
+  /** One win rate/pick rate/games-sample for the WHOLE build combination
+   * (rune+item+spell+skill together), as opposed to the per-section rates
+   * above which are each measured independently. lol.ps doesn't expose this
+   * as a separate concept (undefined here), but deeplol.gg does — its
+   * build_lst entries only carry one overall win_rate/pick_rate/games per
+   * variant, with every per-section rate zeroed out. Optional so lol.ps
+   * builds don't need to fake a value. */
+  overallWinRate?: number | null;
+  overallPickRate?: number | null;
+  overallGames?: number | null;
 }
 
 function toRate(v: number | null): number | null {
@@ -253,15 +308,21 @@ async function fetchChampionBuild(championId: number): Promise<ChampionBuild> {
 }
 
 /** Public entry point: this champion's build (items/runes/spells/skills)
- * for `position`, or throws if lol.ps's data doesn't cover that position
- * (same "only the champion's own primary lane" limitation as counters). */
+ * for `position`. lol.ps only ever has data for the champion's own primary
+ * lane (see the file-header comment) — by default this throws when that
+ * doesn't match `position`, same as before. Pass `allowMismatch: true` to
+ * get the primary-lane build back anyway (e.g. a "빌드" tab where seeing
+ * the champion's real main-lane build off-lane is more useful than nothing)
+ * — callers doing this should surface `build.laneId` (via laneIdToPosition)
+ * to the user, since the numbers shown are for a different lane than asked. */
 export async function getChampionBuild(
   championId: number,
   position: Position,
+  opts?: { allowMismatch?: boolean },
 ): Promise<ChampionBuild> {
   const build = await fetchChampionBuild(championId);
   const actualPosition = LANE_ID_TO_POSITION[build.laneId];
-  if (actualPosition !== position) {
+  if (actualPosition !== position && !opts?.allowMismatch) {
     throw new Error(
       `lol.ps: only shows this champion's own primary lane (${actualPosition ?? "알 수 없음"}) — ${position} build data isn't available from this source.`,
     );
@@ -309,6 +370,7 @@ export interface PowerCurve {
   laneId: number;
   points: PowerCurvePoint[];
   earlyWinRate: number | null;
+  midWinRate: number | null;
   lateWinRate: number | null;
 }
 
@@ -346,6 +408,7 @@ async function fetchPowerCurve(championId: number): Promise<PowerCurve> {
       laneId,
       points,
       earlyWinRate: average(points.slice(0, third)),
+      midWinRate: average(points.slice(third, points.length - third)),
       lateWinRate: average(points.slice(-third)),
     };
   });
@@ -354,6 +417,30 @@ async function fetchPowerCurve(championId: number): Promise<PowerCurve> {
 export interface PowerCurveSummary {
   earlyWinRate: number | null;
   lateWinRate: number | null;
+}
+
+export interface PowerCurveWithLane extends PowerCurveSummary {
+  midWinRate: number | null;
+  /** The lane this curve actually reflects, per lol.ps's own primary-lane
+   * data (see file header) — null if lol.ps didn't return a recognizable
+   * laneId at all. Compare against the position you actually wanted to know
+   * whether this is a substituted off-lane curve. */
+  actualPosition: Position | null;
+}
+
+/** One champion's power curve summary, regardless of which lane it actually
+ * reflects (unlike getPowerCurvesForPosition, which silently drops anything
+ * off the requested lane) — for callers that want to decide for themselves
+ * whether a substituted primary-lane curve is still worth showing (e.g. via
+ * getLaneShare), the same pattern as getChampionBuild's `allowMismatch`. */
+export async function getPowerCurve(championId: number): Promise<PowerCurveWithLane> {
+  const curve = await fetchPowerCurve(championId);
+  return {
+    earlyWinRate: curve.earlyWinRate,
+    midWinRate: curve.midWinRate,
+    lateWinRate: curve.lateWinRate,
+    actualPosition: laneIdToPosition(curve.laneId) ?? null,
+  };
 }
 
 /** Power-curve early/late averages for a batch of candidate champions,
@@ -387,14 +474,15 @@ export const lolpsSource: StatSource = {
     const championId = resolveChampionId(dataDragonSlug, champions);
     const summary = await fetchChampSummary(championId);
     const actualPosition = LANE_ID_TO_POSITION[summary.laneId];
-    if (actualPosition !== position) {
-      throw new Error(
-        `lol.ps: only shows this champion's own primary lane (${actualPosition ?? "알 수 없음"}) — ${position} data isn't available from this source.`,
-      );
-    }
+    // lol.ps only ever has data for the champion's own primary lane — shown
+    // anyway on a mismatch (rather than skipped), but the label makes clear
+    // which lane the numbers actually come from so they aren't mistaken for
+    // `position`'s own data.
+    const sourceLabel =
+      actualPosition === position ? "lol.ps" : `lol.ps (${positionLabel(actualPosition)} 라인 데이터)`;
     return {
       sourceId: "lolps",
-      sourceLabel: "lol.ps",
+      sourceLabel,
       sourceUrl: `https://lol.ps/champ/${championId}`,
       counters: summary.entries,
     };

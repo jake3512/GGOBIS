@@ -202,16 +202,74 @@ textarea {
   box-shadow: 0 0 0 2px rgba(91, 155, 255, 0.45);
 }
 
-.draft-board {
+/* Advice mode's champ-select-style board: a big portrait preview of the
+   most recently picked champion up top, two narrow team columns below —
+   loosely mirrors the real LoL champ-select screen's layout (opposing
+   team columns either side of a center preview) within this app's
+   mobile-first width constraints. */
+.champ-select {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
 }
 
-.draft-team-row {
+.champ-select-portrait {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  min-height: 160px;
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+}
+
+.champ-select-portrait-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center 20%;
+}
+
+.champ-select-portrait-empty {
+  width: 100%;
+  text-align: center;
+  padding: 1.5rem 1rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.champ-select-portrait-name {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.75), transparent);
+  color: #fff;
+  font-weight: 700;
+}
+
+.champ-select-teams {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.champ-select-team {
+  flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.4rem;
+  gap: 0.35rem;
+  padding: 0.4rem;
+  border-radius: 10px;
+  border-left: 3px solid var(--accent);
+  background: var(--surface-alt);
+}
+
+.champ-select-team--enemy {
+  border-left-color: var(--bad);
 }
 
 .draft-team-label {
@@ -221,10 +279,63 @@ textarea {
   letter-spacing: 0.04em;
 }
 
-.draft-row {
+.champ-select-slot {
   display: flex;
-  flex-wrap: wrap;
-  gap: 0.6rem;
+  align-items: center;
+  gap: 0.4rem;
+  min-height: 44px;
+  padding: 0.3rem 0.5rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--foreground);
+  cursor: pointer;
+  font-size: 0.8rem;
+  text-align: left;
+  overflow: hidden;
+}
+
+.champ-select-slot span:not(.champ-select-role) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.champ-select-slot img {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.champ-select-role {
+  flex-shrink: 0;
+  font-size: 0.7rem;
+  color: var(--muted);
+  min-width: 2em;
+}
+
+.champ-select-slot--empty {
+  border-style: dashed;
+  color: var(--muted);
+}
+
+.champ-select-slot--active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(91, 155, 255, 0.45);
+}
+
+.champ-select-slot--disabled {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-height: 44px;
+  padding: 0.3rem 0.5rem;
+  border: 1px dashed var(--accent);
+  border-radius: 8px;
+  color: var(--accent);
+  font-size: 0.8rem;
 }
 
 .build-card {
@@ -281,6 +392,44 @@ textarea {
   margin-top: 0.35rem;
   font-size: 0.75rem;
   color: var(--muted);
+}
+
+.team-power-curve {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.team-power-curve-phases {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.team-power-curve-phase {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.6rem 0.4rem;
+  border-radius: 8px;
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+}
+
+.team-power-curve-phase--peak {
+  border-color: var(--good);
+  box-shadow: 0 0 0 2px rgba(69, 220, 154, 0.35);
+}
+
+.team-power-curve-phase-label {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.team-power-curve-phase-rate {
+  font-size: 1.05rem;
+  font-weight: 700;
 }
 
 /* Explicitly NOT a win-rate color (good/bad/accent) — this is the tag-based
@@ -578,6 +727,15 @@ textarea {
 
 .empty-hint {
   color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.build-lane-note {
+  background: rgba(91, 155, 255, 0.12);
+  border: 1px solid var(--accent);
+  color: var(--foreground);
+  padding: 0.6rem 0.85rem;
+  border-radius: 8px;
   font-size: 0.85rem;
 }
 

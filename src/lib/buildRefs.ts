@@ -35,6 +35,18 @@ export interface BuildResult {
   skillMaxWinRate: number | null;
   skillMaxGames: number | null;
   skillLevelOrder: string[];
+  /** Whole-build-combination win rate/pick rate/games, distinct from the
+   * per-section rates above — see ChampionBuild.overallWinRate. null when
+   * the source doesn't track this separately (e.g. lol.ps). */
+  overallWinRate: number | null;
+  overallPickRate: number | null;
+  overallGames: number | null;
+  /** Set when this build is shown despite a lane mismatch (currently only
+   * possible for lol.ps, which only ever has data for a champion's own
+   * primary lane — see getChampionBuild's `allowMismatch`). A ready-to-
+   * display Korean caveat naming which lane the numbers actually reflect;
+   * null when the data genuinely matches the requested position. */
+  laneNote: string | null;
 }
 
 export interface BuildRefData {
@@ -49,6 +61,7 @@ export function toBuildResult(
   position: string,
   build: ChampionBuild,
   data: BuildRefData,
+  laneNote: string | null = null,
 ): BuildResult {
   const item = (id: number | null): IconRef | null => (id !== null ? (data.items.get(id) ?? null) : null);
   const items$ = (ids: number[]): IconRef[] => ids.map(item).filter((x): x is IconRef => x !== null);
@@ -80,5 +93,9 @@ export function toBuildResult(
     skillMaxWinRate: build.skillMaxWinRate,
     skillMaxGames: build.skillMaxGames,
     skillLevelOrder: build.skillLevelOrder,
+    overallWinRate: build.overallWinRate ?? null,
+    overallPickRate: build.overallPickRate ?? null,
+    overallGames: build.overallGames ?? null,
+    laneNote,
   };
 }
