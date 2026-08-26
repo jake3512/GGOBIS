@@ -155,6 +155,23 @@ interface CompConcepts {
   matchup: ConceptMatchup | null;
 }
 
+interface LanerPowerCurve {
+  position: string;
+  champion: ChampionBrief;
+  earlyWinRate: number | null;
+  midWinRate: number | null;
+  lateWinRate: number | null;
+  laneNote: string | null;
+}
+
+interface TeamPowerCurve {
+  laners: LanerPowerCurve[];
+  teamEarlyWinRate: number | null;
+  teamMidWinRate: number | null;
+  teamLateWinRate: number | null;
+  sampledCount: number;
+}
+
 interface AdviceResult {
   position: string;
   enemyLaneChampion: ChampionBrief | null;
@@ -168,6 +185,7 @@ interface AdviceResult {
   measuredSynergy: MeasuredSynergy;
   compHeuristic: CompHeuristic;
   compConcepts: CompConcepts;
+  teamPowerCurve: TeamPowerCurve;
 }
 
 const COMP_CONCEPT_LABELS: Record<CompConceptId, string> = {
@@ -284,6 +302,26 @@ function adviceSlotsFor(myPosition: string): Slot[] {
     })),
   ];
 }
+
+/** Same version-less Data Dragon path convention as rune icons
+ * (ddragon.ts's runeIconUrl) — splash art doesn't take a patch version
+ * segment. `slug` is Data Dragon's own champion id string (e.g. "Kaisa"),
+ * already sent by /api/champions. */
+function championSplashUrl(slug: string): string {
+  return `https://ddragon.leagueoflegends.com/cdn/img/champion/splash/${slug}_0.jpg`;
+}
+
+/** Short one/two-glyph role tag shown in advice mode's champ-select-style
+ * slots — the slot's fixed position in the column already conveys role
+ * (positions are always listed top→jungle→mid→adc→support), this is just a
+ * quick visual anchor matching real champ select's role icons. */
+const POSITION_SHORT_LABEL: Record<string, string> = {
+  top: "탑",
+  jungle: "정글",
+  mid: "미드",
+  adc: "원딜",
+  support: "서폿",
+};
 
 const TAG_LABELS: Record<string, string> = {
   Fighter: "전사",
@@ -420,6 +458,95 @@ function TierBadge({ tier }: { tier?: 1 | 2 | 3 }) {
   return <span className={`tier-badge tier-badge--${tier}`}>{tier}티어</span>;
 }
 
+/** Same "diff between early/late" threshold PowerCurveBadge already uses for
+ * candidate recommendation rows, reused here so a laner and a candidate
+ * label the same numbers the same way. */
+function powerCurveLean(earlyWinRate: number | null, lateWinRate: number | null): string | null {
+  if (earlyWinRate === null || lateWinRate === null) return null;
+  const diff = lateWinRate - earlyWinRate;
+  if (diff >= 0.03) return "후반형";
+  if (diff <= -0.03) return "초반형";
+  return "균형형";
+}
+
+const PHASE_LABELS = { early: "초반", mid: "중반", late: "후반" } as const;
+
+/** Aggregates lol.ps power curves (early/mid/late win rate) across whatever
+ * ally slots are filled in — see teamPowerCurve in the /api/pickadvice
+ * response. Purely a display of real per-champion scraped numbers averaged
+ * together; the "초반형/후반형/균형형" labels are the same fixed ±3%p
+ * threshold PowerCurveBadge already uses elsewhere, not a new heuristic. */
+function TeamPowerCurveCard({ curve }: { curve: TeamPowerCurve }) {
+  if (curve.sampledCount === 0) {
+    return (
+      <p className="empty-hint">
+        우리팀 라인에 채워진 챔피언들의 lol.ps 파워 커브 데이터를 찾지 못했습니다.
+      </p>
+    );
+  }
+
+  const phases: { key: "early" | "mid" | "late"; rate: number | null }[] = [
+    { key: "early", rate: curve.teamEarlyWinRate },
+    { key: "mid", rate: curve.teamMidWinRate },
+    { key: "late", rate: curve.teamLateWinRate },
+  ];
+  const peak = phases.reduce<{ key: "early" | "mid" | "late"; rate: number } | null>((best, p) => {
+    if (p.rate === null) return best;
+    if (!best || p.rate > best.rate) return { key: p.key, rate: p.rate };
+    return best;
+  }, null);
+
+  return (
+    <div className="team-power-curve">
+      <p className="empty-hint">
+        채워진 우리팀 {curve.sampledCount}명의 lol.ps 파워 커브(분당 승률)를 평균 낸 값입니다.
+        {peak && (
+          <>
+            {" "}
+            팀이 가장 강한 구간: <strong>{PHASE_LABELS[peak.key]}</strong> (
+            {(peak.rate * 100).toFixed(1)}%)
+          </>
+        )}
+      </p>
+      <div className="team-power-curve-phases">
+        {phases.map((p) => (
+          <div
+            key={p.key}
+            className={`team-power-curve-phase${peak?.key === p.key ? " team-power-curve-phase--peak" : ""}`}
+          >
+            <span className="team-power-curve-phase-label">{PHASE_LABELS[p.key]}</span>
+            <span className="team-power-curve-phase-rate">
+              {p.rate !== null ? `${(p.rate * 100).toFixed(1)}%` : "데이터 없음"}
+            </span>
+          </div>
+        ))}
+      </div>
+      <ol className="recommend-list">
+        {curve.laners.map((l) => {
+          const lean = powerCurveLean(l.earlyWinRate, l.lateWinRate);
+          return (
+            <li key={l.position} className="recommend-row recommend-row--stacked">
+              <div className="recommend-row-main">
+                <ChampionIcon src={l.champion.iconUrl} name={l.champion.name} />
+                <span className="recommend-name">
+                  {POSITIONS.find((p) => p.value === l.position)?.label}: {l.champion.name}
+                </span>
+                {lean && <span className="power-curve-badge">{lean}</span>}
+              </div>
+              <p className="empty-hint">
+                초반 {l.earlyWinRate !== null ? `${(l.earlyWinRate * 100).toFixed(1)}%` : "-"} · 중반{" "}
+                {l.midWinRate !== null ? `${(l.midWinRate * 100).toFixed(1)}%` : "-"} · 후반{" "}
+                {l.lateWinRate !== null ? `${(l.lateWinRate * 100).toFixed(1)}%` : "-"}
+              </p>
+              {l.laneNote && <p className="build-lane-note">⚠ {l.laneNote}</p>}
+            </li>
+          );
+        })}
+      </ol>
+    </div>
+  );
+}
+
 const POOL_TIER_LABELS: Record<1 | 2 | 3, string> = {
   1: "1티어 (가장 숙련)",
   2: "2티어",
@@ -554,6 +681,12 @@ export default function Home() {
   const [position, setPosition] = useState("top");
   const [slots, setSlots] = useState<Slot[]>([{ key: "target", label: "기준 챔피언", championId: null }]);
   const [activeSlotKey, setActiveSlotKey] = useState("target");
+  /** The champion most recently placed into a slot — drives the big
+   * portrait preview in advice mode's champ-select layout. Not tied to
+   * activeSlotKey because assignActiveSlot immediately advances that to the
+   * NEXT empty slot, which would otherwise flip the portrait back to empty
+   * right after every pick. */
+  const [lastPickedChampionId, setLastPickedChampionId] = useState<number | null>(null);
   const [counterResult, setCounterResult] = useState<CounterResult | null>(null);
   const [duoResult, setDuoResult] = useState<DuoResult | null>(null);
   const [adviceResult, setAdviceResult] = useState<AdviceResult | null>(null);
@@ -630,12 +763,15 @@ export default function Home() {
     return map;
   }, [champions]);
 
+  const portraitChampion = lastPickedChampionId !== null ? (championById.get(lastPickedChampionId) ?? null) : null;
+
   function switchMode(next: Mode) {
     setMode(next);
     setError(null);
     setCounterResult(null);
     setDuoResult(null);
     setAdviceResult(null);
+    setLastPickedChampionId(null);
     setBuildResult(null);
     setBuildResultDeeplol(null);
     setBuildErrorDeeplol(null);
@@ -677,6 +813,7 @@ export default function Home() {
   }
 
   function assignActiveSlot(championId: number) {
+    setLastPickedChampionId(championId);
     setSlots((prev) => {
       const next = prev.map((s) => (s.key === activeSlotKey ? { ...s, championId } : s));
       const nextEmpty = next.find(
@@ -792,6 +929,41 @@ export default function Home() {
     );
   }
 
+  /** advice mode's champ-select-style slot — same select/clear behavior as
+   * renderSlot, just laid out to sit in a narrow vertical team column (role
+   * tag + icon + name in one row) instead of a horizontal pill row. */
+  function renderChampSelectSlot(slot: Slot, side: "ally" | "enemy") {
+    const shortLabel = POSITION_SHORT_LABEL[slot.key.replace(`${side}-`, "")] ?? "";
+    if (slot.disabled) {
+      return (
+        <div key={slot.key} className="champ-select-slot champ-select-slot--disabled" title="추천 대상 자리">
+          <span className="champ-select-role">{shortLabel}</span>
+          <span>내 픽</span>
+        </div>
+      );
+    }
+    const champ = slot.championId !== null ? championById.get(slot.championId) : null;
+    const active = slot.key === activeSlotKey;
+    return (
+      <button
+        key={slot.key}
+        type="button"
+        className={`champ-select-slot${active ? " champ-select-slot--active" : ""}${champ ? "" : " champ-select-slot--empty"}`}
+        onClick={() => (champ ? clearSlot(slot.key) : setActiveSlotKey(slot.key))}
+      >
+        <span className="champ-select-role">{shortLabel}</span>
+        {champ ? (
+          <>
+            <ChampionIcon src={champ.iconUrl} name={champ.name} />
+            <span>{champ.name}</span>
+          </>
+        ) : (
+          <span className="empty-hint">선택</span>
+        )}
+      </button>
+    );
+  }
+
   return (
     <main className="page">
       <header className="page-header">
@@ -879,17 +1051,34 @@ export default function Home() {
 
       <section className="selected-bar">
         {mode === "advice" ? (
-          <div className="draft-board">
-            <div className="draft-team-row">
-              <span className="draft-team-label">우리팀</span>
-              <div className="draft-row">
-                {slots.filter((s) => s.key.startsWith("ally-")).map((slot) => renderSlot(slot))}
-              </div>
+          <div className="champ-select">
+            <div className="champ-select-portrait">
+              {portraitChampion ? (
+                <>
+                  {/* eslint-disable-next-line @next/next/no-img-element -- external CDN splash art, no next/image domain config needed */}
+                  <img
+                    src={championSplashUrl(portraitChampion.slug)}
+                    alt={portraitChampion.name}
+                    className="champ-select-portrait-img"
+                    referrerPolicy="no-referrer"
+                    onError={(e) => {
+                      e.currentTarget.style.display = "none";
+                    }}
+                  />
+                  <span className="champ-select-portrait-name">{portraitChampion.name}</span>
+                </>
+              ) : (
+                <span className="champ-select-portrait-empty">챔피언을 선택하면 여기 크게 보여요</span>
+              )}
             </div>
-            <div className="draft-team-row">
-              <span className="draft-team-label">상대팀</span>
-              <div className="draft-row">
-                {slots.filter((s) => s.key.startsWith("enemy-")).map((slot) => renderSlot(slot))}
+            <div className="champ-select-teams">
+              <div className="champ-select-team champ-select-team--ally">
+                <span className="draft-team-label">우리팀</span>
+                {slots.filter((s) => s.key.startsWith("ally-")).map((slot) => renderChampSelectSlot(slot, "ally"))}
+              </div>
+              <div className="champ-select-team champ-select-team--enemy">
+                <span className="draft-team-label">상대팀</span>
+                {slots.filter((s) => s.key.startsWith("enemy-")).map((slot) => renderChampSelectSlot(slot, "enemy"))}
               </div>
             </div>
           </div>
@@ -1154,6 +1343,9 @@ export default function Home() {
               </ol>
             </>
           )}
+
+          <h3>팀 파워 커브 (초반/중반/후반)</h3>
+          <TeamPowerCurveCard curve={adviceResult.teamPowerCurve} />
 
           {(adviceResult.compHeuristic.ally || adviceResult.compHeuristic.enemy) && (
             <>

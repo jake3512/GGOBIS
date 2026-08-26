@@ -370,6 +370,7 @@ export interface PowerCurve {
   laneId: number;
   points: PowerCurvePoint[];
   earlyWinRate: number | null;
+  midWinRate: number | null;
   lateWinRate: number | null;
 }
 
@@ -407,6 +408,7 @@ async function fetchPowerCurve(championId: number): Promise<PowerCurve> {
       laneId,
       points,
       earlyWinRate: average(points.slice(0, third)),
+      midWinRate: average(points.slice(third, points.length - third)),
       lateWinRate: average(points.slice(-third)),
     };
   });
@@ -415,6 +417,30 @@ async function fetchPowerCurve(championId: number): Promise<PowerCurve> {
 export interface PowerCurveSummary {
   earlyWinRate: number | null;
   lateWinRate: number | null;
+}
+
+export interface PowerCurveWithLane extends PowerCurveSummary {
+  midWinRate: number | null;
+  /** The lane this curve actually reflects, per lol.ps's own primary-lane
+   * data (see file header) — null if lol.ps didn't return a recognizable
+   * laneId at all. Compare against the position you actually wanted to know
+   * whether this is a substituted off-lane curve. */
+  actualPosition: Position | null;
+}
+
+/** One champion's power curve summary, regardless of which lane it actually
+ * reflects (unlike getPowerCurvesForPosition, which silently drops anything
+ * off the requested lane) — for callers that want to decide for themselves
+ * whether a substituted primary-lane curve is still worth showing (e.g. via
+ * getLaneShare), the same pattern as getChampionBuild's `allowMismatch`. */
+export async function getPowerCurve(championId: number): Promise<PowerCurveWithLane> {
+  const curve = await fetchPowerCurve(championId);
+  return {
+    earlyWinRate: curve.earlyWinRate,
+    midWinRate: curve.midWinRate,
+    lateWinRate: curve.lateWinRate,
+    actualPosition: laneIdToPosition(curve.laneId) ?? null,
+  };
 }
 
 /** Power-curve early/late averages for a batch of candidate champions,
