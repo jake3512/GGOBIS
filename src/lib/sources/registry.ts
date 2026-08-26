@@ -1,14 +1,17 @@
 // All six sources this app pulls from, live, on every request — see each
 // entry's comment for how confident we are that its URL pattern / slug
-// convention is actually correct. NONE of these have been verified against
-// the real sites from this dev environment (its sandbox has no outbound
-// access to any of them); confidence levels here just reflect how well-
-// established each site's general structure is in the codebase author's
-// background knowledge, not actual testing. Once you run this for real,
-// please report which sources work and which don't — the fix is almost
-// always just correcting one config below.
+// convention is actually correct. This dev sandbox has no outbound access to
+// any of these sites, so most configs below are still best-effort guesses;
+// op.gg, lol.ps, and deeplol (see src/lib/sources/deeplol.ts) have been
+// confirmed against real response bodies the user captured from their own
+// browser. Confidence levels for the rest just reflect how well-established
+// each site's general structure is in the codebase author's background
+// knowledge, not actual testing. Once you run this for real, please report
+// which sources work and which don't — the fix is almost always just
+// correcting one config below.
 
 import { createGenericSource, type GenericSourceConfig } from "@/lib/sources/genericSource";
+import { deeplolSource } from "@/lib/sources/deeplol";
 import { lolpsSource } from "@/lib/sources/lolps";
 import type { StatSource } from "@/lib/sources/types";
 
@@ -83,21 +86,12 @@ const configs: GenericSourceConfig[] = [
       `https://mobalytics.gg/lol/champions/${slug}/counters?role=${position}`,
     duoUrl: (adcSlug) => `https://mobalytics.gg/lol/champions/${adcSlug}/synergies?role=adc`,
   },
-  {
-    // Confidence: low. The requested site was "deep.lol" — the LoL stats
-    // site this most likely refers to actually lives at deeplol.gg, so
-    // that's what this targets. If that's the wrong site, please send the
-    // exact URL you mean and this config can be corrected.
-    id: "deeplol",
-    label: "DeepLoL",
-    confidence: "low",
-    slug: (s) => s.toLowerCase(),
-    counterUrl: (slug, position) => `https://www.deeplol.gg/champions/${slug}/counters?position=${position}`,
-    duoUrl: (adcSlug) => `https://www.deeplol.gg/champions/${adcSlug}/duos?position=adc`,
-  },
 ];
 
-// lol.ps doesn't fit the generic "embedded JSON blob" model (see
-// src/lib/sources/lolps.ts for why) so it's implemented directly and
-// appended here instead of going through createGenericSource.
-export const SOURCES: StatSource[] = [...configs.map(createGenericSource), lolpsSource];
+// deeplol.gg and lol.ps don't fit the generic "embedded JSON blob in an
+// HTML page" model — deeplol serves a clean JSON REST API directly
+// (see src/lib/sources/deeplol.ts), and lol.ps embeds data in a SvelteKit
+// hydration script with a different shape (see src/lib/sources/lolps.ts) —
+// so both are implemented directly and appended here instead of going
+// through createGenericSource.
+export const SOURCES: StatSource[] = [...configs.map(createGenericSource), deeplolSource, lolpsSource];

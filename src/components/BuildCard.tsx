@@ -50,13 +50,13 @@ export function BuildCardCompact({ build }: { build: BuildResult }) {
   );
 }
 
-/** lol.ps 전용 빌드 추천(아이템/룬/스펠/스킬 순서) — 라인 카운터/픽 추천/빌드
- * 탭에서 공통으로 쓰는 카드. 다른 5개 소스와 블렌딩되는 값이 아니라
- * lol.ps 하나의 값이라는 걸 항상 헤더에 명시한다. */
-export function BuildCard({ build }: { build: BuildResult }) {
+/** 소스 하나의 빌드 추천(아이템/룬/스펠/스킬 순서) — 라인 카운터/픽 추천/빌드
+ * 탭에서 공통으로 쓰는 카드. 여러 소스와 블렌딩되는 값이 아니라
+ * `sourceLabel` 하나의 값이라는 걸 항상 헤더에 명시한다. */
+export function BuildCard({ build, sourceLabel = "lol.ps" }: { build: BuildResult; sourceLabel?: string }) {
   return (
     <div className="build-card">
-      <p className="empty-hint">lol.ps 기준 가장 인기 있는 빌드입니다 (다른 소스와 합산된 값이 아님).</p>
+      <p className="empty-hint">{sourceLabel} 기준 가장 인기 있는 빌드입니다 (다른 소스와 합산된 값이 아님).</p>
 
       <div className="build-section">
         <h4>룬</h4>
