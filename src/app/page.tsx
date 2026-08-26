@@ -558,6 +558,11 @@ export default function Home() {
   const [duoResult, setDuoResult] = useState<DuoResult | null>(null);
   const [adviceResult, setAdviceResult] = useState<AdviceResult | null>(null);
   const [buildResult, setBuildResult] = useState<BuildResult | null>(null);
+  /** DeepLoL's build for the same champion+position — fetched alongside
+   * buildResult (lol.ps) as a second, separately-labeled card, best-effort
+   * (a DeepLoL failure doesn't block the lol.ps card from showing). */
+  const [buildResultDeeplol, setBuildResultDeeplol] = useState<BuildResult | null>(null);
+  const [buildErrorDeeplol, setBuildErrorDeeplol] = useState<string | null>(null);
   /** Build recommendation auto-fetched alongside 라인 카운터's own result, for
    * the same champion+position — separate from buildResult (the dedicated
    * 빌드 tab's own fetch) so switching modes doesn't clobber either. */
@@ -632,6 +637,8 @@ export default function Home() {
     setDuoResult(null);
     setAdviceResult(null);
     setBuildResult(null);
+    setBuildResultDeeplol(null);
+    setBuildErrorDeeplol(null);
     setCounterBuild(null);
     if (next === "counter" || next === "build") {
       const nextSlots: Slot[] = [{ key: "target", label: "기준 챔피언", championId: null }];
@@ -716,10 +723,19 @@ export default function Home() {
           });
       } else if (mode === "build") {
         const championId = slots[0].championId;
-        const res = await fetch(`/api/build?championId=${championId}&position=${position}`);
+        const res = await fetch(`/api/build?championId=${championId}&position=${position}&source=lolps`);
         const data = await res.json();
         if (!res.ok) throw new Error(data.error ?? "빌드 조회에 실패했습니다.");
         setBuildResult(data);
+        setBuildResultDeeplol(null);
+        setBuildErrorDeeplol(null);
+        fetch(`/api/build?championId=${championId}&position=${position}&source=deeplol`)
+          .then((r) => r.json().then((d) => ({ ok: r.ok, data: d })))
+          .then(({ ok, data: deeplolData }) => {
+            if (ok) setBuildResultDeeplol(deeplolData);
+            else setBuildErrorDeeplol(deeplolData.error ?? "DeepLoL 빌드 조회에 실패했습니다.");
+          })
+          .catch(() => setBuildErrorDeeplol("DeepLoL 빌드 조회에 실패했습니다."));
       } else if (mode === "duo") {
         const adcId = slots.find((s) => s.key === "adc")?.championId;
         const supportId = slots.find((s) => s.key === "support")?.championId;
@@ -950,7 +966,11 @@ export default function Home() {
           <h2>
             {buildResult.champion.name} ({POSITIONS.find((p) => p.value === buildResult.position)?.label}) 빌드
           </h2>
-          <BuildCard build={buildResult} />
+          <BuildCard build={buildResult} sourceLabel="lol.ps" />
+          {buildResultDeeplol && <BuildCard build={buildResultDeeplol} sourceLabel="DeepLoL" />}
+          {buildErrorDeeplol && !buildResultDeeplol && (
+            <p className="empty-hint">DeepLoL: {buildErrorDeeplol}</p>
+          )}
         </section>
       )}
 

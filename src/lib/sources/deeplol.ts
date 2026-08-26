@@ -29,14 +29,37 @@
 // which champion an entry refers to, so bottom-lane duo synergy isn't
 // implemented from this source (same "not supported" situation as lol.ps).
 //
-// build_lst (items/runes/spells/skill order per lane) is real, rich data
-// too, but isn't wired up here — this app's build display is currently
-// lol.ps-specific (BuildCard explicitly labels its numbers "lol.ps 기준").
-// Left for a future pass if a second per-source build card is wanted.
+// build_lst (items/runes/spells/skill order per lane) is also real data —
+// wired up below as getChampionBuild(), mapped onto the same ChampionBuild
+// shape lol.ps produces (src/lib/sources/lolps.ts) so both sources can go
+// through the same toBuildResult()/BuildCard rendering path. Field mapping,
+// confirmed against the real Nasus "Top" build_lst[0] entry pasted by hand:
+//   rune.main_build: [treeId, keystoneId, minor1, minor2, minor3] — first
+//     element is the rune TREE id, the rest are the 4 picked runes (matches
+//     lol.ps's mainRuneCategory + mainRune1..4 split exactly).
+//   rune.sub_build: same shape, [treeId, minor1, minor2] (2 secondary runes).
+//   item.build: the finished ~5-6 item "core" set → mapped to coreItemIds.
+//   item.detail: full chronological purchase order (paired with
+//     detail_price, unused here) → mapped to fullBuildItemIds.
+//   spell.build: [spell1Id, spell2Id].
+//   start_item.build: starting item ids.
+//   boots.item: single boots item id.
+//   skill.build: max-rank skill priority as NUMBERS (1=Q,2=W,3=E,4=R), not
+//     lol.ps's letter strings — converted via SKILL_INDEX_TO_LETTER.
+//   skill.detail: 15-length per-level skill-up order, same numeric encoding.
+// Per-field win_rate/games (rune.win_rate, spell.win_rate, etc.) were all
+// 0/0 in every sample seen — deeplol apparently only tracks a single overall
+// win_rate/games/pick_rate per build_lst entry, not a breakdown per
+// rune/spell/item/skill choice like lol.ps does. So all the granular
+// *WinRate/*Games fields below are null unless the sub-object's own games
+// count is nonzero, and the one real number available (the build variant's
+// overall win_rate/games) is surfaced under coreWinRate/coreGames since
+// that's the field BuildCard displays most prominently.
 
 import { cached } from "@/lib/cache";
 import { getLatestVersion } from "@/lib/ddragon";
 import type { Position } from "@/lib/positions";
+import type { ChampionBuild } from "@/lib/sources/lolps";
 import type {
   ChampionRef,
   SourceCounterResult,
@@ -54,13 +77,49 @@ const POSITION_TO_LANE_NAME: Record<Position, string> = {
   support: "Support",
 };
 
+// Only used to fill ChampionBuild's laneId field for type compatibility with
+// lol.ps's shape — nothing outside lolps.ts's own internal lane-match check
+// actually reads that field (confirmed by grepping for `.laneId` usage), so
+// this mapping's exact values don't affect behavior, only honesty of the
+// returned object. Mirrors lol.ps's own LANE_ID_TO_POSITION numbering.
+const POSITION_TO_LANE_ID: Record<Position, number> = {
+  top: 0,
+  jungle: 1,
+  mid: 2,
+  adc: 3,
+  support: 4,
+};
+
+const SKILL_INDEX_TO_LETTER: Record<number, string> = { 1: "Q", 2: "W", 3: "E", 4: "R" };
+function skillLetters(indices: number[]): string[] {
+  return indices.map((n) => SKILL_INDEX_TO_LETTER[n] ?? "?");
+}
+
 interface DeeplolMatchupEntry {
   enemy_champion_id: number;
   win_rate: number;
   games: number;
 }
 
+interface DeeplolRateGames {
+  win_rate: number;
+  games: number;
+}
+
+interface DeeplolBuildVariant {
+  rune: { main_build: number[]; sub_build: number[] } & DeeplolRateGames;
+  item: { build: number[]; detail: number[] };
+  spell: { build: number[] } & DeeplolRateGames;
+  start_item: { build: number[] } & DeeplolRateGames;
+  skill: { build: number[]; detail: number[] } & DeeplolRateGames;
+  boots: { item: number } & DeeplolRateGames;
+  win_rate: number;
+  pick_rate: number;
+  games: number;
+}
+
 interface DeeplolLaneBuild {
+  build_lst: DeeplolBuildVariant[];
   match_up: {
     strong_against: DeeplolMatchupEntry[];
     weak_against: DeeplolMatchupEntry[];
@@ -143,6 +202,52 @@ async function fetchLaneCounters(
     // not something the app fetches.
     sourceUrl: `https://m.deeplol.gg/champions/detail?championName=${dataDragonSlug.toLowerCase()}&lane=${position}&tabs=build`,
     counters: entries,
+  };
+}
+
+/** This champion's build (items/runes/spells/skills) for `position`,
+ * mapped onto lol.ps's ChampionBuild shape — see the field-mapping comment
+ * at the top of this file. Unlike lol.ps, deeplol's build_by_lane is
+ * genuinely keyed by lane, so — no "only shows the champion's own primary
+ * lane" caveat here; a lane simply isn't returned if the champion doesn't
+ * play there. */
+export async function getChampionBuild(
+  championId: number,
+  position: Position,
+): Promise<ChampionBuild> {
+  const body = await fetchBuildResponse(championId);
+  const laneName = POSITION_TO_LANE_NAME[position];
+  const lane = body.build_by_lane[laneName];
+  const variant = lane?.build_lst[0];
+  if (!variant) {
+    throw new Error(`DeepLoL: no ${laneName} lane build data for this champion.`);
+  }
+
+  const rateOrNull = (rg: DeeplolRateGames): number | null => (rg.games > 0 ? rg.win_rate : null);
+  const gamesOrNull = (rg: DeeplolRateGames): number | null => (rg.games > 0 ? rg.games : null);
+
+  return {
+    laneId: POSITION_TO_LANE_ID[position],
+    mainRuneTreeId: variant.rune.main_build[0] ?? null,
+    mainRunes: variant.rune.main_build.slice(1),
+    subRuneTreeId: variant.rune.sub_build[0] ?? null,
+    subRunes: variant.rune.sub_build.slice(1),
+    runeWinRate: rateOrNull(variant.rune),
+    runeGames: gamesOrNull(variant.rune),
+    spell1Id: variant.spell.build[0] ?? null,
+    spell2Id: variant.spell.build[1] ?? null,
+    startingItemIds: variant.start_item.build,
+    startingWinRate: rateOrNull(variant.start_item),
+    startingGames: gamesOrNull(variant.start_item),
+    coreItemIds: variant.item.build,
+    coreWinRate: variant.win_rate,
+    coreGames: variant.games,
+    fullBuildItemIds: variant.item.detail,
+    shoesId: variant.boots.item ?? null,
+    skillMaxOrder: skillLetters(variant.skill.build),
+    skillMaxWinRate: rateOrNull(variant.skill),
+    skillMaxGames: gamesOrNull(variant.skill),
+    skillLevelOrder: skillLetters(variant.skill.detail),
   };
 }
 
