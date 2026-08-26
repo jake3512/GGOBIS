@@ -71,6 +71,13 @@ interface PickEntry {
   /** How well this candidate fits the full enemy roster filled in so far
    * (tags/stats heuristic, not a win rate) — 0.5 neutral, up to 1. */
   compFit?: number;
+  /** Real measured synergy against every already-picked ally (not a
+   * heuristic) — how many of them this candidate is a top synergy partner
+   * for, out of how many, plus the average measured win rate across just
+   * those matches. */
+  allySynergyMatchCount?: number;
+  allySynergyOutOf?: number;
+  allySynergyAvgWinRate?: number | null;
 }
 
 interface CombinedPickEntry {
@@ -447,6 +454,32 @@ function CompFitBadge({ compFit }: { compFit?: number }) {
   if (compFit == null || compFit <= 0.5) return null;
   const label = compFit >= 1 ? "상대팀 조합에 매우 적합" : "상대팀 조합에 적합";
   return <span className="comp-fit-badge">{label}</span>;
+}
+
+/** Real measured synergy against every already-picked ally — "우리팀에
+ * 2,3,4,5가 있을 때 각각과 시너지 좋은 챔피언의 교집합" 요청으로 추가된
+ * 배지. matchCount/outOf가 이 챔피언이 몇 명의 아군과 실제로(스크래핑된
+ * 데이터 기준) 상위 시너지 파트너로 겹치는지를 그대로 보여주고,
+ * matchCount === outOf일 때가 진짜 "교집합"(전원과 시너지 좋음)입니다.
+ * outOf가 0(채워진 아군 없음)이거나 matchCount가 0(아무와도 안 겹침)이면
+ * 표시할 정보가 없으므로 렌더링하지 않습니다. */
+function AllySynergyBadge({
+  matchCount,
+  outOf,
+  avgWinRate,
+}: {
+  matchCount?: number;
+  outOf?: number;
+  avgWinRate?: number | null;
+}) {
+  if (!outOf || !matchCount) return null;
+  const label = matchCount === outOf ? "우리팀 전원과 시너지 좋음" : `우리팀 ${outOf}명 중 ${matchCount}명과 시너지 좋음`;
+  return (
+    <span className="ally-synergy-badge">
+      {label}
+      {avgWinRate != null && ` (평균 ${(avgWinRate * 100).toFixed(1)}%)`}
+    </span>
+  );
 }
 
 /** Shown next to a recommendation entry's name when a champion pool is
@@ -1234,6 +1267,11 @@ export default function Home() {
                       <SourceBreakdown sources={c.bySource} />
                       <PowerCurveBadge earlyWinRate={c.earlyWinRate} lateWinRate={c.lateWinRate} />
                       <CompFitBadge compFit={c.compFit} />
+                      <AllySynergyBadge
+                        matchCount={c.allySynergyMatchCount}
+                        outOf={c.allySynergyOutOf}
+                        avgWinRate={c.allySynergyAvgWinRate}
+                      />
                       {c.build && <BuildCardCompact build={c.build} />}
                     </li>
                   ))}
@@ -1266,6 +1304,11 @@ export default function Home() {
                       <SourceBreakdown sources={c.bySource} />
                       <PowerCurveBadge earlyWinRate={c.earlyWinRate} lateWinRate={c.lateWinRate} />
                       <CompFitBadge compFit={c.compFit} />
+                      <AllySynergyBadge
+                        matchCount={c.allySynergyMatchCount}
+                        outOf={c.allySynergyOutOf}
+                        avgWinRate={c.allySynergyAvgWinRate}
+                      />
                       {c.build && <BuildCardCompact build={c.build} />}
                     </li>
                   ))}

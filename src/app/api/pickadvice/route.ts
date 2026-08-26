@@ -10,6 +10,7 @@ import {
 import { POSITIONS, type Position } from "@/lib/positions";
 import { getAggregatedDuoCandidates, getAggregatedLaneCounters } from "@/lib/sources/aggregate";
 import type { AggregatedCounters } from "@/lib/sources/aggregate";
+import type { ChampionRef } from "@/lib/sources/types";
 import {
   getChampionBuild,
   getLaneShare,
@@ -41,14 +42,28 @@ const LANE_MISMATCH_MIN_SHARE = 0.07;
 
 const POSITION_LABEL = new Map(POSITIONS.map((p) => [p.value, p.label]));
 
-// How much the enemy-comp-fit heuristics (tags/stats, and separately actual
-// skill kits, vs the FULL filled-in enemy roster) are allowed to move the
-// ranking, next to real scraped win rates. Real data stays dominant — this
-// can only nudge order among close picks, never flip a clear lane-counter/
-// synergy edge. See rerankByEnemyCompFit/refineTopWithSkillFit below and
-// scoreEnemyCompFit/applySkillFitBonus in teamComp.ts.
-const PICK_REAL_WEIGHT = 0.75;
-const PICK_FIT_WEIGHT = 0.25;
+// How much the two secondary signals below are allowed to move the ranking,
+// next to real scraped lane-counter/synergy win rate. Real data stays
+// dominant (0.65) — these can only nudge order among close picks, never
+// flip a clear lane-counter/synergy edge:
+//   - PICK_ENEMY_FIT_WEIGHT: the tag/stat-based "fits the enemy comp"
+//     heuristic (and, for the top few, actual skill kits) — see
+//     rerankPicks/refineTopWithSkillFit below and
+//     scoreEnemyCompFit/applySkillFitBonus in teamComp.ts.
+//   - PICK_ALLY_SYNERGY_WEIGHT: real scraped per-champion synergy data
+//     against EVERY already-picked ally (not a tag heuristic) — see
+//     computeAllySynergyScores below. Weighted higher than the tag-based
+//     enemy fit since it's actual measured win-rate data, just per-pair
+//     rather than a true 5-champion team stat.
+const PICK_REAL_WEIGHT = 0.65;
+const PICK_ENEMY_FIT_WEIGHT = 0.15;
+const PICK_ALLY_SYNERGY_WEIGHT = 0.2;
+
+// How many of a filled ally's top synergy partners (by measured win rate)
+// count toward computeAllySynergyScores's "intersection" — generous enough
+// that a candidate doesn't need to be literally the #1 partner for every
+// single already-picked ally to register as a match.
+const ALLY_SYNERGY_TOP_K = 20;
 
 const VALID_POSITIONS = new Set(POSITIONS.map((p) => p.value));
 
@@ -86,8 +101,24 @@ interface PickEntry {
   /** How well this candidate's own tags/stats fit the FULL enemy roster
    * filled in so far (not just the laner) — 0.5 = neutral/no signal, up to
    * 1 when both signals in scoreEnemyCompFit apply. Only ever nudges the
-   * ranking (see PICK_FIT_WEIGHT) — never overrides real win-rate order. */
+   * ranking (see PICK_ENEMY_FIT_WEIGHT) — never overrides real win-rate
+   * order. */
   compFit?: number;
+  /** How well this candidate's REAL measured synergy data covers the
+   * already-picked allies — 0.5 = neutral (no allies filled, or matches
+   * none of them), up to 1.0 when it's among the top synergy partners for
+   * every filled ally. See computeAllySynergyScores/allySynergyFitScore.
+   * Only ever nudges the ranking (PICK_ALLY_SYNERGY_WEIGHT) alongside
+   * compFit — never overrides real lane-counter win-rate order. */
+  allySynergyFit?: number;
+  /** How many of the filled allies (out of allySynergyOutOf) this candidate
+   * actually showed up as a top synergy partner for — the real number
+   * behind allySynergyFit, shown in the UI instead of the abstract score. */
+  allySynergyMatchCount?: number;
+  allySynergyOutOf?: number;
+  /** Average of the real measured win rates across just the allies it
+   * matched (null when allySynergyMatchCount is 0). */
+  allySynergyAvgWinRate?: number | null;
 }
 
 /** Parses a comma-separated list of champion IDs from a tier1/tier2/tier3
@@ -129,49 +160,120 @@ function restrictToPool(entries: PickEntry[], tierMap: Map<number, 1 | 2 | 3>): 
     .sort((a, b) => a.tier! - b.tier!);
 }
 
-/** Re-ranks a pick list to weigh in how well each candidate fits the FULL
- * enemy roster filled in so far — not just the one champion in my own lane
- * (`enemyChamps` here is every enemy slot the user has filled in, laner
- * included). Attaches `compFit` to every entry and re-sorts by a blended
- * score: real scraped win rate (PICK_REAL_WEIGHT) plus the tag-based fit
- * heuristic (PICK_FIT_WEIGHT). Must run BEFORE restrictToPool, since that
+/** How well a candidate's measured ally-synergy coverage looks, as the same
+ * 0.5-neutral-up-to-1.0 scale scoreEnemyCompFit uses — 0.5 when no allies
+ * are filled (no signal either way), rising toward 1.0 as `matchCount`
+ * approaches `outOf`. Deliberately simple/transparent (just the match
+ * ratio) rather than folding in the average win rate too — that real number
+ * is shown separately (allySynergyAvgWinRate) rather than baked into a
+ * fuzzy composite. */
+function allySynergyFitScore(matchCount: number, outOf: number): number {
+  if (outOf === 0) return 0.5;
+  return 0.5 + (matchCount / outOf) * 0.5;
+}
+
+/** For every already-picked ally, fetches their top ALLY_SYNERGY_TOP_K
+ * synergy partners (by real measured win rate, from every stat source) and
+ * looks for candidates that show up for MULTIPLE allies at once — the
+ * "intersection" of good-partner sets. `outOf` in the return value is how
+ * many allies actually returned usable synergy data (not necessarily every
+ * filled slot, if a source/page lookup failed for one) — that's the
+ * accurate denominator for how "complete" a match is. Best-effort per ally
+ * (Promise.allSettled): one ally's synergy page being unreachable just
+ * drops it from the intersection rather than failing the whole thing. */
+async function computeAllySynergyScores(
+  allySlots: { position: Position; champ: DDragonChampion }[],
+  champions: ChampionRef[],
+): Promise<{ scores: Map<number, { matchCount: number; avgWinRate: number | null }>; outOf: number }> {
+  if (allySlots.length === 0) return { scores: new Map(), outOf: 0 };
+  const settled = await Promise.allSettled(
+    allySlots.map(({ champ, position: p }) => getAggregatedDuoCandidates(champ.slug, p, champions)),
+  );
+  const perAllyTopK: Map<number, number>[] = [];
+  for (const r of settled) {
+    if (r.status !== "fulfilled") continue;
+    const ranked = [...r.value.entries]
+      .sort((a, b) => b.primary.winRate - a.primary.winRate)
+      .slice(0, ALLY_SYNERGY_TOP_K);
+    const map = new Map<number, number>();
+    for (const e of ranked) map.set(e.championId, e.primary.winRate);
+    perAllyTopK.push(map);
+  }
+  if (perAllyTopK.length === 0) return { scores: new Map(), outOf: 0 };
+
+  const candidateIds = new Set<number>();
+  for (const m of perAllyTopK) for (const id of m.keys()) candidateIds.add(id);
+
+  const scores = new Map<number, { matchCount: number; avgWinRate: number | null }>();
+  for (const id of candidateIds) {
+    const rates = perAllyTopK.map((m) => m.get(id)).filter((r): r is number => r !== undefined);
+    scores.set(id, {
+      matchCount: rates.length,
+      avgWinRate: rates.length > 0 ? rates.reduce((a, b) => a + b, 0) / rates.length : null,
+    });
+  }
+  return { scores, outOf: perAllyTopK.length };
+}
+
+/** Re-ranks a pick list against two secondary signals: how well each
+ * candidate fits the FULL enemy roster filled in so far (`enemyChamps` —
+ * every enemy slot the user has filled in, laner included, tag-based), and
+ * how well it covers the already-picked allies' real measured synergy data
+ * (`allySynergy` — see computeAllySynergyScores). Attaches `compFit` and
+ * `allySynergyFit` (+ the raw match count/win rate behind it) to every
+ * entry, then sorts by a blended score: real scraped win rate
+ * (PICK_REAL_WEIGHT) plus both secondary signals (PICK_ENEMY_FIT_WEIGHT /
+ * PICK_ALLY_SYNERGY_WEIGHT). Must run BEFORE restrictToPool, since that
  * function's tier sort is stable and relies on whatever order it's handed
  * as the tiebreaker within a tier — so this is what decides "same tier"
  * ordering once a champion pool is active, and the sole ordering when it
- * isn't. When enemyChamps is empty, scoreEnemyCompFit returns a neutral 0.5
- * for every candidate and this reduces to sorting by real win rate alone —
- * i.e. unchanged behavior from before this feature existed. */
-function rerankByEnemyCompFit(
+ * isn't. When enemyChamps/allySynergy are both empty, both secondary scores
+ * are a flat 0.5 for every candidate and this reduces to sorting by real
+ * win rate alone — i.e. unchanged relative order from before either
+ * feature existed. */
+function rerankPicks(
   entries: PickEntry[],
   champById: Map<number, DDragonChampion>,
   enemyChamps: DDragonChampion[],
+  allySynergy: { scores: Map<number, { matchCount: number; avgWinRate: number | null }>; outOf: number },
   order: "asc" | "desc",
 ): PickEntry[] {
   return entries
     .map((e) => {
       const champ = champById.get(e.championId);
       const compFit = champ ? scoreEnemyCompFit(champ, enemyChamps) : 0.5;
-      return { ...e, compFit };
+      const synergy = allySynergy.scores.get(e.championId);
+      return {
+        ...e,
+        compFit,
+        allySynergyFit: allySynergyFitScore(synergy?.matchCount ?? 0, allySynergy.outOf),
+        allySynergyMatchCount: synergy?.matchCount ?? 0,
+        allySynergyOutOf: allySynergy.outOf,
+        allySynergyAvgWinRate: synergy?.avgWinRate ?? null,
+      };
     })
     .sort((a, b) => {
       const goodnessA = order === "asc" ? 1 - a.winRate : a.winRate;
       const goodnessB = order === "asc" ? 1 - b.winRate : b.winRate;
-      const rankA = PICK_REAL_WEIGHT * goodnessA + PICK_FIT_WEIGHT * a.compFit!;
-      const rankB = PICK_REAL_WEIGHT * goodnessB + PICK_FIT_WEIGHT * b.compFit!;
+      const rankA =
+        PICK_REAL_WEIGHT * goodnessA + PICK_ENEMY_FIT_WEIGHT * a.compFit! + PICK_ALLY_SYNERGY_WEIGHT * a.allySynergyFit!;
+      const rankB =
+        PICK_REAL_WEIGHT * goodnessB + PICK_ENEMY_FIT_WEIGHT * b.compFit! + PICK_ALLY_SYNERGY_WEIGHT * b.allySynergyFit!;
       return rankB - rankA;
     });
 }
 
 /** Refines the top N entries of `picks` (mutated in place, then re-sorted)
  * using each side's ACTUAL passive/Q/W/E/R kit instead of just the coarse
- * champion tags rerankByEnemyCompFit already applied — see
- * applySkillFitBonus/championSkills.ts for what that adds and why it's
- * bounded to a shortlist (one Data Dragon request per champion). Re-sorts
- * only that shortlist, and tier (from a champion pool, if active) is kept
- * as the dominant key so this never reorders across tiers — it only
- * refines the order within whatever restrictToPool already grouped
- * together. Best-effort: any failure (Data Dragon down, shape changed)
- * just leaves the tag-based compFit from rerankByEnemyCompFit as-is. */
+ * champion tags rerankPicks already applied — see applySkillFitBonus/
+ * championSkills.ts for what that adds and why it's bounded to a shortlist
+ * (one Data Dragon request per champion). Re-sorts only that shortlist, and
+ * tier (from a champion pool, if active) is kept as the dominant key so
+ * this never reorders across tiers — it only refines the order within
+ * whatever restrictToPool already grouped together; allySynergyFit is left
+ * exactly as rerankPicks set it (this pass only bonuses compFit). Best-
+ * effort: any failure (Data Dragon down, shape changed) just leaves the
+ * tag-based compFit from rerankPicks as-is. */
 async function refineTopWithSkillFit(
   picks: PickEntry[],
   champById: Map<number, DDragonChampion>,
@@ -208,8 +310,14 @@ async function refineTopWithSkillFit(
       if (tierDiff !== 0) return tierDiff;
       const goodnessA = order === "asc" ? 1 - a.winRate : a.winRate;
       const goodnessB = order === "asc" ? 1 - b.winRate : b.winRate;
-      const rankA = PICK_REAL_WEIGHT * goodnessA + PICK_FIT_WEIGHT * (a.compFit ?? 0.5);
-      const rankB = PICK_REAL_WEIGHT * goodnessB + PICK_FIT_WEIGHT * (b.compFit ?? 0.5);
+      const rankA =
+        PICK_REAL_WEIGHT * goodnessA +
+        PICK_ENEMY_FIT_WEIGHT * (a.compFit ?? 0.5) +
+        PICK_ALLY_SYNERGY_WEIGHT * (a.allySynergyFit ?? 0.5);
+      const rankB =
+        PICK_REAL_WEIGHT * goodnessB +
+        PICK_ENEMY_FIT_WEIGHT * (b.compFit ?? 0.5) +
+        PICK_ALLY_SYNERGY_WEIGHT * (b.allySynergyFit ?? 0.5);
       return rankB - rankA;
     });
     picks.splice(0, top.length, ...top);
@@ -484,14 +592,23 @@ export async function GET(req: Request) {
   const enemyLaneChampion = slotChampion(`enemy-${position}`);
   const supportAdcChampion = slotChampion("ally-adc"); // only relevant when position === "support"
 
-  // Every enemy slot filled in so far (laner included) — feeds
-  // rerankByEnemyCompFit below so "내 픽 추천" weighs in the full known
-  // enemy roster, not just my direct lane opponent, per the tag-based
-  // heuristic in teamComp.ts. Also reused for compHeuristic.enemy further
-  // down, so it's computed once here instead of twice.
+  // Every enemy slot filled in so far (laner included) — feeds rerankPicks
+  // below so "내 픽 추천" weighs in the full known enemy roster, not just my
+  // direct lane opponent, per the tag-based heuristic in teamComp.ts. Also
+  // reused for compHeuristic.enemy further down, so it's computed once here
+  // instead of twice.
   const enemyChamps = POSITIONS.map((p) => slotChampion(`enemy-${p.value}`)).filter(
     (c): c is DDragonChampion => c !== null,
   );
+
+  // Every ALLY slot filled in so far, paired with its own position — feeds
+  // computeAllySynergyScores/rerankPicks below (real measured synergy
+  // against every already-picked ally, not just an ADC), and is reused
+  // as-is for compHeuristic.ally and teamPowerCurve further down.
+  const allySlotsWithPosition = POSITIONS.map((p) => ({ position: p.value, champ: slotChampion(`ally-${p.value}`) }))
+    .filter((s): s is { position: Position; champ: DDragonChampion } => s.champ !== null);
+  const allyChamps = allySlotsWithPosition.map((s) => s.champ);
+  const allySynergy = await computeAllySynergyScores(allySlotsWithPosition, champions);
 
   // --- single-pick recommendation for MY empty slot (unchanged logic from
   // before the draft board — just re-derived from the 10-slot params) ---
@@ -500,7 +617,7 @@ export async function GET(req: Request) {
   if (enemyLaneChampion) {
     try {
       const result = await getAggregatedLaneCounters(enemyLaneChampion.slug, position, champions);
-      const ranked = rerankByEnemyCompFit(toPickEntries(result, champById, "asc"), champById, enemyChamps, "asc");
+      const ranked = rerankPicks(toPickEntries(result, champById, "asc"), champById, enemyChamps, allySynergy, "asc");
       counterPicks = restrictToPool(ranked, tierMap);
       await refineTopWithSkillFit(counterPicks, champById, enemyChamps, "asc");
       await annotateWithPowerCurve(counterPicks, position);
@@ -514,8 +631,8 @@ export async function GET(req: Request) {
   let synergyError: string | null = null;
   if (position === "support" && supportAdcChampion) {
     try {
-      const result = await getAggregatedDuoCandidates(supportAdcChampion.slug, champions);
-      const ranked = rerankByEnemyCompFit(toPickEntries(result, champById, "desc"), champById, enemyChamps, "desc");
+      const result = await getAggregatedDuoCandidates(supportAdcChampion.slug, "adc", champions);
+      const ranked = rerankPicks(toPickEntries(result, champById, "desc"), champById, enemyChamps, allySynergy, "desc");
       synergyPicks = restrictToPool(ranked, tierMap);
       await refineTopWithSkillFit(synergyPicks, champById, enemyChamps, "desc");
       await annotateWithPowerCurve(synergyPicks, position);
@@ -532,8 +649,12 @@ export async function GET(req: Request) {
             const s = synergyPicks!.find((s) => s.championId === c.championId);
             if (!s) return [];
             const realScore = (1 - c.winRate + s.winRate) / 2;
-            const fitScore = ((c.compFit ?? 0.5) + (s.compFit ?? 0.5)) / 2;
-            const score = PICK_REAL_WEIGHT * realScore + PICK_FIT_WEIGHT * fitScore;
+            const enemyFitScore = ((c.compFit ?? 0.5) + (s.compFit ?? 0.5)) / 2;
+            const allySynergyFit = ((c.allySynergyFit ?? 0.5) + (s.allySynergyFit ?? 0.5)) / 2;
+            const score =
+              PICK_REAL_WEIGHT * realScore +
+              PICK_ENEMY_FIT_WEIGHT * enemyFitScore +
+              PICK_ALLY_SYNERGY_WEIGHT * allySynergyFit;
             return [
               {
                 championId: c.championId,
@@ -543,7 +664,7 @@ export async function GET(req: Request) {
                 counterGames: c.games,
                 synergyWinRate: s.winRate,
                 synergyGames: s.games,
-                compFit: fitScore,
+                compFit: enemyFitScore,
                 score,
                 tier: c.tier,
               },
@@ -610,7 +731,7 @@ export async function GET(req: Request) {
   } | null = null;
   if (duoAdc && duoSupport) {
     try {
-      const result = await getAggregatedDuoCandidates(duoAdc.slug, champions);
+      const result = await getAggregatedDuoCandidates(duoAdc.slug, "adc", champions);
       const match = findMatch(result, duoSupport.id);
       duo = {
         adc: toBrief(duoAdc),
@@ -643,11 +764,9 @@ export async function GET(req: Request) {
 
   // --- "챔피언 특성 기반" 조합 분석: Riot 공식 정적 데이터(tags/info)만
   // 사용하는, 승률과 무관한 보조 지표. src/lib/teamComp.ts 참고.
-  // (enemyChamps was already computed above, before counterPicks/synergyPicks,
-  // so rerankByEnemyCompFit could use it too — reused here as-is.) ---
-  const allySlotsWithPosition = POSITIONS.map((p) => ({ position: p.value, champ: slotChampion(`ally-${p.value}`) }))
-    .filter((s): s is { position: Position; champ: DDragonChampion } => s.champ !== null);
-  const allyChamps = allySlotsWithPosition.map((s) => s.champ);
+  // (allySlotsWithPosition/allyChamps/enemyChamps were already computed
+  // above, before counterPicks/synergyPicks, so rerankPicks could use them
+  // too — reused here as-is.) ---
   const compHeuristic = {
     ally: analyzeTeamComp(allyChamps),
     enemy: analyzeTeamComp(enemyChamps),

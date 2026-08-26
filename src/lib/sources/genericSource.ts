@@ -18,7 +18,11 @@ export interface GenericSourceConfig {
   /** Data Dragon slug -> this site's champion slug. Defaults to lowercasing. */
   slug?(dataDragonSlug: string): string;
   counterUrl(slug: string, position: Position): string;
-  duoUrl(adcSlug: string): string;
+  /** `position` is the champion's OWN position — sites whose synergy page
+   * is scoped per-position (op.gg's `/synergies/{position}`, u.gg/
+   * Mobalytics's `?role={position}`, lolalytics's `?lane={position}`) need
+   * it to build the right URL for any position, not just ADC. */
+  duoUrl(slug: string, position: Position): string;
 }
 
 /** Builds a StatSource for any site that server-renders its pages with an
@@ -62,14 +66,15 @@ export function createGenericSource(config: GenericSourceConfig): StatSource {
     },
 
     async getBotDuoSynergy(
-      adcSlugRaw,
-      supportSlugRaw,
-      supportChampionId,
+      slugRaw,
+      position,
+      partnerSlugRaw,
+      partnerChampionId,
       champions,
     ): Promise<SourceDuoResult> {
-      const adcSlug = toSlug(adcSlugRaw);
-      const { sourceUrl, counters } = await fetchDuoCandidates(adcSlug, champions);
-      const match = counters.find((e) => e.championId === supportChampionId);
+      const slug = toSlug(slugRaw);
+      const { sourceUrl, counters } = await fetchDuoCandidates(slug, position, champions);
+      const match = counters.find((e) => e.championId === partnerChampionId);
       return {
         sourceId: config.id,
         sourceLabel: config.label,
@@ -79,22 +84,23 @@ export function createGenericSource(config: GenericSourceConfig): StatSource {
       };
     },
 
-    async getBotDuoCandidates(adcSlugRaw, champions): Promise<SourceCounterResult> {
-      const adcSlug = toSlug(adcSlugRaw);
-      return fetchDuoCandidates(adcSlug, champions);
+    async getBotDuoCandidates(slugRaw, position, champions): Promise<SourceCounterResult> {
+      const slug = toSlug(slugRaw);
+      return fetchDuoCandidates(slug, position, champions);
     },
   };
 
-  /** Fetches and parses an ADC's synergies page once — shared by
-   * getBotDuoSynergy (which filters down to one partner) and
-   * getBotDuoCandidates (which returns the whole ranked list), so both end
-   * up sharing the same cache entry instead of double-fetching. */
+  /** Fetches and parses a champion's synergies page once (for its OWN
+   * position) — shared by getBotDuoSynergy (which filters down to one
+   * partner) and getBotDuoCandidates (which returns the whole ranked list),
+   * so both end up sharing the same cache entry instead of double-fetching. */
   function fetchDuoCandidates(
-    adcSlug: string,
+    slug: string,
+    position: Position,
     champions: ChampionRef[],
   ): Promise<SourceCounterResult> {
-    return cached(`${config.id}:duo:${adcSlug}`, CACHE_TTL_MS, async () => {
-      const url = config.duoUrl(adcSlug);
+    return cached(`${config.id}:duo:${slug}:${position}`, CACHE_TTL_MS, async () => {
+      const url = config.duoUrl(slug, position);
       const html = await fetchHtml(url);
       const roots = extractEmbeddedJsonRoots(html, config.label);
       const counters = extractBestStatList(roots, buildSlugResolver(champions));

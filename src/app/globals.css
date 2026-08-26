@@ -447,6 +447,21 @@ textarea {
   padding: 0.15rem 0.55rem;
 }
 
+/* Real measured synergy data (not a tag heuristic like comp-fit-badge), so
+   it gets the --good tint to read as closer to an actual stat. */
+.ally-synergy-badge {
+  display: inline-block;
+  margin-top: 0.35rem;
+  margin-left: 0.35rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--good);
+  background: rgba(69, 220, 154, 0.12);
+  border: 1px solid var(--good);
+  border-radius: 999px;
+  padding: 0.15rem 0.55rem;
+}
+
 .tier-badge {
   display: inline-block;
   font-size: 0.75rem;

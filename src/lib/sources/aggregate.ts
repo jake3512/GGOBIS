@@ -93,13 +93,16 @@ export async function getAggregatedLaneCounters(
   );
 }
 
-/** All of a known ADC's synergy partners, ranked — used to recommend picks
- * (mainly supports) that pair well with an already-locked ADC. */
+/** All of a known champion's synergy partners at their own `position`,
+ * ranked — used both for the original "which support pairs well with this
+ * ADC" recommendation and, more generally, for checking synergy between any
+ * already-picked ally and candidates for another slot. */
 export async function getAggregatedDuoCandidates(
-  adcSlug: string,
+  slug: string,
+  position: Position,
   champions: ChampionRef[],
 ): Promise<AggregatedCounters> {
-  return aggregateCounterLike(SOURCES.map((s) => s.getBotDuoCandidates(adcSlug, champions)));
+  return aggregateCounterLike(SOURCES.map((s) => s.getBotDuoCandidates(slug, position, champions)));
 }
 
 export interface AggregatedDuo {
@@ -110,13 +113,14 @@ export interface AggregatedDuo {
 }
 
 export async function getAggregatedDuoSynergy(
-  adcSlug: string,
-  supportSlug: string,
-  supportChampionId: number,
+  slug: string,
+  position: Position,
+  partnerSlug: string,
+  partnerChampionId: number,
   champions: ChampionRef[],
 ): Promise<AggregatedDuo> {
   const settled = await Promise.allSettled(
-    SOURCES.map((s) => s.getBotDuoSynergy(adcSlug, supportSlug, supportChampionId, champions)),
+    SOURCES.map((s) => s.getBotDuoSynergy(slug, position, partnerSlug, partnerChampionId, champions)),
   );
 
   const errors: SourceError[] = [];

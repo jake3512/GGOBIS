@@ -42,17 +42,23 @@ export interface StatSource {
     champions: ChampionRef[],
   ): Promise<SourceCounterResult>;
   getBotDuoSynergy(
-    adcDataDragonSlug: string,
-    supportDataDragonSlug: string,
-    supportChampionId: number,
+    dataDragonSlug: string,
+    position: Position,
+    partnerDataDragonSlug: string,
+    partnerChampionId: number,
     champions: ChampionRef[],
   ): Promise<SourceDuoResult>;
-  /** All of a known ADC's synergy partners (mainly supports), ranked —
-   * the same underlying page/data as getBotDuoSynergy, just not filtered
-   * down to one specific partner. Used for "which support/pick goes well
-   * with this ADC" recommendations. */
+  /** All of a known champion's synergy partners, ranked — the same
+   * underlying page/data as getBotDuoSynergy, just not filtered down to one
+   * specific partner. `position` is that champion's OWN position (not the
+   * partner's) — sites whose synergy page is scoped per-position (e.g.
+   * op.gg's `/synergies/{position}`) need it to build the right URL.
+   * Originally ADC-only ("which support goes well with this ADC"); now used
+   * for any position so pick-advice can check synergy with every already-
+   * picked ally, not just a locked-in ADC. */
   getBotDuoCandidates(
-    adcDataDragonSlug: string,
+    dataDragonSlug: string,
+    position: Position,
     champions: ChampionRef[],
   ): Promise<SourceCounterResult>;
 }
