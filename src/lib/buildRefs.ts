@@ -35,6 +35,12 @@ export interface BuildResult {
   skillMaxWinRate: number | null;
   skillMaxGames: number | null;
   skillLevelOrder: string[];
+  /** Whole-build-combination win rate/pick rate/games, distinct from the
+   * per-section rates above — see ChampionBuild.overallWinRate. null when
+   * the source doesn't track this separately (e.g. lol.ps). */
+  overallWinRate: number | null;
+  overallPickRate: number | null;
+  overallGames: number | null;
 }
 
 export interface BuildRefData {
@@ -80,5 +86,8 @@ export function toBuildResult(
     skillMaxWinRate: build.skillMaxWinRate,
     skillMaxGames: build.skillMaxGames,
     skillLevelOrder: build.skillLevelOrder,
+    overallWinRate: build.overallWinRate ?? null,
+    overallPickRate: build.overallPickRate ?? null,
+    overallGames: build.overallGames ?? null,
   };
 }

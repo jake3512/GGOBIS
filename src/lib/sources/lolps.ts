@@ -200,6 +200,16 @@ export interface ChampionBuild {
   skillMaxWinRate: number | null;
   skillMaxGames: number | null;
   skillLevelOrder: string[];
+  /** One win rate/pick rate/games-sample for the WHOLE build combination
+   * (rune+item+spell+skill together), as opposed to the per-section rates
+   * above which are each measured independently. lol.ps doesn't expose this
+   * as a separate concept (undefined here), but deeplol.gg does — its
+   * build_lst entries only carry one overall win_rate/pick_rate/games per
+   * variant, with every per-section rate zeroed out. Optional so lol.ps
+   * builds don't need to fake a value. */
+  overallWinRate?: number | null;
+  overallPickRate?: number | null;
+  overallGames?: number | null;
 }
 
 function toRate(v: number | null): number | null {

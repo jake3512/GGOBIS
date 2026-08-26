@@ -50,11 +50,13 @@
 // Per-field win_rate/games (rune.win_rate, spell.win_rate, etc.) were all
 // 0/0 in every sample seen — deeplol apparently only tracks a single overall
 // win_rate/games/pick_rate per build_lst entry, not a breakdown per
-// rune/spell/item/skill choice like lol.ps does. So all the granular
-// *WinRate/*Games fields below are null unless the sub-object's own games
-// count is nonzero, and the one real number available (the build variant's
-// overall win_rate/games) is surfaced under coreWinRate/coreGames since
-// that's the field BuildCard displays most prominently.
+// rune/spell/item/skill choice like lol.ps does (and `item` doesn't even
+// carry a win_rate/games field at all). So the granular *WinRate/*Games
+// fields below are null unless the sub-object's own games count is nonzero,
+// and the one real number available (the build variant's own win_rate/
+// pick_rate/games) is surfaced separately via ChampionBuild's
+// overallWinRate/overallPickRate/overallGames — not misattributed to any
+// single section like "core items".
 
 import { cached } from "@/lib/cache";
 import { getLatestVersion } from "@/lib/ddragon";
@@ -240,14 +242,24 @@ export async function getChampionBuild(
     startingWinRate: rateOrNull(variant.start_item),
     startingGames: gamesOrNull(variant.start_item),
     coreItemIds: variant.item.build,
-    coreWinRate: variant.win_rate,
-    coreGames: variant.games,
+    // deeplol's `item` object has no win_rate/games of its own (confirmed:
+    // absent from every sample seen, unlike rune/spell/start_item/skill
+    // which at least have the fields, just zeroed) — so there's no real
+    // per-item-core number to put here. The one genuine number this source
+    // gives is the whole build variant's win_rate/pick_rate/games, surfaced
+    // below as overallWinRate/overallPickRate/overallGames instead of
+    // being misattributed to "core items" specifically.
+    coreWinRate: null,
+    coreGames: null,
     fullBuildItemIds: variant.item.detail,
     shoesId: variant.boots.item ?? null,
     skillMaxOrder: skillLetters(variant.skill.build),
     skillMaxWinRate: rateOrNull(variant.skill),
     skillMaxGames: gamesOrNull(variant.skill),
     skillLevelOrder: skillLetters(variant.skill.detail),
+    overallWinRate: variant.win_rate,
+    overallPickRate: variant.pick_rate,
+    overallGames: variant.games,
   };
 }
 
