@@ -367,6 +367,16 @@ textarea {
   margin-top: 0.3rem;
 }
 
+.build-source-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--muted);
+  padding: 0.1rem 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
 .build-divider {
   width: 1px;
   height: 24px;

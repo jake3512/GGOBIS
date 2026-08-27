@@ -18,6 +18,7 @@ import {
   laneIdToPosition,
   type VersusStats,
 } from "@/lib/sources/lolps";
+import { getChampionBuild as getDeeplolChampionBuild } from "@/lib/sources/deeplol";
 import { toBuildResult, type BuildResult } from "@/lib/buildRefs";
 import { analyzeTeamComp, applySkillFitBonus, scoreEnemyCompFit } from "@/lib/teamComp";
 import { getChampionAbilitiesWithCache, type ChampionAbilities } from "@/lib/championSkills";
@@ -84,6 +85,18 @@ const ALLY_SYNERGY_TOP_K = 20;
 const POWER_CURVE_TEAM_FIT_BLEND = 0.3;
 const LANING_STATS_BLEND = 0.25;
 
+// applyBuildFitBonus: how much compFit is bumped when a candidate's own
+// REAL recommended build (lol.ps and/or DeepLoL) itemizes defensively
+// against the enemy team's actual damage-type split — same small additive-
+// bonus-then-clamp style as applySkillFitBonus/scoreEnemyCompFit
+// (teamComp.ts), just grounded in Data Dragon item `tags` instead of
+// champion tags/kit text. DAMAGE_MAJORITY_THRESHOLD (0-100, matches
+// DamageBalance.physicalPct/magicPct) is how skewed the enemy's damage
+// split needs to be before "itemize defensively" is even a meaningful ask —
+// a near-50/50 comp doesn't clearly call for one item type over the other.
+const BUILD_DEFENSE_BONUS = 0.15;
+const DAMAGE_MAJORITY_THRESHOLD = 60;
+
 const VALID_POSITIONS = new Set(POSITIONS.map((p) => p.value));
 
 interface ChampionBrief {
@@ -114,6 +127,10 @@ interface PickEntry {
   /** lol.ps build recommendation — same top-N-only, same-position-only
    * limits as the power curve above. */
   build?: BuildResult | null;
+  /** DeepLoL's build recommendation for the same champion+position, shown
+   * alongside `build` rather than merged with it — same "라인 카운터"/"빌드"
+   * tab convention (see BuildCard's sourceLabel). Same top-N-only limit. */
+  buildDeeplol?: BuildResult | null;
   /** User-declared mastery tier (1 = most proficient) — only set when the
    * caller supplied a champion pool (tier1/tier2/tier3 query params). */
   tier?: 1 | 2 | 3;
@@ -240,6 +257,29 @@ async function computeAllySynergyScores(
   return { scores, outOf: perAllyTopK.length };
 }
 
+/** The single ranking formula every refine pass in this file uses to sort
+ * (or re-sort) a pick list — factored out so rerankPicks, refineTopWithSkillFit,
+ * refineTopWithPowerCurveAndLaning, and applyBuildFitBonus can never drift
+ * out of sync with each other (a real risk once there were three separate
+ * inline copies: adding the laning-stats blend to one re-sort but not
+ * another would silently undo it on the next pass). Blends in
+ * laningFitScore only when `e.laningStats` is already set — it isn't yet at
+ * the earlier call sites (rerankPicks/refineTopWithSkillFit run before
+ * refineTopWithPowerCurveAndLaning attaches it), so this degrades to the
+ * plain real-winRate goodness there, unchanged from before this refactor. */
+function pickRankScore(e: PickEntry, order: "asc" | "desc"): number {
+  let goodness = order === "asc" ? 1 - e.winRate : e.winRate;
+  if (e.laningStats) {
+    const laningFit = laningFitScore(e.laningStats);
+    goodness = goodness * (1 - LANING_STATS_BLEND) + laningFit * LANING_STATS_BLEND;
+  }
+  return (
+    PICK_REAL_WEIGHT * goodness +
+    PICK_ENEMY_FIT_WEIGHT * (e.compFit ?? 0.5) +
+    PICK_ALLY_SYNERGY_WEIGHT * (e.allySynergyFit ?? 0.5)
+  );
+}
+
 /** Re-ranks a pick list against two secondary signals: how well each
  * candidate fits the FULL enemy roster filled in so far (`enemyChamps` —
  * every enemy slot the user has filled in, laner included, tag-based), and
@@ -277,15 +317,7 @@ function rerankPicks(
         allySynergyAvgWinRate: synergy?.avgWinRate ?? null,
       };
     })
-    .sort((a, b) => {
-      const goodnessA = order === "asc" ? 1 - a.winRate : a.winRate;
-      const goodnessB = order === "asc" ? 1 - b.winRate : b.winRate;
-      const rankA =
-        PICK_REAL_WEIGHT * goodnessA + PICK_ENEMY_FIT_WEIGHT * a.compFit! + PICK_ALLY_SYNERGY_WEIGHT * a.allySynergyFit!;
-      const rankB =
-        PICK_REAL_WEIGHT * goodnessB + PICK_ENEMY_FIT_WEIGHT * b.compFit! + PICK_ALLY_SYNERGY_WEIGHT * b.allySynergyFit!;
-      return rankB - rankA;
-    });
+    .sort((a, b) => pickRankScore(b, order) - pickRankScore(a, order));
 }
 
 /** Refines the top N entries of `picks` (mutated in place, then re-sorted)
@@ -333,17 +365,7 @@ async function refineTopWithSkillFit(
     top.sort((a, b) => {
       const tierDiff = (a.tier ?? 0) - (b.tier ?? 0);
       if (tierDiff !== 0) return tierDiff;
-      const goodnessA = order === "asc" ? 1 - a.winRate : a.winRate;
-      const goodnessB = order === "asc" ? 1 - b.winRate : b.winRate;
-      const rankA =
-        PICK_REAL_WEIGHT * goodnessA +
-        PICK_ENEMY_FIT_WEIGHT * (a.compFit ?? 0.5) +
-        PICK_ALLY_SYNERGY_WEIGHT * (a.allySynergyFit ?? 0.5);
-      const rankB =
-        PICK_REAL_WEIGHT * goodnessB +
-        PICK_ENEMY_FIT_WEIGHT * (b.compFit ?? 0.5) +
-        PICK_ALLY_SYNERGY_WEIGHT * (b.allySynergyFit ?? 0.5);
-      return rankB - rankA;
+      return pickRankScore(b, order) - pickRankScore(a, order);
     });
     picks.splice(0, top.length, ...top);
   } catch {
@@ -449,19 +471,7 @@ async function refineTopWithPowerCurveAndLaning(
   top.sort((a, b) => {
     const tierDiff = (a.tier ?? 0) - (b.tier ?? 0);
     if (tierDiff !== 0) return tierDiff;
-    const rank = (e: PickEntry) => {
-      let goodness = order === "asc" ? 1 - e.winRate : e.winRate;
-      if (e.laningStats) {
-        const laningFit = laningFitScore(e.laningStats);
-        goodness = goodness * (1 - LANING_STATS_BLEND) + laningFit * LANING_STATS_BLEND;
-      }
-      return (
-        PICK_REAL_WEIGHT * goodness +
-        PICK_ENEMY_FIT_WEIGHT * (e.compFit ?? 0.5) +
-        PICK_ALLY_SYNERGY_WEIGHT * (e.allySynergyFit ?? 0.5)
-      );
-    };
-    return rank(b) - rank(a);
+    return pickRankScore(b, order) - pickRankScore(a, order);
   });
   picks.splice(0, top.length, ...top);
 }
@@ -509,6 +519,87 @@ async function annotateWithBuild(picks: PickEntry[], position: Position): Promis
   } catch {
     // Data Dragon or lol.ps unreachable — leave build fields unset.
   }
+}
+
+/** Mutates the top N entries of `picks` in place, attaching a DeepLoL build
+ * recommendation alongside the lol.ps one annotateWithBuild already set —
+ * same "라인 카운터"/"빌드" tab convention of showing both sources side by
+ * side rather than merging them (see BuildCard's `sourceLabel`). Unlike
+ * lol.ps, DeepLoL's build data is genuinely keyed by the requested lane (no
+ * primary-lane-only limitation — see deeplol.ts's getChampionBuild), so
+ * there's no laneNote/mismatch handling here: a lane just has no data if the
+ * champion doesn't play it, same as any other best-effort miss. */
+async function annotateWithDeeplolBuild(picks: PickEntry[], position: Position): Promise<void> {
+  const top = picks.slice(0, BUILD_CANDIDATE_LIMIT);
+  if (top.length === 0) return;
+  try {
+    const [items, spells, runesData] = await Promise.all([
+      getItemsWithCache(),
+      getSummonerSpellsWithCache(),
+      getRunesDataWithCache(),
+    ]);
+    const results = await Promise.allSettled(top.map((p) => getDeeplolChampionBuild(p.championId, position)));
+    results.forEach((r, i) => {
+      if (r.status !== "fulfilled") return;
+      const entry = top[i];
+      entry.buildDeeplol = toBuildResult(
+        { id: entry.championId, name: entry.name, iconUrl: entry.iconUrl },
+        position,
+        r.value,
+        { items, spells, runes: runesData.runes, trees: runesData.trees },
+      );
+    });
+  } catch {
+    // Data Dragon or DeepLoL unreachable — leave buildDeeplol unset.
+  }
+}
+
+/** Whether any of a candidate's own real recommended core-item builds
+ * (lol.ps and/or DeepLoL — either counts, since this just asks "does a real
+ * build for this champion itemize defensively here") includes an item
+ * carrying the given Data Dragon item tag ("Armor" or "SpellBlock"). Only
+ * looks at core items (the handful actually prioritized), not the full
+ * 6-item build, since that's the part of a build a pick decision can
+ * realistically hinge on this early. */
+function buildHasItemTag(entry: PickEntry, tag: string): boolean {
+  const coreItemSets = [entry.build?.coreItems, entry.buildDeeplol?.coreItems];
+  return coreItemSets.some((items) => items?.some((it) => it.tags?.includes(tag)) ?? false);
+}
+
+/** Bonuses (then re-sorts) the top N entries of `picks` using whether each
+ * candidate's own REAL recommended build (lol.ps and/or DeepLoL — must
+ * already be attached by annotateWithBuild/annotateWithDeeplolBuild, so this
+ * runs after both) itemizes defensively against the enemy team's actual
+ * damage-type split. Same house style as applySkillFitBonus/scoreEnemyCompFit
+ * (teamComp.ts): official Data Dragon fields only (item `tags`, champion
+ * `info.attack`/`info.magic` via analyzeTeamComp's damageBalance), a small
+ * additive bonus clamped to 1, and no bonus at all when the enemy comp isn't
+ * clearly leaning one damage type (see DAMAGE_MAJORITY_THRESHOLD) or no
+ * enemy champions are filled in yet. Synchronous — everything it reads was
+ * already fetched by earlier steps, no new network calls. */
+function applyBuildFitBonus(picks: PickEntry[], enemyChamps: DDragonChampion[], order: "asc" | "desc"): void {
+  const top = picks.slice(0, BUILD_CANDIDATE_LIMIT);
+  if (top.length === 0) return;
+  const damageBalance = analyzeTeamComp(enemyChamps)?.damageBalance;
+  if (!damageBalance) return;
+
+  const enemyIsPhysicalHeavy = damageBalance.physicalPct >= DAMAGE_MAJORITY_THRESHOLD;
+  const enemyIsMagicHeavy = damageBalance.magicPct >= DAMAGE_MAJORITY_THRESHOLD;
+  if (!enemyIsPhysicalHeavy && !enemyIsMagicHeavy) return;
+
+  for (const entry of top) {
+    let bonus = 0;
+    if (enemyIsPhysicalHeavy && buildHasItemTag(entry, "Armor")) bonus += BUILD_DEFENSE_BONUS;
+    if (enemyIsMagicHeavy && buildHasItemTag(entry, "SpellBlock")) bonus += BUILD_DEFENSE_BONUS;
+    if (bonus > 0) entry.compFit = Math.min(1, (entry.compFit ?? 0.5) + bonus);
+  }
+
+  top.sort((a, b) => {
+    const tierDiff = (a.tier ?? 0) - (b.tier ?? 0);
+    if (tierDiff !== 0) return tierDiff;
+    return pickRankScore(b, order) - pickRankScore(a, order);
+  });
+  picks.splice(0, top.length, ...top);
 }
 
 function toBrief(c: DDragonChampion): ChampionBrief {
@@ -747,6 +838,8 @@ export async function GET(req: Request) {
       await refineTopWithSkillFit(counterPicks, champById, enemyChamps, "asc");
       await refineTopWithPowerCurveAndLaning(counterPicks, position, teamPeak, enemyLaneChampion.id, "asc");
       await annotateWithBuild(counterPicks, position);
+      await annotateWithDeeplolBuild(counterPicks, position);
+      applyBuildFitBonus(counterPicks, enemyChamps, "asc");
     } catch (err) {
       counterError = err instanceof Error ? err.message : "라인전 카운터 조회에 실패했습니다.";
     }
@@ -765,6 +858,8 @@ export async function GET(req: Request) {
       // null) — only the power-curve/team-phase blend applies here.
       await refineTopWithPowerCurveAndLaning(synergyPicks, position, teamPeak, null, "desc");
       await annotateWithBuild(synergyPicks, position);
+      await annotateWithDeeplolBuild(synergyPicks, position);
+      applyBuildFitBonus(synergyPicks, enemyChamps, "desc");
     } catch (err) {
       synergyError = err instanceof Error ? err.message : "시너지 조회에 실패했습니다.";
     }

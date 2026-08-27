@@ -137,6 +137,12 @@ export interface DDragonItem {
   id: number;
   name: string;
   iconUrl: string;
+  /** Item categories straight from Data Dragon's own item.json (e.g.
+   * "Armor", "SpellBlock", "Boots", "Consumable"...) — official structured
+   * data, used by pick-advice to check whether a champion's recommended
+   * build itemizes defensively against the enemy team's damage-type split
+   * (see applyBuildFitBonus, src/app/api/pickadvice/route.ts). */
+  tags: string[];
 }
 
 let cachedItems: { value: Map<number, DDragonItem>; fetchedAt: number } | null = null;
@@ -151,13 +157,14 @@ export async function getItemsWithCache(locale = "ko_KR"): Promise<Map<number, D
   });
   if (!res.ok) throw new Error(`Data Dragon item.json request failed: ${res.status}`);
   const body = await res.json();
-  const data = body.data as Record<string, { name: string; image: { full: string } }>;
+  const data = body.data as Record<string, { name: string; image: { full: string }; tags?: string[] }>;
   const map = new Map<number, DDragonItem>();
   for (const [id, item] of Object.entries(data)) {
     map.set(Number(id), {
       id: Number(id),
       name: item.name,
       iconUrl: `${DDRAGON_BASE}/cdn/${v}/img/item/${item.image.full}`,
+      tags: item.tags ?? [],
     });
   }
   cachedItems = { value: map, fetchedAt: Date.now() };

@@ -66,6 +66,9 @@ interface PickEntry {
   earlyWinRate?: number | null;
   lateWinRate?: number | null;
   build?: BuildResult | null;
+  /** DeepLoL's build for the same champion+position, shown alongside `build`
+   * rather than merged with it — same "라인 카운터"/"빌드" tab convention. */
+  buildDeeplol?: BuildResult | null;
   /** Set only when the caller declared a champion pool — see ChampionPool below. */
   tier?: 1 | 2 | 3;
   /** How well this candidate fits the full enemy roster filled in so far
@@ -1356,7 +1359,8 @@ export default function Home() {
                         />
                       </div>
                       {c.laningStats && <LaningStatsRow stats={c.laningStats} />}
-                      {c.build && <BuildCardCompact build={c.build} />}
+                      {c.build && <BuildCardCompact build={c.build} sourceLabel="lol.ps" />}
+                      {c.buildDeeplol && <BuildCardCompact build={c.buildDeeplol} sourceLabel="DeepLoL" />}
                     </li>
                   ))}
                   {adviceResult.counterPicks.length === 0 && (
@@ -1392,7 +1396,8 @@ export default function Home() {
                           avgWinRate={c.allySynergyAvgWinRate}
                         />
                       </div>
-                      {c.build && <BuildCardCompact build={c.build} />}
+                      {c.build && <BuildCardCompact build={c.build} sourceLabel="lol.ps" />}
+                      {c.buildDeeplol && <BuildCardCompact build={c.buildDeeplol} sourceLabel="DeepLoL" />}
                     </li>
                   ))}
                   {adviceResult.synergyPicks.length === 0 && (
