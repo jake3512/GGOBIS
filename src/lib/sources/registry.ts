@@ -85,7 +85,7 @@ const configs: GenericSourceConfig[] = [
     id: "mobalytics",
     label: "Mobalytics",
     confidence: "low",
-    slug: toKebabSlug,
+    slug: (s) => (s === "MonkeyKing" ? "wukong" : toKebabSlug(s)),
     counterUrl: (slug, position) =>
       `https://mobalytics.gg/lol/champions/${slug}/counters?role=${position}`,
     duoUrl: (slug, position) => `https://mobalytics.gg/lol/champions/${slug}/synergies?role=${position}`,
