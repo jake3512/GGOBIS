@@ -93,6 +93,21 @@ interface CombinedPickEntry {
   compFit?: number;
 }
 
+interface VersusLaneSide {
+  goldAt15: number;
+  xpAt15: number;
+  csAt15: number;
+  soloKillBefore15: number;
+  maxLevelLead: number;
+}
+
+interface VersusStats {
+  games: number;
+  ally: VersusLaneSide;
+  enemy: VersusLaneSide;
+  allyLevel6FirstRate: number | null;
+}
+
 interface LaneSynergyEntry {
   position: string;
   ally: ChampionBrief;
@@ -100,6 +115,7 @@ interface LaneSynergyEntry {
   winRate: number | null;
   games: number | null;
   bySource: SourceValue[];
+  laningStats: VersusStats | null;
   error: string | null;
 }
 
@@ -479,6 +495,40 @@ function AllySynergyBadge({
       {label}
       {avgWinRate != null && ` (평균 ${(avgWinRate * 100).toFixed(1)}%)`}
     </span>
+  );
+}
+
+/** lol.ps versus/stats.json 기반 라인전 세부지표 — "실측 데이터 기반 전체
+ * 시너지"의 각 라인 매치업(이미 아군/적군 챔피언과 라인이 둘 다 정해진
+ * 상태)에 붙는 부가 정보. 15분 골드/경험치/CS는 아군 기준 차이(양수=아군
+ * 우위)로, 나머지는 두 챔피언 실측 수치를 나란히 보여줌 — 전부 lol.ps가
+ * 그 매치업+라인에서 실제로 집계한 값이고 가공된 지표가 아님. */
+function LaningStatsRow({ stats }: { stats: VersusStats }) {
+  const goldDiff = stats.ally.goldAt15 - stats.enemy.goldAt15;
+  const xpDiff = stats.ally.xpAt15 - stats.enemy.xpAt15;
+  const csDiff = stats.ally.csAt15 - stats.enemy.csAt15;
+  const fmtDiff = (d: number) => `${d >= 0 ? "+" : ""}${Math.round(d).toLocaleString()}`;
+  return (
+    <div className="laning-stats">
+      <div className="laning-stats-row">
+        <span className={`laning-stat${goldDiff >= 0 ? " laning-stat--good" : " laning-stat--bad"}`}>
+          15분 골드 {fmtDiff(goldDiff)}
+        </span>
+        <span className={`laning-stat${xpDiff >= 0 ? " laning-stat--good" : " laning-stat--bad"}`}>
+          15분 경험치 {fmtDiff(xpDiff)}
+        </span>
+        <span className={`laning-stat${csDiff >= 0 ? " laning-stat--good" : " laning-stat--bad"}`}>
+          15분 CS {fmtDiff(csDiff)}
+        </span>
+      </div>
+      <p className="empty-hint">
+        15분 이전 솔로킬 {stats.ally.soloKillBefore15.toFixed(1)} : {stats.enemy.soloKillBefore15.toFixed(1)} · 최대
+        레벨 리드 {stats.ally.maxLevelLead.toFixed(1)} : {stats.enemy.maxLevelLead.toFixed(1)}
+        {stats.allyLevel6FirstRate !== null &&
+          ` · 6레벨 우위 ${(stats.allyLevel6FirstRate * 100).toFixed(0)}%`}{" "}
+        · 표본 {stats.games.toLocaleString()}게임 (lol.ps)
+      </p>
+    </div>
   );
 }
 
@@ -1338,6 +1388,7 @@ export default function Home() {
                       )}
                     </div>
                     {l.bySource.length > 0 && <SourceBreakdown sources={l.bySource} />}
+                    {l.laningStats && <LaningStatsRow stats={l.laningStats} />}
                   </li>
                 ))}
                 {adviceResult.measuredSynergy.duo && (

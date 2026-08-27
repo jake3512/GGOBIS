@@ -452,6 +452,38 @@ textarea {
   font-weight: 700;
 }
 
+.laning-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.laning-stats-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.laning-stat {
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--foreground);
+}
+
+.laning-stat--good {
+  color: var(--good);
+  border-color: var(--good);
+}
+
+.laning-stat--bad {
+  color: var(--bad);
+  border-color: var(--bad);
+}
+
 /* Explicitly NOT a win-rate color (good/bad/accent) — this is the tag-based
    "fits the enemy comp" heuristic, so it gets its own neutral-but-visible
    treatment to avoid reading as a percentage or a real stat. */

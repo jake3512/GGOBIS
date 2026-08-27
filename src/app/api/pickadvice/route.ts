@@ -16,6 +16,7 @@ import {
   getLaneShare,
   getPowerCurve,
   getPowerCurvesForPosition,
+  getVersusStats,
   laneIdToPosition,
 } from "@/lib/sources/lolps";
 import { toBuildResult, type BuildResult } from "@/lib/buildRefs";
@@ -689,6 +690,11 @@ export async function GET(req: Request) {
       const ally = slotChampion(`ally-${p.value}`);
       const enemy = slotChampion(`enemy-${p.value}`);
       if (!ally || !enemy) return null;
+      // Best-effort, independent of the win-rate lookup below — a lol.ps
+      // versus/stats.json failure (or lol.ps just not having games for this
+      // exact pairing+lane) shouldn't blank out the counter-matchup win
+      // rate, which comes from different sources entirely.
+      const laningStats = await getVersusStats(ally.id, enemy.id, p.value).catch(() => null);
       try {
         const result = await getAggregatedLaneCounters(enemy.slug, p.value, champions);
         const match = findMatch(result, ally.id);
@@ -702,6 +708,7 @@ export async function GET(req: Request) {
           winRate: match ? 1 - match.winRate : null,
           games: match?.games ?? null,
           bySource: match ? match.bySource.map((s) => ({ ...s, winRate: 1 - s.winRate })) : [],
+          laningStats,
           error: null as string | null,
         };
       } catch (err) {
@@ -712,6 +719,7 @@ export async function GET(req: Request) {
           winRate: null,
           games: null,
           bySource: [] as SourceValueOut[],
+          laningStats,
           error: err instanceof Error ? err.message : "조회에 실패했습니다.",
         };
       }
