@@ -1,4 +1,5 @@
 import type { BuildResult, IconRef } from "@/lib/buildRefs";
+import { Details } from "@/components/Details";
 
 export type { BuildResult };
 
@@ -84,28 +85,8 @@ export function BuildCard({ build, sourceLabel = "lol.ps" }: { build: BuildResul
             // eslint-disable-next-line @next/next/no-img-element -- external CDN icons, no next/image domain config needed
             <img key={r.id} src={r.iconUrl} alt={r.name} title={r.name} width={32} height={32} referrerPolicy="no-referrer" />
           ))}
-          <span className="build-divider" />
-          {build.subRuneTree && (
-            // eslint-disable-next-line @next/next/no-img-element -- external CDN icons, no next/image domain config needed
-            <img src={build.subRuneTree.iconUrl} alt={build.subRuneTree.name} title={build.subRuneTree.name} width={22} height={22} referrerPolicy="no-referrer" />
-          )}
-          {build.subRunes.map((r) => (
-            // eslint-disable-next-line @next/next/no-img-element -- external CDN icons, no next/image domain config needed
-            <img key={r.id} src={r.iconUrl} alt={r.name} title={r.name} width={26} height={26} referrerPolicy="no-referrer" />
-          ))}
         </div>
         <Rate rate={build.runeWinRate} games={build.runeGames} />
-      </div>
-
-      <div className="build-section">
-        <h4>스펠</h4>
-        <IconRow items={[build.spell1, build.spell2].filter((s): s is IconRef => s !== null)} />
-      </div>
-
-      <div className="build-section">
-        <h4>시작 아이템</h4>
-        <IconRow items={build.startingItems} />
-        <Rate rate={build.startingWinRate} games={build.startingGames} />
       </div>
 
       <div className="build-section">
@@ -114,21 +95,48 @@ export function BuildCard({ build, sourceLabel = "lol.ps" }: { build: BuildResul
         <Rate rate={build.coreWinRate} games={build.coreGames} />
       </div>
 
-      <div className="build-section">
-        <h4>전체 빌드 순서</h4>
-        <IconRow items={build.shoes ? [...build.fullBuildItems, build.shoes] : build.fullBuildItems} />
-      </div>
+      <Details label="빌드 세부정보">
+        <div className="build-section">
+          <h4>서브 룬</h4>
+          <div className="build-icon-row">
+            {build.subRuneTree && (
+              // eslint-disable-next-line @next/next/no-img-element -- external CDN icons, no next/image domain config needed
+              <img src={build.subRuneTree.iconUrl} alt={build.subRuneTree.name} title={build.subRuneTree.name} width={22} height={22} referrerPolicy="no-referrer" />
+            )}
+            {build.subRunes.map((r) => (
+              // eslint-disable-next-line @next/next/no-img-element -- external CDN icons, no next/image domain config needed
+              <img key={r.id} src={r.iconUrl} alt={r.name} title={r.name} width={26} height={26} referrerPolicy="no-referrer" />
+            ))}
+          </div>
+        </div>
 
-      <div className="build-section">
-        <h4>스킬 마스터리 순서</h4>
-        <p className="build-skill-order">{build.skillMaxOrder.join(" → ") || "데이터 없음"}</p>
-        <Rate rate={build.skillMaxWinRate} games={build.skillMaxGames} />
-      </div>
+        <div className="build-section">
+          <h4>스펠</h4>
+          <IconRow items={[build.spell1, build.spell2].filter((s): s is IconRef => s !== null)} />
+        </div>
 
-      <div className="build-section">
-        <h4>레벨별 스킬업 순서 (1~15)</h4>
-        <p className="build-skill-order">{build.skillLevelOrder.join(" ") || "데이터 없음"}</p>
-      </div>
+        <div className="build-section">
+          <h4>시작 아이템</h4>
+          <IconRow items={build.startingItems} />
+          <Rate rate={build.startingWinRate} games={build.startingGames} />
+        </div>
+
+        <div className="build-section">
+          <h4>전체 빌드 순서</h4>
+          <IconRow items={build.shoes ? [...build.fullBuildItems, build.shoes] : build.fullBuildItems} />
+        </div>
+
+        <div className="build-section">
+          <h4>스킬 마스터리 순서</h4>
+          <p className="build-skill-order">{build.skillMaxOrder.join(" → ") || "데이터 없음"}</p>
+          <Rate rate={build.skillMaxWinRate} games={build.skillMaxGames} />
+        </div>
+
+        <div className="build-section">
+          <h4>레벨별 스킬업 순서 (1~15)</h4>
+          <p className="build-skill-order">{build.skillLevelOrder.join(" ") || "데이터 없음"}</p>
+        </div>
+      </Details>
     </div>
   );
 }

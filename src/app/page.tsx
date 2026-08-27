@@ -6,9 +6,10 @@ import { ChampionIcon } from "@/components/ChampionIcon";
 import { WinRateBar } from "@/components/WinRateBar";
 import { SourceBreakdown } from "@/components/SourceBreakdown";
 import { BuildCard, BuildCardCompact, type BuildResult } from "@/components/BuildCard";
+import { Details } from "@/components/Details";
 import { POSITIONS } from "@/lib/positions";
 
-type Mode = "counter" | "duo" | "advice" | "build";
+type Mode = "counter" | "advice" | "build";
 
 interface ChampionBrief {
   id: number;
@@ -45,15 +46,6 @@ interface CounterResult {
   sourcesAttempted: number;
   sourceErrors: SourceErrorInfo[];
   counters: CounterEntry[];
-}
-
-interface DuoResult {
-  adc: ChampionBrief;
-  support: ChampionBrief;
-  sourcesSucceeded: number;
-  sourcesAttempted: number;
-  sourceErrors: SourceErrorInfo[];
-  bySource: SourceValue[];
 }
 
 interface PickEntry {
@@ -687,16 +679,11 @@ function TeamPowerCurveCard({ curve }: { curve: TeamPowerCurve }) {
 
   return (
     <div className="team-power-curve">
-      <p className="empty-hint">
-        채워진 우리팀 {curve.sampledCount}명의 lol.ps 파워 커브(분당 승률)를 평균 낸 값입니다.
-        {peak && (
-          <>
-            {" "}
-            팀이 가장 강한 구간: <strong>{PHASE_LABELS[peak.key]}</strong> (
-            {(peak.rate * 100).toFixed(1)}%)
-          </>
-        )}
-      </p>
+      {peak && (
+        <p className="empty-hint">
+          팀이 가장 강한 구간: <strong>{PHASE_LABELS[peak.key]}</strong> ({(peak.rate * 100).toFixed(1)}%)
+        </p>
+      )}
       <div className="team-power-curve-phases">
         {phases.map((p) => (
           <div
@@ -710,28 +697,33 @@ function TeamPowerCurveCard({ curve }: { curve: TeamPowerCurve }) {
           </div>
         ))}
       </div>
-      <ol className="recommend-list">
-        {curve.laners.map((l) => {
-          const lean = powerCurveLean(l.earlyWinRate, l.lateWinRate);
-          return (
-            <li key={l.position} className="recommend-row recommend-row--stacked">
-              <div className="recommend-row-main">
-                <ChampionIcon src={l.champion.iconUrl} name={l.champion.name} />
-                <span className="recommend-name">
-                  {POSITIONS.find((p) => p.value === l.position)?.label}: {l.champion.name}
-                </span>
-                {lean && <span className="power-curve-badge">{lean}</span>}
-              </div>
-              <p className="empty-hint">
-                초반 {l.earlyWinRate !== null ? `${(l.earlyWinRate * 100).toFixed(1)}%` : "-"} · 중반{" "}
-                {l.midWinRate !== null ? `${(l.midWinRate * 100).toFixed(1)}%` : "-"} · 후반{" "}
-                {l.lateWinRate !== null ? `${(l.lateWinRate * 100).toFixed(1)}%` : "-"}
-              </p>
-              {l.laneNote && <p className="build-lane-note">⚠ {l.laneNote}</p>}
-            </li>
-          );
-        })}
-      </ol>
+      <Details label="라이너별 상세">
+        <p className="empty-hint">
+          채워진 우리팀 {curve.sampledCount}명의 lol.ps 파워 커브(분당 승률)를 평균 낸 값입니다.
+        </p>
+        <ol className="recommend-list">
+          {curve.laners.map((l) => {
+            const lean = powerCurveLean(l.earlyWinRate, l.lateWinRate);
+            return (
+              <li key={l.position} className="recommend-row recommend-row--stacked">
+                <div className="recommend-row-main">
+                  <ChampionIcon src={l.champion.iconUrl} name={l.champion.name} />
+                  <span className="recommend-name">
+                    {POSITIONS.find((p) => p.value === l.position)?.label}: {l.champion.name}
+                  </span>
+                  {lean && <span className="power-curve-badge">{lean}</span>}
+                </div>
+                <p className="empty-hint">
+                  초반 {l.earlyWinRate !== null ? `${(l.earlyWinRate * 100).toFixed(1)}%` : "-"} · 중반{" "}
+                  {l.midWinRate !== null ? `${(l.midWinRate * 100).toFixed(1)}%` : "-"} · 후반{" "}
+                  {l.lateWinRate !== null ? `${(l.lateWinRate * 100).toFixed(1)}%` : "-"}
+                </p>
+                {l.laneNote && <p className="build-lane-note">⚠ {l.laneNote}</p>}
+              </li>
+            );
+          })}
+        </ol>
+      </Details>
     </div>
   );
 }
@@ -877,7 +869,6 @@ export default function Home() {
    * right after every pick. */
   const [lastPickedChampionId, setLastPickedChampionId] = useState<number | null>(null);
   const [counterResult, setCounterResult] = useState<CounterResult | null>(null);
-  const [duoResult, setDuoResult] = useState<DuoResult | null>(null);
   const [adviceResult, setAdviceResult] = useState<AdviceResult | null>(null);
   const [buildResult, setBuildResult] = useState<BuildResult | null>(null);
   /** DeepLoL's build for the same champion+position — fetched alongside
@@ -967,7 +958,6 @@ export default function Home() {
   function switchMode(next: Mode) {
     setMode(next);
     setCounterResult(null);
-    setDuoResult(null);
     setAdviceResult(null);
     setLastPickedChampionId(null);
     setBuildResult(null);
@@ -975,13 +965,6 @@ export default function Home() {
     setCounterBuild(null);
     if (next === "counter" || next === "build") {
       const nextSlots: Slot[] = [{ key: "target", label: "기준 챔피언", championId: null }];
-      setSlots(nextSlots);
-      setActiveSlotKey(nextSlots[0].key);
-    } else if (next === "duo") {
-      const nextSlots: Slot[] = [
-        { key: "adc", label: "원거리 딜러", championId: null },
-        { key: "support", label: "서포터", championId: null },
-      ];
       setSlots(nextSlots);
       setActiveSlotKey(nextSlots[0].key);
     } else {
@@ -1043,11 +1026,7 @@ export default function Home() {
   const pickerSelectedIds = activeSlotChampionId !== null ? [activeSlotChampionId] : [];
 
   const canRun =
-    mode === "counter" || mode === "build"
-      ? slots[0]?.championId !== null
-      : mode === "duo"
-        ? slots.every((s) => s.championId !== null)
-        : slots.some((s) => s.championId !== null);
+    mode === "counter" || mode === "build" ? slots[0]?.championId !== null : slots.some((s) => s.championId !== null);
 
   async function runLookup() {
     // 챔피언을 하나씩 입력할 때마다 자동으로 재조회하다 보니(아래
@@ -1091,14 +1070,6 @@ export default function Home() {
           .catch(() => {
             // Best-effort — lol.ps 빌드 카드는 이미 떴으니 조용히 무시.
           });
-      } else if (mode === "duo") {
-        const adcId = slots.find((s) => s.key === "adc")?.championId;
-        const supportId = slots.find((s) => s.key === "support")?.championId;
-        const res = await fetch(`/api/duo?adcId=${adcId}&supportId=${supportId}`);
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error ?? "조회에 실패했습니다.");
-        if (isStale()) return;
-        setDuoResult(data);
       } else {
         const params = new URLSearchParams({ position });
         for (const slot of slots) {
@@ -1243,13 +1214,6 @@ export default function Home() {
         </button>
         <button
           type="button"
-          className={mode === "duo" ? "tab tab--active" : "tab"}
-          onClick={() => switchMode("duo")}
-        >
-          바텀 듀오 시너지
-        </button>
-        <button
-          type="button"
           className={mode === "advice" ? "tab tab--active" : "tab"}
           onClick={() => switchMode("advice")}
         >
@@ -1264,40 +1228,40 @@ export default function Home() {
         </button>
       </div>
 
-      {(mode === "counter" || mode === "advice" || mode === "build") && (
-        <div className="position-tabs">
-          {POSITIONS.map((p) => (
-            <button
-              key={p.value}
-              type="button"
-              className={position === p.value ? "tab tab--active" : "tab"}
-              onClick={() => changePosition(p.value)}
-            >
-              {p.label}
-            </button>
-          ))}
-        </div>
-      )}
+      <div className="position-tabs">
+        {POSITIONS.map((p) => (
+          <button
+            key={p.value}
+            type="button"
+            className={position === p.value ? "tab tab--active" : "tab"}
+            onClick={() => changePosition(p.value)}
+          >
+            {p.label}
+          </button>
+        ))}
+      </div>
 
       {mode === "advice" && (
-        <p className="empty-hint">
-          우리팀/상대팀 각 라인에 이미 정해진 챔피언이 있으면 채워보세요. <strong>내 픽 추천</strong>의 실제
-          승률은
-          <strong> 상대 {POSITIONS.find((p) => p.value === position)?.label} 라이너</strong>
-          {position === "support" && (
-            <>
-              {" "}
-              와 <strong>우리팀 원거리 딜러</strong>
-            </>
-          )}
-          와의 매치업에서만 가져와요(사이트에 다른 포지션 상대와의 실측 데이터는 없어요). 대신 순위를 매길 때는{" "}
-          <strong>상대팀에 채워둔 다른 챔피언들도</strong> 함께 봐서, 상대에 탱커가 없으면 암살자를, 상대가
-          전사/암살자 위주면 튼튼한 후보를 조금 더 우선해요(<span className="comp-fit-badge">상대팀 조합에 적합</span>{" "}
-          배지로 표시 — 실제 승률보다는 낮은 비중). 그 외에 이미 양 팀 다 채워진 라인이 있거나 우리팀 원딜+서포터가
-          둘 다 있으면 <strong>실측 데이터 기반 전체 시너지</strong>(실제 스크래핑한 승률을 조합)와{" "}
-          <strong>챔피언 특성 기반 조합 분석</strong>(승률이 아니라 Riot 공식 챔피언 태그/능력치로 보는
-          역할군·데미지 타입 균형)도 아래에 따로 보여드려요.
-        </p>
+        <Details label="픽 추천 사용법">
+          <p className="empty-hint">
+            우리팀/상대팀 각 라인에 이미 정해진 챔피언이 있으면 채워보세요. <strong>내 픽 추천</strong>의 실제
+            승률은
+            <strong> 상대 {POSITIONS.find((p) => p.value === position)?.label} 라이너</strong>
+            {position === "support" && (
+              <>
+                {" "}
+                와 <strong>우리팀 원거리 딜러</strong>
+              </>
+            )}
+            와의 매치업에서만 가져와요(사이트에 다른 포지션 상대와의 실측 데이터는 없어요). 대신 순위를 매길 때는{" "}
+            <strong>상대팀에 채워둔 다른 챔피언들도</strong> 함께 봐서, 상대에 탱커가 없으면 암살자를, 상대가
+            전사/암살자 위주면 튼튼한 후보를 조금 더 우선해요(<span className="comp-fit-badge">상대팀 조합에 적합</span>{" "}
+            배지로 표시 — 실제 승률보다는 낮은 비중). 그 외에 이미 양 팀 다 채워진 라인이 있거나 우리팀 원딜+서포터가
+            둘 다 있으면 <strong>실측 데이터 기반 전체 시너지</strong>(실제 스크래핑한 승률을 조합)와{" "}
+            <strong>챔피언 특성 기반 조합 분석</strong>(승률이 아니라 Riot 공식 챔피언 태그/능력치로 보는
+            역할군·데미지 타입 균형)도 아래에 따로 보여드려요.
+          </p>
+        </Details>
       )}
 
       {mode === "advice" && (
@@ -1356,11 +1320,9 @@ export default function Home() {
             ? "조회 중..."
             : mode === "counter"
               ? "카운터 조회"
-              : mode === "duo"
-                ? "듀오 시너지 조회"
-                : mode === "build"
-                  ? "빌드 조회"
-                  : "지금 바로 새로고침"}
+              : mode === "build"
+                ? "빌드 조회"
+                : "지금 바로 새로고침"}
         </button>
         {mode === "advice" && (
           <p className="empty-hint">챔피언을 넣거나 뺄 때마다 자동으로 다시 조회돼요. 버튼은 기다리지 않고 바로 새로고침하고 싶을 때만 누르세요.</p>
@@ -1369,16 +1331,31 @@ export default function Home() {
 
       {champLoadError && <p className="error-banner">{champLoadError}</p>}
 
+      {/* 챔피언 픽커를 결과 섹션 전체보다 앞(슬롯 바로 아래)에 둬서, 슬롯을
+          누른 뒤 스크롤해야 하는 거리를 최소화함 — 예전에는 이 섹션이 맨
+          아래에 있어서 결과가 길어질수록 픽커가 점점 더 멀어지는 구조였음.
+          activateSlot의 scrollIntoView와 짝을 이루는 위치 변경. */}
+      <section className="picker-section" ref={pickerSectionRef}>
+        <ChampionPicker
+          champions={champions}
+          selectedIds={pickerSelectedIds}
+          onToggle={assignActiveSlot}
+          maxSelect={champions.length || 1}
+        />
+      </section>
+
       {mode === "counter" && counterResult && (
         <section className="results">
           <h2>
             {counterResult.champion.name} ({POSITIONS.find((p) => p.value === counterResult.position)?.label}) 카운터
           </h2>
-          <p className="empty-hint">
-            승률은 {counterResult.champion.name} 기준 상대 챔피언과 붙었을 때의 승률입니다. 낮을수록 상대하기
-            까다로운(=카운터) 챔피언입니다. 각 항목의 승률은 표본(게임 수)이 가장 많은 소스 기준이며, 아래에
-            표본이 많은 순으로 최대 3개 소스를 함께 보여줍니다.
-          </p>
+          <Details label="설명">
+            <p className="empty-hint">
+              승률은 {counterResult.champion.name} 기준 상대 챔피언과 붙었을 때의 승률입니다. 낮을수록 상대하기
+              까다로운(=카운터) 챔피언입니다. 각 항목의 승률은 표본(게임 수)이 가장 많은 소스 기준이며, 아래에
+              표본이 많은 순으로 최대 3개 소스를 함께 보여줍니다.
+            </p>
+          </Details>
           <SourceStatusNote
             succeeded={counterResult.sourcesSucceeded}
             attempted={counterResult.sourcesAttempted}
@@ -1392,7 +1369,9 @@ export default function Home() {
                   <span className="recommend-name">{c.name}</span>
                   <WinRateBar rate={c.winRate} games={c.games} />
                 </div>
-                <SourceBreakdown sources={c.bySource} />
+                <Details label="소스별 상세">
+                  <SourceBreakdown sources={c.bySource} />
+                </Details>
               </li>
             ))}
             {counterResult.counters.length === 0 && (
@@ -1419,27 +1398,6 @@ export default function Home() {
         </section>
       )}
 
-      {mode === "duo" && duoResult && (
-        <section className="results">
-          <h2>
-            {duoResult.adc.name} + {duoResult.support.name} 듀오 시너지
-          </h2>
-          <SourceStatusNote
-            succeeded={duoResult.sourcesSucceeded}
-            attempted={duoResult.sourcesAttempted}
-            errors={duoResult.sourceErrors}
-          />
-          {duoResult.bySource.length > 0 ? (
-            <>
-              <WinRateBar rate={duoResult.bySource[0].winRate} games={duoResult.bySource[0].games} />
-              <SourceBreakdown sources={duoResult.bySource} />
-            </>
-          ) : (
-            <p className="empty-hint">이 조합에 대한 데이터를 어느 소스에서도 찾지 못했습니다.</p>
-          )}
-        </section>
-      )}
-
       {mode === "advice" && canRun && adviceResult && (
         <section className="results">
           <h2>{POSITIONS.find((p) => p.value === adviceResult.position)?.label} 픽 추천</h2>
@@ -1450,10 +1408,12 @@ export default function Home() {
           {adviceResult.combinedPicks.length > 0 && (
             <>
               <h3>라인전 + 시너지 둘 다 좋은 픽</h3>
-              <p className="empty-hint">
-                {adviceResult.enemyLaneChampion?.name} 상대 라인전 승률과 {adviceResult.allyAdcChampion?.name}
-                와의 시너지 승률을 평균 낸 순위입니다.
-              </p>
+              <Details label="설명">
+                <p className="empty-hint">
+                  {adviceResult.enemyLaneChampion?.name} 상대 라인전 승률과 {adviceResult.allyAdcChampion?.name}
+                  와의 시너지 승률을 평균 낸 순위입니다.
+                </p>
+              </Details>
               <ol className="recommend-list">
                 {adviceResult.combinedPicks.map((c) => (
                   <li key={c.championId} className="recommend-row recommend-row--stacked">
@@ -1487,7 +1447,6 @@ export default function Home() {
                         <TierBadge tier={c.tier} />
                         <WinRateBar rate={c.winRate} games={c.games} />
                       </div>
-                      <SourceBreakdown sources={c.bySource} />
                       <div className="badge-row">
                         <PowerCurveBadge earlyWinRate={c.earlyWinRate} lateWinRate={c.lateWinRate} />
                         <CompFitBadge compFit={c.compFit} />
@@ -1497,10 +1456,13 @@ export default function Home() {
                           avgWinRate={c.allySynergyAvgWinRate}
                         />
                       </div>
-                      {c.powerCurveLaneNote && <p className="build-lane-note">⚠ {c.powerCurveLaneNote}</p>}
-                      {c.laningStats && <LaningStatsRow stats={c.laningStats} />}
-                      {c.build && <BuildCardCompact build={c.build} sourceLabel="lol.ps" />}
-                      {c.buildDeeplol && <BuildCardCompact build={c.buildDeeplol} sourceLabel="DeepLoL" />}
+                      <Details label="세부정보">
+                        <SourceBreakdown sources={c.bySource} />
+                        {c.powerCurveLaneNote && <p className="build-lane-note">⚠ {c.powerCurveLaneNote}</p>}
+                        {c.laningStats && <LaningStatsRow stats={c.laningStats} />}
+                        {c.build && <BuildCardCompact build={c.build} sourceLabel="lol.ps" />}
+                        {c.buildDeeplol && <BuildCardCompact build={c.buildDeeplol} sourceLabel="DeepLoL" />}
+                      </Details>
                     </li>
                   ))}
                   {adviceResult.counterPicks.length === 0 && (
@@ -1526,7 +1488,6 @@ export default function Home() {
                         <TierBadge tier={c.tier} />
                         <WinRateBar rate={c.winRate} games={c.games} />
                       </div>
-                      <SourceBreakdown sources={c.bySource} />
                       <div className="badge-row">
                         <PowerCurveBadge earlyWinRate={c.earlyWinRate} lateWinRate={c.lateWinRate} />
                         <CompFitBadge compFit={c.compFit} />
@@ -1536,9 +1497,12 @@ export default function Home() {
                           avgWinRate={c.allySynergyAvgWinRate}
                         />
                       </div>
-                      {c.powerCurveLaneNote && <p className="build-lane-note">⚠ {c.powerCurveLaneNote}</p>}
-                      {c.build && <BuildCardCompact build={c.build} sourceLabel="lol.ps" />}
-                      {c.buildDeeplol && <BuildCardCompact build={c.buildDeeplol} sourceLabel="DeepLoL" />}
+                      <Details label="세부정보">
+                        <SourceBreakdown sources={c.bySource} />
+                        {c.powerCurveLaneNote && <p className="build-lane-note">⚠ {c.powerCurveLaneNote}</p>}
+                        {c.build && <BuildCardCompact build={c.build} sourceLabel="lol.ps" />}
+                        {c.buildDeeplol && <BuildCardCompact build={c.buildDeeplol} sourceLabel="DeepLoL" />}
+                      </Details>
                     </li>
                   ))}
                   {adviceResult.synergyPicks.length === 0 && (
@@ -1555,16 +1519,17 @@ export default function Home() {
           {(adviceResult.measuredSynergy.lanes.length > 0 || adviceResult.measuredSynergy.duo) && (
             <>
               <h3>실측 데이터 기반 전체 시너지</h3>
-              <p className="empty-hint">
-                양 팀 다 채워진 라인의 실제 매치업 승률과 우리팀 원딜+서포터의 실제 듀오 승률을 그대로
-                보여줍니다(우리 시점 승률로 환산).
-                {adviceResult.measuredSynergy.overallScore !== null && (
-                  <>
-                    {" "}
-                    평균 <strong>{(adviceResult.measuredSynergy.overallScore * 100).toFixed(1)}%</strong>
-                  </>
-                )}
-              </p>
+              {adviceResult.measuredSynergy.overallScore !== null && (
+                <p className="empty-hint">
+                  평균 <strong>{(adviceResult.measuredSynergy.overallScore * 100).toFixed(1)}%</strong>
+                </p>
+              )}
+              <Details label="설명">
+                <p className="empty-hint">
+                  양 팀 다 채워진 라인의 실제 매치업 승률과 우리팀 원딜+서포터의 실제 듀오 승률을 그대로
+                  보여줍니다(우리 시점 승률로 환산).
+                </p>
+              </Details>
               <ol className="recommend-list">
                 {adviceResult.measuredSynergy.lanes.map((l) => (
                   <li key={l.position} className="recommend-row recommend-row--stacked">
@@ -1580,8 +1545,12 @@ export default function Home() {
                         <span className="empty-hint">이 매치업 데이터를 찾지 못했습니다.</span>
                       )}
                     </div>
-                    {l.bySource.length > 0 && <SourceBreakdown sources={l.bySource} />}
-                    {l.laningStats && <LaningStatsRow stats={l.laningStats} />}
+                    {(l.bySource.length > 0 || l.laningStats) && (
+                      <Details label="세부정보">
+                        {l.bySource.length > 0 && <SourceBreakdown sources={l.bySource} />}
+                        {l.laningStats && <LaningStatsRow stats={l.laningStats} />}
+                      </Details>
+                    )}
                   </li>
                 ))}
                 {adviceResult.measuredSynergy.duo && (
@@ -1606,7 +1575,9 @@ export default function Home() {
                       )}
                     </div>
                     {adviceResult.measuredSynergy.duo.bySource.length > 0 && (
-                      <SourceBreakdown sources={adviceResult.measuredSynergy.duo.bySource} />
+                      <Details label="세부정보">
+                        <SourceBreakdown sources={adviceResult.measuredSynergy.duo.bySource} />
+                      </Details>
                     )}
                   </li>
                 )}
@@ -1620,53 +1591,49 @@ export default function Home() {
           {(adviceResult.compHeuristic.ally || adviceResult.compHeuristic.enemy) && (
             <>
               <h3>챔피언 특성 기반 조합 분석</h3>
-              <p className="empty-hint">
-                승률이 아니라 Riot 공식 챔피언 태그·능력치(공격형/마법형 비중)만 이용한 참고용 체크입니다.
-                CC기·이니시 성향처럼 공식 데이터로 확인 안 되는 항목은 포함하지 않았습니다. 단, 원거리 딜러의
-                치명타/공속/퍼센트 데미지/치명타 데미지 속성, 탱커(탱커 서포터 포함)의 보호막/방어력/데미지
-                감소/회복/체력 탱커 분류, 브루저의 흡혈/공속/탱킹 브루저 분류는 공식 데이터가 아니라 이 앱이
-                직접 정리한 참고용 분류입니다(빌드 유동적 = 매치업에 따라 실제 빌드 방향이 자주 바뀌는 챔피언).
-              </p>
-              <div className="comp-heuristic-grid">
-                {adviceResult.compHeuristic.ally && (
-                  <CompCard title="우리팀" analysis={adviceResult.compHeuristic.ally} championById={championById} />
-                )}
-                {adviceResult.compHeuristic.enemy && (
-                  <CompCard title="상대팀" analysis={adviceResult.compHeuristic.enemy} championById={championById} />
-                )}
-              </div>
+              <Details label="조합 분석">
+                <p className="empty-hint">
+                  승률이 아니라 Riot 공식 챔피언 태그·능력치(공격형/마법형 비중)만 이용한 참고용 체크입니다.
+                  CC기·이니시 성향처럼 공식 데이터로 확인 안 되는 항목은 포함하지 않았습니다. 단, 원거리 딜러의
+                  치명타/공속/퍼센트 데미지/치명타 데미지 속성, 탱커(탱커 서포터 포함)의 보호막/방어력/데미지
+                  감소/회복/체력 탱커 분류, 브루저의 흡혈/공속/탱킹 브루저 분류는 공식 데이터가 아니라 이 앱이
+                  직접 정리한 참고용 분류입니다(빌드 유동적 = 매치업에 따라 실제 빌드 방향이 자주 바뀌는 챔피언).
+                </p>
+                <div className="comp-heuristic-grid">
+                  {adviceResult.compHeuristic.ally && (
+                    <CompCard title="우리팀" analysis={adviceResult.compHeuristic.ally} championById={championById} />
+                  )}
+                  {adviceResult.compHeuristic.enemy && (
+                    <CompCard title="상대팀" analysis={adviceResult.compHeuristic.enemy} championById={championById} />
+                  )}
+                </div>
+              </Details>
             </>
           )}
 
           {(adviceResult.compConcepts.ally || adviceResult.compConcepts.enemy) && (
             <>
               <h3>조합 컨셉 (돌진 · 포킹 · 쌍포 · 한타 · 스플릿)</h3>
-              <p className="empty-hint">
-                실제 승률 데이터가 아니라, 채워진 챔피언들의 태그·스킬 구성만으로 어떤 컨셉에 가까운지 추정한
-                참고용 체크입니다.
-              </p>
-              <div className="comp-heuristic-grid">
-                {adviceResult.compConcepts.ally && (
-                  <CompConceptCard title="우리팀" analysis={adviceResult.compConcepts.ally} tipsVariant="pilot" />
-                )}
-                {adviceResult.compConcepts.enemy && (
-                  <CompConceptCard title="상대팀" analysis={adviceResult.compConcepts.enemy} tipsVariant="counter" />
-                )}
-              </div>
-              <ConceptMatchupNote matchup={adviceResult.compConcepts.matchup} />
+              <Details label="조합 컨셉">
+                <p className="empty-hint">
+                  실제 승률 데이터가 아니라, 채워진 챔피언들의 태그·스킬 구성만으로 어떤 컨셉에 가까운지 추정한
+                  참고용 체크입니다.
+                </p>
+                <div className="comp-heuristic-grid">
+                  {adviceResult.compConcepts.ally && (
+                    <CompConceptCard title="우리팀" analysis={adviceResult.compConcepts.ally} tipsVariant="pilot" />
+                  )}
+                  {adviceResult.compConcepts.enemy && (
+                    <CompConceptCard title="상대팀" analysis={adviceResult.compConcepts.enemy} tipsVariant="counter" />
+                  )}
+                </div>
+                <ConceptMatchupNote matchup={adviceResult.compConcepts.matchup} />
+              </Details>
             </>
           )}
         </section>
       )}
 
-      <section className="picker-section" ref={pickerSectionRef}>
-        <ChampionPicker
-          champions={champions}
-          selectedIds={pickerSelectedIds}
-          onToggle={assignActiveSlot}
-          maxSelect={champions.length || 1}
-        />
-      </section>
     </main>
   );
 }

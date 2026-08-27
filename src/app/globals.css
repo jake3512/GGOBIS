@@ -848,6 +848,64 @@ textarea {
   font-size: 0.85rem;
 }
 
+/* Native <details>/<summary> toggle for collapsed-by-default explanations
+   and detail metrics — see the Details component in page.tsx. Kept full-
+   width tap-friendly (min-height 44px) since this is the primary way to
+   reveal secondary info on mobile. */
+.details-toggle {
+  margin-top: 0.4rem;
+}
+
+.details-toggle summary {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  min-height: 32px;
+  padding: 0.15rem 0;
+  color: var(--accent);
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.details-toggle summary::-webkit-details-marker {
+  display: none;
+}
+
+.details-toggle summary::before {
+  content: "▸";
+  font-size: 0.7em;
+}
+
+.details-toggle[open] summary::before {
+  content: "▾";
+}
+
+.details-toggle[open] summary {
+  margin-bottom: 0.2rem;
+}
+
+.details-toggle-label-open {
+  display: none;
+}
+
+.details-toggle[open] .details-toggle-label-closed {
+  display: none;
+}
+
+.details-toggle[open] .details-toggle-label-open {
+  display: inline;
+}
+
+.details-toggle-content {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
 .build-lane-note {
   background: rgba(91, 155, 255, 0.12);
   border: 1px solid var(--accent);
