@@ -862,6 +862,11 @@ export default function Home() {
   const [position, setPosition] = useState("top");
   const [slots, setSlots] = useState<Slot[]>([{ key: "target", label: "기준 챔피언", championId: null }]);
   const [activeSlotKey, setActiveSlotKey] = useState("target");
+  /** Whether the champion picker is showing as a full-screen overlay. Advice
+   * mode only — see activateSlot below. Other modes keep the picker inline
+   * near the bottom of the page instead, since there's just one slot to fill
+   * there rather than ten position-specific ones. */
+  const [pickerOpen, setPickerOpen] = useState(false);
   /** The champion most recently placed into a slot — drives the big
    * portrait preview in advice mode's champ-select layout. Not tied to
    * activeSlotKey because assignActiveSlot immediately advances that to the
@@ -963,6 +968,7 @@ export default function Home() {
     setBuildResult(null);
     setBuildResultDeeplol(null);
     setCounterBuild(null);
+    setPickerOpen(false);
     if (next === "counter" || next === "build") {
       const nextSlots: Slot[] = [{ key: "target", label: "기준 챔피언", championId: null }];
       setSlots(nextSlots);
@@ -1002,16 +1008,30 @@ export default function Home() {
       if (nextEmpty) setActiveSlotKey(nextEmpty.key);
       return next;
     });
+    // Picking a champion closes the full-screen picker back down (advice
+    // mode only — see activateSlot below); other modes never open it.
+    if (mode === "advice") setPickerOpen(false);
   }
 
-  /** Sets the active slot AND scrolls the picker into view — use this
-   * instead of setActiveSlotKey directly for any real user tap on a slot
-   * (see pickerSectionRef above). Deliberately not used for auto-advance to
-   * the next empty slot in assignActiveSlot or for mode switches — in both
-   * of those the user is already looking at (or just left) the picker, so
-   * re-scrolling there would just be jarring motion for no reason. */
+  /** Sets the active slot and opens the champion picker for it — use this
+   * instead of setActiveSlotKey directly for any real user tap on a slot.
+   * In advice mode this opens the picker as a full-screen overlay (there are
+   * ten position-specific slots, so a modal keeps the huge champion grid
+   * from crowding the 10-slot board); it closes again once a pick is made
+   * (assignActiveSlot above) or via the overlay's own close button. Other
+   * modes have just one slot to fill, so the picker stays inline near the
+   * bottom of the page instead — there we just scroll it into view (see
+   * pickerSectionRef above). Deliberately not used for auto-advance to the
+   * next empty slot in assignActiveSlot or for mode switches — in both of
+   * those the user is already looking at (or just left) the picker, so
+   * re-opening/re-scrolling there would just be jarring motion for no
+   * reason. */
   function activateSlot(key: string) {
     setActiveSlotKey(key);
+    if (mode === "advice") {
+      setPickerOpen(true);
+      return;
+    }
     requestAnimationFrame(() => {
       pickerSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
     });
@@ -1031,6 +1051,23 @@ export default function Home() {
   // filled slot" instead makes it show reliably, and is more useful anyway
   // (glance at the grid, see everyone you've already placed on the board).
   const pickerSelectedIds = slots.map((s) => s.championId).filter((id): id is number => id !== null);
+
+  // Which slot the full-screen picker (advice mode) is currently filling —
+  // drives its header title so it's clear which of the ten positions is
+  // being picked for.
+  const activeSlot = slots.find((s) => s.key === activeSlotKey);
+
+  // Lock background scroll while the full-screen picker overlay is open —
+  // otherwise a touch-drag on the grid can also scroll the (hidden-behind-it)
+  // page underneath on some mobile browsers.
+  useEffect(() => {
+    if (!pickerOpen) return;
+    const original = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = original;
+    };
+  }, [pickerOpen]);
 
   const canRun =
     mode === "counter" || mode === "build" ? slots[0]?.championId !== null : slots.some((s) => s.championId !== null);
@@ -1348,18 +1385,45 @@ export default function Home() {
 
       {champLoadError && <p className="error-banner">{champLoadError}</p>}
 
-      {/* 챔피언 픽커를 결과 섹션 전체보다 앞(슬롯 바로 아래)에 둬서, 슬롯을
-          누른 뒤 스크롤해야 하는 거리를 최소화함 — 예전에는 이 섹션이 맨
-          아래에 있어서 결과가 길어질수록 픽커가 점점 더 멀어지는 구조였음.
-          activateSlot의 scrollIntoView와 짝을 이루는 위치 변경. */}
-      <section className="picker-section" ref={pickerSectionRef}>
-        <ChampionPicker
-          champions={champions}
-          selectedIds={pickerSelectedIds}
-          onToggle={assignActiveSlot}
-          maxSelect={champions.length || 1}
-        />
-      </section>
+      {/* 픽 추천(advice)에서는 챔피언 픽커를 평소엔 아예 숨겨뒀다가, 슬롯을
+          누르면(activateSlot) 화면 전체를 덮는 오버레이로 띄우고 챔피언을
+          고르면(assignActiveSlot) 다시 닫음 — 10개 슬롯 + 결과가 이미 화면을
+          꽉 채우는 상황에서 매번 픽커까지 같이 스크롤해 찾아야 하던 걸 없앰.
+          다른 모드는 채울 슬롯이 하나뿐이라 오버레이 없이 그대로 인라인 섹션
+          으로 두고, activateSlot이 그쪽으로 스크롤만 시켜줌(pickerSectionRef
+          참고). */}
+      {mode === "advice" ? (
+        pickerOpen && (
+          <div className="champion-picker-overlay" role="dialog" aria-modal="true">
+            <div className="champion-picker-overlay-header">
+              <span className="champion-picker-overlay-title">{activeSlot?.label ?? "챔피언"} 선택</span>
+              <button
+                type="button"
+                className="champion-picker-close"
+                onClick={() => setPickerOpen(false)}
+                aria-label="챔피언 선택 닫기"
+              >
+                ✕
+              </button>
+            </div>
+            <ChampionPicker
+              champions={champions}
+              selectedIds={pickerSelectedIds}
+              onToggle={assignActiveSlot}
+              maxSelect={champions.length || 1}
+            />
+          </div>
+        )
+      ) : (
+        <section className="picker-section" ref={pickerSectionRef}>
+          <ChampionPicker
+            champions={champions}
+            selectedIds={pickerSelectedIds}
+            onToggle={assignActiveSlot}
+            maxSelect={champions.length || 1}
+          />
+        </section>
+      )}
 
       {mode === "counter" && counterResult && (
         <section className="results">

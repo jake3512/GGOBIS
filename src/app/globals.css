@@ -1035,6 +1035,60 @@ textarea {
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
 }
 
+/* 픽 추천(advice) 전용 전체화면 챔피언 픽커 — .mode-tabs(z-index 10)보다도
+   위에 떠서 페이지 전체를 덮음. 안쪽 .champion-picker/.champion-grid는
+   picker-section 안에서 쓰던 max-height:480px 대신 이 오버레이 자체의 남는
+   높이를 다 쓰도록 flex로 늘림(아래 오버라이드). */
+.champion-picker-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  background: var(--background);
+  padding: calc(env(safe-area-inset-top, 0px) + 0.75rem) 1rem
+    calc(env(safe-area-inset-bottom, 0px) + 0.75rem);
+}
+
+.champion-picker-overlay-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.6rem;
+}
+
+.champion-picker-overlay-title {
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--foreground);
+}
+
+.champion-picker-close {
+  flex-shrink: 0;
+  min-width: 44px;
+  min-height: 44px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-alt);
+  color: var(--foreground);
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.champion-picker-overlay .champion-picker {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+}
+
+.champion-picker-overlay .champion-grid {
+  flex: 1;
+  max-height: none;
+}
+
 .champion-search {
   width: 100%;
   padding: 0.6rem 0.8rem;
