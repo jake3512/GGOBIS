@@ -688,6 +688,17 @@ textarea {
   font-size: 0.95rem;
 }
 
+.adc-flex-badge {
+  display: inline-block;
+  margin-left: 0.4rem;
+  padding: 0.05rem 0.4rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+}
+
 .concept-dominant-label {
   display: inline-block;
   margin: 0 0 0.5rem;

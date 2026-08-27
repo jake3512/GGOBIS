@@ -147,11 +147,20 @@ interface DamageBalance {
   sampledCount: number;
 }
 
+type AdcAttribute = "critAttackSpeed" | "attackSpeed" | "percentDamage" | "critDamage";
+
+interface AdcArchetypeEntry {
+  championId: number;
+  attributes: AdcAttribute[];
+  flexibleBuild: boolean;
+}
+
 interface TeamCompAnalysis {
   filledCount: number;
   tagCounts: Record<string, number>;
   damageBalance: DamageBalance | null;
   hasFrontline: boolean;
+  adcArchetypes: AdcArchetypeEntry[];
 }
 
 interface CompHeuristic {
@@ -375,7 +384,22 @@ const TAG_LABELS: Record<string, string> = {
   Marksman: "원거리 딜러",
 };
 
-function CompCard({ title, analysis }: { title: string; analysis: TeamCompAnalysis }) {
+const ADC_ATTRIBUTE_LABELS: Record<AdcAttribute, string> = {
+  critAttackSpeed: "치명타/공속",
+  attackSpeed: "공속",
+  percentDamage: "퍼센트 데미지",
+  critDamage: "치명타 데미지",
+};
+
+function CompCard({
+  title,
+  analysis,
+  championById,
+}: {
+  title: string;
+  analysis: TeamCompAnalysis;
+  championById: Map<number, ChampionSummary>;
+}) {
   return (
     <div className="comp-card">
       <h4>
@@ -394,6 +418,16 @@ function CompCard({ title, analysis }: { title: string; analysis: TeamCompAnalys
             " (한쪽으로 치우침 — 상대가 방어구/마법저항 몰아주기 쉬워요)"}
         </p>
       )}
+      {analysis.adcArchetypes.length > 0 &&
+        analysis.adcArchetypes.map((a) => {
+          const champ = championById.get(a.championId);
+          return (
+            <p key={a.championId} className="empty-hint">
+              {champ?.name ?? "원거리 딜러"}: {a.attributes.map((attr) => ADC_ATTRIBUTE_LABELS[attr]).join(" · ")}
+              {a.flexibleBuild && <span className="adc-flex-badge">빌드 유동적</span>}
+            </p>
+          );
+        })}
     </div>
   );
 }
@@ -1514,14 +1548,16 @@ export default function Home() {
               <h3>챔피언 특성 기반 조합 분석</h3>
               <p className="empty-hint">
                 승률이 아니라 Riot 공식 챔피언 태그·능력치(공격형/마법형 비중)만 이용한 참고용 체크입니다.
-                CC기·이니시 성향처럼 공식 데이터로 확인 안 되는 항목은 포함하지 않았습니다.
+                CC기·이니시 성향처럼 공식 데이터로 확인 안 되는 항목은 포함하지 않았습니다. 단, 원거리 딜러의
+                치명타/공속/퍼센트 데미지/치명타 데미지 속성은 공식 데이터가 아니라 이 앱이 직접 정리한 참고용
+                분류입니다(빌드 유동적 = 매치업에 따라 실제 빌드 방향이 자주 바뀌는 챔피언).
               </p>
               <div className="comp-heuristic-grid">
                 {adviceResult.compHeuristic.ally && (
-                  <CompCard title="우리팀" analysis={adviceResult.compHeuristic.ally} />
+                  <CompCard title="우리팀" analysis={adviceResult.compHeuristic.ally} championById={championById} />
                 )}
                 {adviceResult.compHeuristic.enemy && (
-                  <CompCard title="상대팀" analysis={adviceResult.compHeuristic.enemy} />
+                  <CompCard title="상대팀" analysis={adviceResult.compHeuristic.enemy} championById={championById} />
                 )}
               </div>
             </>
