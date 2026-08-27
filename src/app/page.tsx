@@ -896,6 +896,13 @@ export default function Home() {
   const requestIdRef = useRef(0);
   const [championPool, setChampionPool] = useState<ChampionPool>(EMPTY_POOL);
   const [poolLoaded, setPoolLoaded] = useState(false);
+  /** The champion picker (search + grid) always renders at the very bottom
+   * of the page, after the entire results section — on mobile, tapping a
+   * slot up near the top (or in the champ-select board) leaves it fully
+   * off-screen with no indication it needs scrolling to. activateSlot below
+   * scrolls it into view on every real slot tap so picking a champion never
+   * requires hunting for the picker first. */
+  const pickerSectionRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
     fetch("/api/champions")
@@ -1014,9 +1021,22 @@ export default function Home() {
     });
   }
 
+  /** Sets the active slot AND scrolls the picker into view — use this
+   * instead of setActiveSlotKey directly for any real user tap on a slot
+   * (see pickerSectionRef above). Deliberately not used for auto-advance to
+   * the next empty slot in assignActiveSlot or for mode switches — in both
+   * of those the user is already looking at (or just left) the picker, so
+   * re-scrolling there would just be jarring motion for no reason. */
+  function activateSlot(key: string) {
+    setActiveSlotKey(key);
+    requestAnimationFrame(() => {
+      pickerSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }
+
   function clearSlot(key: string) {
     setSlots((prev) => prev.map((s) => (s.key === key ? { ...s, championId: null } : s)));
-    setActiveSlotKey(key);
+    activateSlot(key);
   }
 
   const activeSlotChampionId = slots.find((s) => s.key === activeSlotKey)?.championId ?? null;
@@ -1141,7 +1161,7 @@ export default function Home() {
         key={slot.key}
         type="button"
         className={`slot${active ? " slot--active" : ""}${champ ? "" : " slot--empty"}`}
-        onClick={() => (champ ? clearSlot(slot.key) : setActiveSlotKey(slot.key))}
+        onClick={() => (champ ? clearSlot(slot.key) : activateSlot(slot.key))}
       >
         {champ ? (
           <>
@@ -1179,7 +1199,7 @@ export default function Home() {
         key={slot.key}
         type="button"
         className={`champ-select-slot${active ? " champ-select-slot--active" : ""}${champ ? "" : " champ-select-slot--empty"}`}
-        onClick={() => (champ ? clearSlot(slot.key) : setActiveSlotKey(slot.key))}
+        onClick={() => (champ ? clearSlot(slot.key) : activateSlot(slot.key))}
       >
         <span className="champ-select-role">{shortLabel}</span>
         {champ ? (
@@ -1639,7 +1659,7 @@ export default function Home() {
         </section>
       )}
 
-      <section className="picker-section">
+      <section className="picker-section" ref={pickerSectionRef}>
         <ChampionPicker
           champions={champions}
           selectedIds={pickerSelectedIds}
