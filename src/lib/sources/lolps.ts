@@ -47,6 +47,21 @@ import type {
 
 const CACHE_TTL_MS = 10 * 60 * 1000;
 
+// `region`/`tier` query params shared by the graphs.json and versus/stats.json
+// endpoints below — both real captured requests used the exact same values
+// (region=0, tier=2), on two different occasions, which is why these are
+// hardcoded constants rather than left off like `version` (see the comments
+// at each call site for the full reasoning): `version` moved between the two
+// captures (153 vs 154) — clearly a patch-counter that goes stale — while
+// region/tier stayed identical, consistent with being fixed site-wide
+// defaults ("global" region, some fixed skill bracket) rather than anything
+// that varies per request. Still unconfirmed against a live response (no
+// outbound access to lol.ps from this environment) — if power-curve/versus
+// data is still missing after this, these two values are the next thing to
+// re-check against a fresh browser capture.
+const LOLPS_REGION = 0;
+const LOLPS_TIER = 2;
+
 // Matches Riot's own TEAM_POSITION order; verified by cross-referencing the
 // on-page lane-share percentages (탑 78.7% / 정글 4.6% / 미드 15.7% /
 // 바텀 0.5% / 서폿 0.6%) against champSummary's top1..5LaneId/Ratio fields.
@@ -355,10 +370,16 @@ function resolveChampionId(slug: string, champions: ChampionRef[]): number {
 // points); with 31 points total that lines up with one point per minute
 // starting at minute 3 (3,4,...,33) — inferred from that spacing, not
 // confirmed directly by the API response itself.
-// `version`/`tier`/`region` are left out of the request the same way
-// op.gg's `patch` is — betting the server falls back to "current" rather
-// than erroring; unconfirmed either way since this can't be tested from
-// this sandbox (no outbound access to lol.ps here).
+// `region`/`tier` are sent (LOLPS_REGION/LOLPS_TIER above); `version` is left
+// out of the request the same way op.gg's `patch` is — betting the server
+// falls back to "current" rather than erroring. This used to omit
+// region/tier too "the same way as version", but that conflated a value that
+// changed between two real captures (version: 153 → 154, clearly patch-
+// specific) with two that stayed identical both times — matching op.gg's own
+// convention of always sending its stable region/type/tier params and only
+// gambling on the one genuinely time-varying value (`patch`). Still
+// unconfirmed against a live response either way (no outbound access to
+// lol.ps from this environment).
 const CURVE_START_MINUTE = 3;
 
 export interface PowerCurvePoint {
@@ -381,13 +402,16 @@ function average(points: PowerCurvePoint[]): number | null {
 
 async function fetchPowerCurve(championId: number): Promise<PowerCurve> {
   return cached(`lolps:graphs:${championId}`, CACHE_TTL_MS, async () => {
-    const res = await fetch(`https://lol.ps/api/champ/${championId}/graphs.json?range=two_weeks`, {
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (compatible; semips-lol-app/1.0; personal project, non-commercial)",
-        Accept: "application/json",
+    const res = await fetch(
+      `https://lol.ps/api/champ/${championId}/graphs.json?region=${LOLPS_REGION}&tier=${LOLPS_TIER}&range=two_weeks`,
+      {
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (compatible; semips-lol-app/1.0; personal project, non-commercial)",
+          Accept: "application/json",
+        },
       },
-    });
+    );
     if (!res.ok) {
       throw new Error(`lol.ps: power curve request failed (HTTP ${res.status}).`);
     }
@@ -480,9 +504,10 @@ export async function getPowerCurvesForPosition(
 //        visionScorePerMin1/2, jugGankingDeathsAt15Min1/2,
 //        jugGankingKillsAt15Min1/2, maxLevelLeadLaneOpponent1/2,
 //        levelUpFasterThanOpponentLv2/3/6Percent } }
-// `version`/`tier`/`region` are left out of our own request the same way
-// graphs.json's are (see CURVE_START_MINUTE comment above) — betting on
-// "current" defaults, unconfirmed either way. `champion1`/`champion2`
+// `region`/`tier` are sent (LOLPS_REGION/LOLPS_TIER); `version` is left out
+// of our own request the same way graphs.json's is (see CURVE_START_MINUTE
+// comment above) — betting on a "current" default, unconfirmed either way.
+// `champion1`/`champion2`
 // determine which side gets the "1"/"2" suffix in the response; we always
 // send the ally champion as champion1, so every "*1" field below
 // consistently means "our side" and "*2" means the enemy.
@@ -538,7 +563,7 @@ export async function getVersusStats(
   const laneId = POSITION_TO_LANE_ID[position];
   return cached(`lolps:versus:${allyChampionId}:${enemyChampionId}:${laneId}`, CACHE_TTL_MS, async () => {
     const res = await fetch(
-      `https://lol.ps/api/versus/stats.json?lane=${laneId}&champion1=${allyChampionId}&champion2=${enemyChampionId}`,
+      `https://lol.ps/api/versus/stats.json?region=${LOLPS_REGION}&tier=${LOLPS_TIER}&lane=${laneId}&champion1=${allyChampionId}&champion2=${enemyChampionId}`,
       {
         headers: {
           "User-Agent":
