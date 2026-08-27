@@ -202,6 +202,18 @@ interface TeamPowerCurve {
   sampledCount: number;
 }
 
+interface ChampionCCInfo {
+  championId: number;
+  hasHardCC: boolean;
+}
+
+interface CCInfo {
+  ally: ChampionCCInfo[];
+  enemy: ChampionCCInfo[];
+  allyCount: number;
+  enemyCount: number;
+}
+
 interface AdviceResult {
   position: string;
   enemyLaneChampion: ChampionBrief | null;
@@ -215,6 +227,7 @@ interface AdviceResult {
   measuredSynergy: MeasuredSynergy;
   compHeuristic: CompHeuristic;
   compConcepts: CompConcepts;
+  ccInfo: CCInfo;
   teamPowerCurve: TeamPowerCurve;
 }
 
@@ -1071,6 +1084,10 @@ export default function Home() {
     }
     const champ = slot.championId !== null ? championById.get(slot.championId) : null;
     const active = slot.key === activeSlotKey;
+    // undefined = 아직 조회 안 됨/실패(회색 물음표), true/false = 실제 hasHardCC
+    // 값(championSkills.ts, ccInfo API 응답) — 조합 컨셉/픽 추천 순위 보정에
+    // 이미 쓰던 것과 같은 데이터를 챔피언 선택 화면에도 그대로 노출.
+    const ccEntry = champ ? adviceResult?.ccInfo[side]?.find((c) => c.championId === champ.id) : undefined;
     return (
       <button
         key={slot.key}
@@ -1083,6 +1100,16 @@ export default function Home() {
           <>
             <ChampionIcon src={champ.iconUrl} name={champ.name} />
             <span>{champ.name}</span>
+            <span
+              className={`champ-select-cc-dot${
+                ccEntry === undefined
+                  ? " champ-select-cc-dot--unknown"
+                  : ccEntry.hasHardCC
+                    ? " champ-select-cc-dot--yes"
+                    : " champ-select-cc-dot--no"
+              }`}
+              title={ccEntry === undefined ? "CC 정보 확인 중" : ccEntry.hasHardCC ? "하드 CC 보유" : "하드 CC 없음"}
+            />
           </>
         ) : (
           <span className="empty-hint">선택</span>
@@ -1208,6 +1235,12 @@ export default function Home() {
                 {slots.filter((s) => s.key.startsWith("enemy-")).map((slot) => renderChampSelectSlot(slot, "enemy"))}
               </div>
             </div>
+            {adviceResult && (adviceResult.ccInfo.ally.length > 0 || adviceResult.ccInfo.enemy.length > 0) && (
+              <p className="champ-select-cc-total">
+                CC 보유 챔피언 — 우리팀 {adviceResult.ccInfo.allyCount}/{adviceResult.ccInfo.ally.length}명 · 상대팀{" "}
+                {adviceResult.ccInfo.enemyCount}/{adviceResult.ccInfo.enemy.length}명
+              </p>
+            )}
           </div>
         ) : (
           <div className="slot-row">{slots.map((slot) => renderSlot(slot))}</div>

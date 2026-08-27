@@ -1015,6 +1015,17 @@ export async function GET(req: Request) {
     enemy: ReturnType<typeof analyzeCompConcepts>;
     matchup: ReturnType<typeof lookupConceptMatchup>;
   } = { ally: null, enemy: null, matchup: null };
+  // --- 채워진 챔피언들의 CC(하드 크라우드 컨트롤) 보유 여부 — 위 조합 컨셉과
+  // 같은 fetchAbilitiesMap 호출(챔피언당 Data Dragon 요청 1번, 이미 하고 있던
+  // 것)에서 나오는 championSkills.ts의 hasHardCC를 그대로 재사용. 별도 요청
+  // 추가 없이 챔피언 선택 화면에 팀별 CC 보유/미보유와 합계를 보여주기 위한
+  // 용도라 compConcepts와 같은 try/catch 블록 안에서 함께 계산함. ---
+  let ccInfo: {
+    ally: { championId: number; hasHardCC: boolean }[];
+    enemy: { championId: number; hasHardCC: boolean }[];
+    allyCount: number;
+    enemyCount: number;
+  } = { ally: [], enemy: [], allyCount: 0, enemyCount: 0 };
   try {
     const version = await getLatestVersion();
     const [allyAbilities, enemyAbilities] = await Promise.all([
@@ -1031,8 +1042,24 @@ export async function GET(req: Request) {
           ? lookupConceptMatchup(allyConcepts.dominant, enemyConcepts.dominant)
           : null,
     };
+
+    const toCCEntries = (champs: DDragonChampion[], abilities: Map<number, ChampionAbilities>) =>
+      champs
+        .map((c) => {
+          const a = abilities.get(c.id);
+          return a ? { championId: c.id, hasHardCC: a.hasHardCC } : null;
+        })
+        .filter((e): e is { championId: number; hasHardCC: boolean } => e !== null);
+    const allyCC = toCCEntries(allyChamps, allyAbilities);
+    const enemyCC = toCCEntries(enemyChamps, enemyAbilities);
+    ccInfo = {
+      ally: allyCC,
+      enemy: enemyCC,
+      allyCount: allyCC.filter((c) => c.hasHardCC).length,
+      enemyCount: enemyCC.filter((c) => c.hasHardCC).length,
+    };
   } catch {
-    // Data Dragon unreachable — leave compConcepts at the all-null default.
+    // Data Dragon unreachable — leave compConcepts/ccInfo at the empty default.
   }
 
   return NextResponse.json({
@@ -1048,6 +1075,7 @@ export async function GET(req: Request) {
     measuredSynergy,
     compHeuristic,
     compConcepts,
+    ccInfo,
     teamPowerCurve,
   });
 }

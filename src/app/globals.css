@@ -338,6 +338,39 @@ textarea {
   font-size: 0.8rem;
 }
 
+/* Per-slot CC (hard crowd control) indicator dot — --yes/--no reflect the
+   real championSkills.ts hasHardCC value from the pickadvice API's ccInfo,
+   --unknown is the neutral "not looked up yet / lookup failed" state so it
+   never reads as a false "no CC". */
+.champ-select-cc-dot {
+  flex-shrink: 0;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+}
+
+.champ-select-cc-dot--yes {
+  background: var(--bad);
+  border-color: var(--bad);
+}
+
+.champ-select-cc-dot--no {
+  background: transparent;
+}
+
+.champ-select-cc-dot--unknown {
+  background: var(--surface-alt);
+  border-style: dashed;
+}
+
+.champ-select-cc-total {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--muted);
+  text-align: center;
+}
+
 .build-card {
   display: flex;
   flex-direction: column;
