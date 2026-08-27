@@ -65,6 +65,10 @@ interface PickEntry {
   bySource: SourceValue[];
   earlyWinRate?: number | null;
   lateWinRate?: number | null;
+  /** Set when earlyWinRate/lateWinRate are actually lol.ps's data for a
+   * different lane than this candidate's recommended position — lol.ps only
+   * ever tracks a champion's own primary lane. */
+  powerCurveLaneNote?: string | null;
   build?: BuildResult | null;
   /** DeepLoL's build for the same champion+position, shown alongside `build`
    * rather than merged with it — same "라인 카운터"/"빌드" tab convention. */
@@ -1046,7 +1050,7 @@ export default function Home() {
         fetch(`/api/build?championId=${championId}&position=${position}`)
           .then((r) => r.json().then((d) => ({ ok: r.ok, data: d })))
           .then(({ ok, data: buildData }) => {
-            if (ok) setCounterBuild(buildData);
+            if (ok && !isStale()) setCounterBuild(buildData);
           })
           .catch(() => {
             // Best-effort — 라인 카운터 결과 자체는 이미 떴으니 조용히 무시.
@@ -1062,7 +1066,7 @@ export default function Home() {
         fetch(`/api/build?championId=${championId}&position=${position}&source=deeplol`)
           .then((r) => r.json().then((d) => ({ ok: r.ok, data: d })))
           .then(({ ok, data: deeplolData }) => {
-            if (ok) setBuildResultDeeplol(deeplolData);
+            if (ok && !isStale()) setBuildResultDeeplol(deeplolData);
           })
           .catch(() => {
             // Best-effort — lol.ps 빌드 카드는 이미 떴으니 조용히 무시.
@@ -1473,6 +1477,7 @@ export default function Home() {
                           avgWinRate={c.allySynergyAvgWinRate}
                         />
                       </div>
+                      {c.powerCurveLaneNote && <p className="build-lane-note">⚠ {c.powerCurveLaneNote}</p>}
                       {c.laningStats && <LaningStatsRow stats={c.laningStats} />}
                       {c.build && <BuildCardCompact build={c.build} sourceLabel="lol.ps" />}
                       {c.buildDeeplol && <BuildCardCompact build={c.buildDeeplol} sourceLabel="DeepLoL" />}
@@ -1511,6 +1516,7 @@ export default function Home() {
                           avgWinRate={c.allySynergyAvgWinRate}
                         />
                       </div>
+                      {c.powerCurveLaneNote && <p className="build-lane-note">⚠ {c.powerCurveLaneNote}</p>}
                       {c.build && <BuildCardCompact build={c.build} sourceLabel="lol.ps" />}
                       {c.buildDeeplol && <BuildCardCompact build={c.buildDeeplol} sourceLabel="DeepLoL" />}
                     </li>

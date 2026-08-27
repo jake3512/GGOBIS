@@ -120,10 +120,14 @@ interface PickEntry {
   games: number;
   bySource: SourceValueOut[];
   /** lol.ps power-curve early/late-game win rate — only attached to the
-   * top few entries (see POWER_CURVE_CANDIDATE_LIMIT), and only when that
-   * champion's lol.ps data actually covers this position. */
+   * top few entries (see POWER_CURVE_CANDIDATE_LIMIT). lol.ps only ever
+   * tracks a champion's own primary lane, so these numbers are shown even
+   * when that doesn't match `position` — same "show real data with a
+   * caveat" convention as computeTeamPowerCurve/annotateWithBuild — with
+   * `powerCurveLaneNote` set to flag it (null when it does match). */
   earlyWinRate?: number | null;
   lateWinRate?: number | null;
+  powerCurveLaneNote?: string | null;
   /** lol.ps build recommendation — same top-N-only, same-position-only
    * limits as the power curve above. */
   build?: BuildResult | null;
@@ -419,7 +423,10 @@ function laningFitScore(stats: VersusStats): number {
  *     via how well the candidate's own peak phase lines up with `teamPeak`
  *     (the team's already-computed peak phase, see teamPeakPhase/
  *     computeTeamPowerCurve). Still also sets earlyWinRate/lateWinRate for
- *     display, same as before.
+ *     display, same as before — lol.ps only ever tracks a champion's own
+ *     primary lane, so these are shown even off-position with
+ *     `powerCurveLaneNote` flagging the mismatch (same convention as
+ *     computeTeamPowerCurve/annotateWithBuild) rather than silently gated.
  *   - laning-phase stats vs the specific enemy laner (`enemyLanerChampionId`,
  *     null for synergyPicks — there's no single opposing laner there) —
  *     blended into the real winRate goodness term.
@@ -451,6 +458,10 @@ async function refineTopWithPowerCurveAndLaning(
       const curve = curveResult.value;
       entry.earlyWinRate = curve.earlyWinRate;
       entry.lateWinRate = curve.lateWinRate;
+      entry.powerCurveLaneNote =
+        curve.actualPosition && curve.actualPosition !== position
+          ? `lol.ps는 ${entry.name}의 ${POSITION_LABEL.get(curve.actualPosition) ?? curve.actualPosition} 라인 데이터만 갖고 있어요 — 아래 수치는 실제로 그 라인 기준입니다.`
+          : null;
       if (teamPeak) {
         const phaseRate =
           teamPeak === "early" ? curve.earlyWinRate : teamPeak === "mid" ? curve.midWinRate : curve.lateWinRate;
@@ -837,8 +848,10 @@ export async function GET(req: Request) {
       counterPicks = restrictToPool(ranked, tierMap);
       await refineTopWithSkillFit(counterPicks, champById, enemyChamps, "asc");
       await refineTopWithPowerCurveAndLaning(counterPicks, position, teamPeak, enemyLaneChampion.id, "asc");
-      await annotateWithBuild(counterPicks, position);
-      await annotateWithDeeplolBuild(counterPicks, position);
+      // Independent sources writing disjoint fields (.build vs .buildDeeplol)
+      // on the same entries — run concurrently instead of paying the sum of
+      // both round trips.
+      await Promise.all([annotateWithBuild(counterPicks, position), annotateWithDeeplolBuild(counterPicks, position)]);
       applyBuildFitBonus(counterPicks, enemyChamps, "asc");
     } catch (err) {
       counterError = err instanceof Error ? err.message : "라인전 카운터 조회에 실패했습니다.";
@@ -857,8 +870,7 @@ export async function GET(req: Request) {
       // laning-stats half of the refine pass is skipped (enemyLanerChampionId
       // null) — only the power-curve/team-phase blend applies here.
       await refineTopWithPowerCurveAndLaning(synergyPicks, position, teamPeak, null, "desc");
-      await annotateWithBuild(synergyPicks, position);
-      await annotateWithDeeplolBuild(synergyPicks, position);
+      await Promise.all([annotateWithBuild(synergyPicks, position), annotateWithDeeplolBuild(synergyPicks, position)]);
       applyBuildFitBonus(synergyPicks, enemyChamps, "desc");
     } catch (err) {
       synergyError = err instanceof Error ? err.message : "시너지 조회에 실패했습니다.";
@@ -915,8 +927,10 @@ export async function GET(req: Request) {
       // Best-effort, independent of the win-rate lookup below — a lol.ps
       // versus/stats.json failure (or lol.ps just not having games for this
       // exact pairing+lane) shouldn't blank out the counter-matchup win
-      // rate, which comes from different sources entirely.
-      const laningStats = await getVersusStats(ally.id, enemy.id, p.value).catch(() => null);
+      // rate, which comes from different sources entirely. Kicked off here
+      // (not awaited yet) so it runs concurrently with the counters lookup
+      // below instead of serializing two unrelated network calls per lane.
+      const laningStatsPromise = getVersusStats(ally.id, enemy.id, p.value).catch(() => null);
       try {
         const result = await getAggregatedLaneCounters(enemy.slug, p.value, champions);
         const match = findMatch(result, ally.id);
@@ -930,7 +944,7 @@ export async function GET(req: Request) {
           winRate: match ? 1 - match.winRate : null,
           games: match?.games ?? null,
           bySource: match ? match.bySource.map((s) => ({ ...s, winRate: 1 - s.winRate })) : [],
-          laningStats,
+          laningStats: await laningStatsPromise,
           error: null as string | null,
         };
       } catch (err) {
@@ -941,7 +955,7 @@ export async function GET(req: Request) {
           winRate: null,
           games: null,
           bySource: [] as SourceValueOut[],
-          laningStats,
+          laningStats: await laningStatsPromise,
           error: err instanceof Error ? err.message : "조회에 실패했습니다.",
         };
       }
