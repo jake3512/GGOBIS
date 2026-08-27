@@ -820,16 +820,11 @@ function ChampionPoolEditor({
   const total = pool[1].length + pool[2].length + pool[3].length;
 
   return (
-    <details className="champion-pool-editor">
-      <summary>
-        내 챔피언 풀 (숙련도 우선순위)
-        {total > 0 ? ` — ${total}명 설정됨${poolApplied ? "" : " (미적용)"}` : " — 설정 안 함 (전체 챔피언 대상)"}
-      </summary>
-      <p className="empty-hint">
-        챔피언을 등록하면 아래 픽 추천이 이 안에서만 나오고, 1티어 → 2티어 → 3티어 순으로 우선 추천됩니다. 같은
-        티어 안에서는 지금까지와 같은 승률 순위가 적용됩니다. 아무것도 등록하지 않으면 전체 챔피언을 대상으로
-        추천합니다.
-      </p>
+    <div className="champion-pool-editor">
+      {/* 적용/미적용 토글은 details 바깥(항상 보이는 위치)에 둠 — 원래
+          details 안에 있어서 "내 챔피언 풀" 패널을 접으면(기본 상태) 같이
+          숨겨졌는데, 패널을 펼치지 않고도 방금 등록해둔 풀을 껐다 켰다 할 수
+          있어야 더 편리하다는 피드백을 반영함. */}
       {total > 0 && (
         <label className="pool-apply-toggle">
           <input
@@ -840,19 +835,30 @@ function ChampionPoolEditor({
           챔피언 풀 적용 (끄면 풀은 그대로 두고 전체 챔피언 대상으로 추천)
         </label>
       )}
-      {([1, 2, 3] as const).map((tier) => (
-        <ChampionPoolTier
-          key={tier}
-          tier={tier}
-          champions={champions}
-          championById={championById}
-          selectedIds={pool[tier]}
-          isOpen={openTier === tier}
-          onToggleOpen={() => setOpenTier((cur) => (cur === tier ? null : tier))}
-          onToggleChampion={(championId) => onToggleChampion(tier, championId)}
-        />
-      ))}
-    </details>
+      <details>
+        <summary>
+          내 챔피언 풀 (숙련도 우선순위)
+          {total > 0 ? ` — ${total}명 설정됨${poolApplied ? "" : " (미적용)"}` : " — 설정 안 함 (전체 챔피언 대상)"}
+        </summary>
+        <p className="empty-hint">
+          챔피언을 등록하면 아래 픽 추천이 이 안에서만 나오고, 1티어 → 2티어 → 3티어 순으로 우선 추천됩니다. 같은
+          티어 안에서는 지금까지와 같은 승률 순위가 적용됩니다. 아무것도 등록하지 않으면 전체 챔피언을 대상으로
+          추천합니다.
+        </p>
+        {([1, 2, 3] as const).map((tier) => (
+          <ChampionPoolTier
+            key={tier}
+            tier={tier}
+            champions={champions}
+            championById={championById}
+            selectedIds={pool[tier]}
+            isOpen={openTier === tier}
+            onToggleOpen={() => setOpenTier((cur) => (cur === tier ? null : tier))}
+            onToggleChampion={(championId) => onToggleChampion(tier, championId)}
+          />
+        ))}
+      </details>
+    </div>
   );
 }
 
