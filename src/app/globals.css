@@ -14,6 +14,10 @@
   --good: #45dc9a;
   --bad: #ff6b74;
   --neutral: #a3abba;
+  /* Amber — sits between --bad(red, hard CC) and --neutral(gray, no CC) so
+     "일반 CC만 있음"(둔화 등, 완전히 무력화하진 않는 CC) reads as a distinct
+     third state rather than a washed-out red. See .champ-select-cc-dot--soft. */
+  --warn: #f5b942;
 }
 
 html {
@@ -353,10 +357,12 @@ textarea {
   font-size: 0.8rem;
 }
 
-/* Per-slot CC (hard crowd control) indicator dot — --yes/--no reflect the
-   real championSkills.ts hasHardCC value from the pickadvice API's ccInfo,
-   --unknown is the neutral "not looked up yet / lookup failed" state so it
-   never reads as a false "no CC". */
+/* Per-slot CC indicator dot — reflects the real championSkills.ts
+   hasHardCC/hasSoftCC values from the pickadvice API's ccInfo (see
+   ccDotState in page.tsx): --yes = 하드 CC 보유(기절/속박/공포/도발 등,
+   완전히 무력화), --soft = 하드 CC는 없고 일반 CC(둔화)만 보유, --no = CC
+   없음, --unknown = 아직 조회 안 됨/실패한 중립 상태(never reads as a false
+   "no CC"). */
 .champ-select-cc-dot {
   flex-shrink: 0;
   width: 9px;
@@ -368,6 +374,11 @@ textarea {
 .champ-select-cc-dot--yes {
   background: var(--bad);
   border-color: var(--bad);
+}
+
+.champ-select-cc-dot--soft {
+  background: var(--warn);
+  border-color: var(--warn);
 }
 
 .champ-select-cc-dot--no {
@@ -612,6 +623,28 @@ textarea {
   margin: 0.5rem 0 0.75rem;
 }
 
+.pool-apply-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 44px;
+  padding: 0.4rem 0.5rem;
+  margin-bottom: 0.5rem;
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 0.82rem;
+  color: var(--foreground);
+  cursor: pointer;
+}
+
+.pool-apply-toggle input {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+}
+
 .pool-tier {
   border-top: 1px solid var(--border);
   padding-top: 0.75rem;
@@ -683,6 +716,26 @@ textarea {
 .pool-tier .champion-grid {
   margin-top: 0.6rem;
   max-height: 280px;
+}
+
+/* 픽 추천 추천 개수(5/10/15) 선택 — .tab/.tab--active를 그대로 재사용해서
+   모드/포지션 탭과 같은 톤으로 보이게 함. */
+.recommend-count-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.recommend-count-label {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.recommend-count-tabs {
+  display: flex;
+  gap: 0.4rem;
 }
 
 .comp-heuristic-grid {

@@ -99,6 +99,25 @@ const DAMAGE_MAJORITY_THRESHOLD = 60;
 
 const VALID_POSITIONS = new Set(POSITIONS.map((p) => p.value));
 
+// How many entries each recommendation list (counterPicks/synergyPicks/
+// combinedPicks) is trimmed to before being sent to the client — user-
+// selectable via the `count` query param (5/10/15, default the first).
+// Anything outside this set falls back to the default rather than erroring,
+// same "ignore malformed input" convention as parseTierIds below. Note this
+// is purely a display cap: refineTopWithSkillFit/refineTopWithPowerCurveAndLaning/
+// annotateWithBuild etc. above only ever enrich the top 5 regardless of this
+// value (see POWER_CURVE_CANDIDATE_LIMIT etc.), so picks past #5 never carry
+// power-curve/build/laning-stats detail no matter how high count is set —
+// same as the unenriched middle-of-the-list entries that already existed
+// before this feature.
+const RECOMMEND_COUNT_OPTIONS = [5, 10, 15] as const;
+const DEFAULT_RECOMMEND_COUNT = RECOMMEND_COUNT_OPTIONS[0];
+
+function parseRecommendCount(raw: string | null): number {
+  const n = Number(raw);
+  return (RECOMMEND_COUNT_OPTIONS as readonly number[]).includes(n) ? n : DEFAULT_RECOMMEND_COUNT;
+}
+
 interface ChampionBrief {
   id: number;
   name: string;
@@ -772,6 +791,8 @@ export async function GET(req: Request) {
     );
   }
 
+  const recommendCount = parseRecommendCount(searchParams.get("count"));
+
   const champions = await getChampionsWithFallback();
   const champById = new Map(champions.map((c) => [c.id, c]));
 
@@ -913,8 +934,15 @@ export async function GET(req: Request) {
           // second sort is a no-op, so behavior is unchanged.
           .sort((a, b) => b.score - a.score)
           .sort((a, b) => (a.tier ?? 0) - (b.tier ?? 0))
-          .slice(0, 5)
+          .slice(0, recommendCount)
       : [];
+
+  // combinedPicks above intersects the FULL counterPicks/synergyPicks lists
+  // (trimming either first would needlessly shrink how many matches it can
+  // find) — only trim counterPicks/synergyPicks themselves to recommendCount
+  // now, for their own display lists further down.
+  if (counterPicks) counterPicks = counterPicks.slice(0, recommendCount);
+  if (synergyPicks) synergyPicks = synergyPicks.slice(0, recommendCount);
 
   // --- "실측 데이터" 전체 시너지: look up SPECIFIC already-picked pairs
   // (not "who should I pick") using the exact same scraped lane-counter and
@@ -1029,14 +1057,17 @@ export async function GET(req: Request) {
     enemy: ReturnType<typeof analyzeCompConcepts>;
     matchup: ReturnType<typeof lookupConceptMatchup>;
   } = { ally: null, enemy: null, matchup: null };
-  // --- 채워진 챔피언들의 CC(하드 크라우드 컨트롤) 보유 여부 — 위 조합 컨셉과
-  // 같은 fetchAbilitiesMap 호출(챔피언당 Data Dragon 요청 1번, 이미 하고 있던
-  // 것)에서 나오는 championSkills.ts의 hasHardCC를 그대로 재사용. 별도 요청
-  // 추가 없이 챔피언 선택 화면에 팀별 CC 보유/미보유와 합계를 보여주기 위한
-  // 용도라 compConcepts와 같은 try/catch 블록 안에서 함께 계산함. ---
+  // --- 채워진 챔피언들의 CC(크라우드 컨트롤) 보유 여부 — 위 조합 컨셉과 같은
+  // fetchAbilitiesMap 호출(챔피언당 Data Dragon 요청 1번, 이미 하고 있던 것)
+  // 에서 나오는 championSkills.ts의 hasHardCC/hasSoftCC를 그대로 재사용. 별도
+  // 요청 추가 없이 챔피언 선택 화면에 팀별 CC 보유/미보유(+하드/일반 구분)와
+  // 합계를 보여주기 위한 용도라 compConcepts와 같은 try/catch 블록 안에서
+  // 함께 계산함. 합계(allyCount/enemyCount)는 지금까지처럼 하드 CC 기준만
+  // 센다 — 일반(슬로우만 있는) CC는 프론트에서 점 색만 구분해 보여줄 뿐, 실제
+  // 게임에서의 영향력 차이가 커서 같은 합계에 섞으면 오히려 오해를 줄 수 있음. ---
   let ccInfo: {
-    ally: { championId: number; hasHardCC: boolean }[];
-    enemy: { championId: number; hasHardCC: boolean }[];
+    ally: { championId: number; hasHardCC: boolean; hasSoftCC: boolean }[];
+    enemy: { championId: number; hasHardCC: boolean; hasSoftCC: boolean }[];
     allyCount: number;
     enemyCount: number;
   } = { ally: [], enemy: [], allyCount: 0, enemyCount: 0 };
@@ -1061,9 +1092,9 @@ export async function GET(req: Request) {
       champs
         .map((c) => {
           const a = abilities.get(c.id);
-          return a ? { championId: c.id, hasHardCC: a.hasHardCC } : null;
+          return a ? { championId: c.id, hasHardCC: a.hasHardCC, hasSoftCC: a.hasSoftCC } : null;
         })
-        .filter((e): e is { championId: number; hasHardCC: boolean } => e !== null);
+        .filter((e): e is { championId: number; hasHardCC: boolean; hasSoftCC: boolean } => e !== null);
     const allyCC = toCCEntries(allyChamps, allyAbilities);
     const enemyCC = toCCEntries(enemyChamps, enemyAbilities);
     ccInfo = {
