@@ -34,7 +34,7 @@ export const ADC_ARCHETYPES: Record<string, AdcArchetype> = {
   Ezreal: { attributes: ["attackSpeed"], flexibleBuild: true },
   Jhin: { attributes: ["critDamage"], flexibleBuild: true },
   Jinx: { attributes: ["critAttackSpeed"], flexibleBuild: false },
-  KaiSa: { attributes: ["critAttackSpeed", "critDamage"], flexibleBuild: false },
+  Kaisa: { attributes: ["critAttackSpeed", "critDamage"], flexibleBuild: false },
   KogMaw: { attributes: ["percentDamage", "attackSpeed"], flexibleBuild: false },
   Lucian: { attributes: ["critAttackSpeed"], flexibleBuild: false },
   MissFortune: { attributes: ["critAttackSpeed"], flexibleBuild: false },

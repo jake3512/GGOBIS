@@ -155,12 +155,20 @@ interface AdcArchetypeEntry {
   flexibleBuild: boolean;
 }
 
+type TankAttribute = "shield" | "armor" | "damageReduction" | "regen" | "health";
+
+interface TankArchetypeEntry {
+  championId: number;
+  attributes: TankAttribute[];
+}
+
 interface TeamCompAnalysis {
   filledCount: number;
   tagCounts: Record<string, number>;
   damageBalance: DamageBalance | null;
   hasFrontline: boolean;
   adcArchetypes: AdcArchetypeEntry[];
+  tankArchetypes: TankArchetypeEntry[];
 }
 
 interface CompHeuristic {
@@ -391,6 +399,14 @@ const ADC_ATTRIBUTE_LABELS: Record<AdcAttribute, string> = {
   critDamage: "치명타 데미지",
 };
 
+const TANK_ATTRIBUTE_LABELS: Record<TankAttribute, string> = {
+  shield: "보호막 탱커",
+  armor: "방어력 탱커",
+  damageReduction: "데미지 감소 탱커",
+  regen: "회복 탱커",
+  health: "체력 탱커",
+};
+
 function CompCard({
   title,
   analysis,
@@ -425,6 +441,15 @@ function CompCard({
             <p key={a.championId} className="empty-hint">
               {champ?.name ?? "원거리 딜러"}: {a.attributes.map((attr) => ADC_ATTRIBUTE_LABELS[attr]).join(" · ")}
               {a.flexibleBuild && <span className="adc-flex-badge">빌드 유동적</span>}
+            </p>
+          );
+        })}
+      {analysis.tankArchetypes.length > 0 &&
+        analysis.tankArchetypes.map((t) => {
+          const champ = championById.get(t.championId);
+          return (
+            <p key={t.championId} className="empty-hint">
+              {champ?.name ?? "탱커"}: {t.attributes.map((attr) => TANK_ATTRIBUTE_LABELS[attr]).join(" · ")}
             </p>
           );
         })}
@@ -1549,8 +1574,9 @@ export default function Home() {
               <p className="empty-hint">
                 승률이 아니라 Riot 공식 챔피언 태그·능력치(공격형/마법형 비중)만 이용한 참고용 체크입니다.
                 CC기·이니시 성향처럼 공식 데이터로 확인 안 되는 항목은 포함하지 않았습니다. 단, 원거리 딜러의
-                치명타/공속/퍼센트 데미지/치명타 데미지 속성은 공식 데이터가 아니라 이 앱이 직접 정리한 참고용
-                분류입니다(빌드 유동적 = 매치업에 따라 실제 빌드 방향이 자주 바뀌는 챔피언).
+                치명타/공속/퍼센트 데미지/치명타 데미지 속성과 탱커(탱커 서포터 포함)의 보호막/방어력/데미지
+                감소/회복/체력 탱커 분류는 공식 데이터가 아니라 이 앱이 직접 정리한 참고용 분류입니다(빌드
+                유동적 = 매치업에 따라 실제 빌드 방향이 자주 바뀌는 챔피언).
               </p>
               <div className="comp-heuristic-grid">
                 {adviceResult.compHeuristic.ally && (

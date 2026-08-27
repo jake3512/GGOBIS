@@ -13,6 +13,7 @@
 import type { DDragonChampion } from "@/lib/ddragon";
 import type { ChampionAbilities } from "@/lib/championSkills";
 import { getAdcArchetype, type AdcAttribute } from "@/lib/adcArchetype";
+import { getTankArchetype, type TankAttribute } from "@/lib/tankArchetype";
 
 export interface DamageBalance {
   physicalPct: number;
@@ -29,6 +30,11 @@ export interface AdcArchetypeEntry {
   flexibleBuild: boolean;
 }
 
+export interface TankArchetypeEntry {
+  championId: number;
+  attributes: TankAttribute[];
+}
+
 export interface TeamCompAnalysis {
   filledCount: number;
   /** e.g. {Fighter: 2, Tank: 1, Mage: 1, Marksman: 1} */
@@ -41,6 +47,10 @@ export interface TeamCompAnalysis {
    * not measured" caveat. Marksman champs missing from the table are simply
    * left out here (not padded with an empty entry). */
   adcArchetypes: AdcArchetypeEntry[];
+  /** Same idea as `adcArchetypes`, for Tank-tagged champions (which already
+   * covers tank supports too — Riot tags e.g. Leona/Braum/Nautilus with both
+   * Support and Tank) — see tankArchetype.ts. */
+  tankArchetypes: TankArchetypeEntry[];
 }
 
 export function analyzeTeamComp(champs: DDragonChampion[]): TeamCompAnalysis | null {
@@ -73,12 +83,20 @@ export function analyzeTeamComp(champs: DDragonChampion[]): TeamCompAnalysis | n
       return archetype ? [{ championId: c.id, attributes: archetype.attributes, flexibleBuild: archetype.flexibleBuild }] : [];
     });
 
+  const tankArchetypes: TankArchetypeEntry[] = champs
+    .filter((c) => c.tags.includes("Tank"))
+    .flatMap((c) => {
+      const archetype = getTankArchetype(c.slug);
+      return archetype ? [{ championId: c.id, attributes: archetype.attributes }] : [];
+    });
+
   return {
     filledCount: champs.length,
     tagCounts,
     damageBalance,
     hasFrontline: champs.some((c) => c.tags.includes("Tank")),
     adcArchetypes,
+    tankArchetypes,
   };
 }
 
