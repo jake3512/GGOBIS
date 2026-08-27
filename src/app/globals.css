@@ -202,16 +202,12 @@ textarea {
   box-shadow: 0 0 0 2px rgba(91, 155, 255, 0.45);
 }
 
-/* Advice mode's champ-select-style board: a big portrait preview of the
-   most recently picked champion up top, two narrow team columns below —
-   loosely mirrors the real LoL champ-select screen's layout (opposing
-   team columns either side of a center preview) within this app's
-   mobile-first width constraints. */
-.champ-select {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
+/* Advice mode's champ-select-style board — loosely mirrors the real LoL
+   champ-select screen's layout within this app's mobile-first width
+   constraints. Split across two siblings: the sticky 10-slot team columns
+   (.champ-select-teams, top-level so it can stay pinned while scrolling —
+   see that rule) and the big portrait preview inside .selected-bar below
+   it (not sticky, scrolls away normally). */
 
 .champ-select-portrait {
   position: relative;
@@ -251,7 +247,24 @@ textarea {
   font-weight: 700;
 }
 
+/* Sticky 10-slot (우리팀 5 + 상대팀 5) summary — a top-level page section
+   (not nested inside .selected-bar) so its sticky containing block is the
+   whole page, not just that one card. Stacks directly below the always-
+   sticky .mode-tabs bar (see that rule's own `top`) so the two never
+   overlap. Needs its own opaque background since content (the champion
+   grid, results) scrolls up underneath it once pinned. */
 .champ-select-teams {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  position: sticky;
+  top: calc(env(safe-area-inset-top, 0px) + 3.05rem);
+  z-index: 9;
+  background: var(--background);
+  padding-bottom: 0.4rem;
+}
+
+.champ-select-teams-columns {
   display: flex;
   gap: 0.4rem;
 }
@@ -323,7 +336,9 @@ textarea {
 
 .champ-select-slot--active {
   border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgba(91, 155, 255, 0.45);
+  background: rgba(91, 155, 255, 0.2);
+  box-shadow: 0 0 0 2px var(--accent);
+  font-weight: 700;
 }
 
 .champ-select-slot--disabled {
@@ -1042,6 +1057,7 @@ textarea {
 }
 
 .champion-tile {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1073,7 +1089,26 @@ textarea {
 
 .champion-tile--selected {
   border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgba(91, 155, 255, 0.45);
+  background: rgba(91, 155, 255, 0.22);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.champion-tile--selected::after {
+  content: "✓";
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  font-size: 0.65rem;
+  font-weight: 800;
+  line-height: 1;
 }
 
 .champion-tile:disabled {

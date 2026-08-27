@@ -1022,8 +1022,15 @@ export default function Home() {
     activateSlot(key);
   }
 
-  const activeSlotChampionId = slots.find((s) => s.key === activeSlotKey)?.championId ?? null;
-  const pickerSelectedIds = activeSlotChampionId !== null ? [activeSlotChampionId] : [];
+  // Every champion currently placed in any slot (not just the active one) —
+  // shows a checkmark on its tile in the picker grid. Previously this only
+  // looked at the active slot's own championId, but assignActiveSlot
+  // immediately auto-advances to the next empty slot right after a pick, so
+  // that slot's championId is null again by the time the picker re-renders
+  // — in practice the checkmark almost never showed. Scoping this to "any
+  // filled slot" instead makes it show reliably, and is more useful anyway
+  // (glance at the grid, see everyone you've already placed on the board).
+  const pickerSelectedIds = slots.map((s) => s.championId).filter((id): id is number => id !== null);
 
   const canRun =
     mode === "counter" || mode === "build" ? slots[0]?.championId !== null : slots.some((s) => s.championId !== null);
@@ -1273,43 +1280,53 @@ export default function Home() {
         />
       )}
 
+      {/* 픽 추천의 10슬롯(우리팀 5 + 상대팀 5)은 아래 selected-bar 카드 안이
+          아니라 여기, 페이지 최상위에 별도로 둬서 position: sticky가 body
+          전체 스크롤 기준으로 동작하게 함 — selected-bar 카드 안에 있으면
+          그 카드(스플래시 아트+버튼 포함, 꽤 큼) 높이만큼만 붙어있다가
+          카드가 다 지나가면 같이 스크롤돼버려서, 결과가 긴 픽 추천에서는
+          거의 도움이 안 됐음. 모드 탭(.mode-tabs) 바로 아래에 겹치지 않게
+          붙도록 top 오프셋을 그만큼 내려서 잡음(globals.css 참고). */}
+      {mode === "advice" && (
+        <div className="champ-select-teams">
+          <div className="champ-select-teams-columns">
+            <div className="champ-select-team champ-select-team--ally">
+              <span className="draft-team-label">우리팀</span>
+              {slots.filter((s) => s.key.startsWith("ally-")).map((slot) => renderChampSelectSlot(slot, "ally"))}
+            </div>
+            <div className="champ-select-team champ-select-team--enemy">
+              <span className="draft-team-label">상대팀</span>
+              {slots.filter((s) => s.key.startsWith("enemy-")).map((slot) => renderChampSelectSlot(slot, "enemy"))}
+            </div>
+          </div>
+          {adviceResult && (adviceResult.ccInfo.ally.length > 0 || adviceResult.ccInfo.enemy.length > 0) && (
+            <p className="champ-select-cc-total">
+              CC 보유 챔피언 — 우리팀 {adviceResult.ccInfo.allyCount}/{adviceResult.ccInfo.ally.length}명 · 상대팀{" "}
+              {adviceResult.ccInfo.enemyCount}/{adviceResult.ccInfo.enemy.length}명
+            </p>
+          )}
+        </div>
+      )}
+
       <section className="selected-bar">
         {mode === "advice" ? (
-          <div className="champ-select">
-            <div className="champ-select-portrait">
-              {portraitChampion ? (
-                <>
-                  {/* eslint-disable-next-line @next/next/no-img-element -- external CDN splash art, no next/image domain config needed */}
-                  <img
-                    src={championSplashUrl(portraitChampion.slug)}
-                    alt={portraitChampion.name}
-                    className="champ-select-portrait-img"
-                    referrerPolicy="no-referrer"
-                    onError={(e) => {
-                      e.currentTarget.style.display = "none";
-                    }}
-                  />
-                  <span className="champ-select-portrait-name">{portraitChampion.name}</span>
-                </>
-              ) : (
-                <span className="champ-select-portrait-empty">챔피언을 선택하면 여기 크게 보여요</span>
-              )}
-            </div>
-            <div className="champ-select-teams">
-              <div className="champ-select-team champ-select-team--ally">
-                <span className="draft-team-label">우리팀</span>
-                {slots.filter((s) => s.key.startsWith("ally-")).map((slot) => renderChampSelectSlot(slot, "ally"))}
-              </div>
-              <div className="champ-select-team champ-select-team--enemy">
-                <span className="draft-team-label">상대팀</span>
-                {slots.filter((s) => s.key.startsWith("enemy-")).map((slot) => renderChampSelectSlot(slot, "enemy"))}
-              </div>
-            </div>
-            {adviceResult && (adviceResult.ccInfo.ally.length > 0 || adviceResult.ccInfo.enemy.length > 0) && (
-              <p className="champ-select-cc-total">
-                CC 보유 챔피언 — 우리팀 {adviceResult.ccInfo.allyCount}/{adviceResult.ccInfo.ally.length}명 · 상대팀{" "}
-                {adviceResult.ccInfo.enemyCount}/{adviceResult.ccInfo.enemy.length}명
-              </p>
+          <div className="champ-select-portrait">
+            {portraitChampion ? (
+              <>
+                {/* eslint-disable-next-line @next/next/no-img-element -- external CDN splash art, no next/image domain config needed */}
+                <img
+                  src={championSplashUrl(portraitChampion.slug)}
+                  alt={portraitChampion.name}
+                  className="champ-select-portrait-img"
+                  referrerPolicy="no-referrer"
+                  onError={(e) => {
+                    e.currentTarget.style.display = "none";
+                  }}
+                />
+                <span className="champ-select-portrait-name">{portraitChampion.name}</span>
+              </>
+            ) : (
+              <span className="champ-select-portrait-empty">챔피언을 선택하면 여기 크게 보여요</span>
             )}
           </div>
         ) : (
