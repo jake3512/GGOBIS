@@ -16,18 +16,21 @@ export default function Icon() {
           width: "100%",
           height: "100%",
           display: "flex",
+          flexDirection: "column",
           alignItems: "center",
           justifyContent: "center",
           background: "#0b0d11",
           borderRadius: 7,
           color: "#5b9bff",
-          fontSize: 17,
-          fontWeight: 800,
           fontFamily: "sans-serif",
-          letterSpacing: "-0.02em",
         }}
       >
-        GG
+        <div style={{ display: "flex", fontSize: 15, fontWeight: 800, letterSpacing: "-0.03em", lineHeight: 1 }}>
+          GG
+        </div>
+        <div style={{ display: "flex", fontSize: 8, fontWeight: 700, letterSpacing: "-0.02em", lineHeight: 1, marginTop: 1 }}>
+          obis
+        </div>
       </div>
     ),
     { ...size },

@@ -16,17 +16,20 @@ export default function AppleIcon() {
           width: "100%",
           height: "100%",
           display: "flex",
+          flexDirection: "column",
           alignItems: "center",
           justifyContent: "center",
           background: "#0b0d11",
           color: "#5b9bff",
-          fontSize: 92,
-          fontWeight: 800,
           fontFamily: "sans-serif",
-          letterSpacing: "-0.02em",
         }}
       >
-        GG
+        <div style={{ display: "flex", fontSize: 78, fontWeight: 800, letterSpacing: "-0.02em", lineHeight: 1 }}>
+          GG
+        </div>
+        <div style={{ display: "flex", fontSize: 32, fontWeight: 700, letterSpacing: "-0.01em", lineHeight: 1, marginTop: 6 }}>
+          obis
+        </div>
       </div>
     ),
     { ...size },
