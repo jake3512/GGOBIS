@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ChampionPicker, type ChampionSummary } from "@/components/ChampionPicker";
 import { ChampionIcon } from "@/components/ChampionIcon";
 import { WinRateBar } from "@/components/WinRateBar";
@@ -783,6 +783,11 @@ export default function Home() {
    * 빌드 tab's own fetch) so switching modes doesn't clobber either. */
   const [counterBuild, setCounterBuild] = useState<BuildResult | null>(null);
   const [loading, setLoading] = useState(false);
+  /** Bumped once per runLookup() call — lets an in-flight request tell,
+   * once its fetch resolves, whether a newer request has since started
+   * (see isStale() inside runLookup) so a slow response can never clobber
+   * a more recent one now that 픽 추천 auto-fetches on every slot edit. */
+  const requestIdRef = useRef(0);
   const [championPool, setChampionPool] = useState<ChampionPool>(EMPTY_POOL);
   const [poolLoaded, setPoolLoaded] = useState(false);
 
@@ -919,6 +924,13 @@ export default function Home() {
         : slots.some((s) => s.championId !== null);
 
   async function runLookup() {
+    // 챔피언을 하나씩 입력할 때마다 자동으로 재조회하다 보니(아래
+    // auto-fetch useEffect), 느린 이전 요청의 응답이 더 최신 상태에 대한
+    // 요청보다 늦게 도착해서 최신 결과를 덮어쓸 수 있음 — 이 요청이
+    // "아직도 최신 요청인지"를 매번 확인해서, 그 사이 새 요청이 시작됐으면
+    // 응답이 와도 화면에 반영하지 않고 조용히 버림.
+    const requestId = ++requestIdRef.current;
+    const isStale = () => requestId !== requestIdRef.current;
     setLoading(true);
     try {
       if (mode === "counter") {
@@ -926,6 +938,7 @@ export default function Home() {
         const res = await fetch(`/api/counters?championId=${championId}&position=${position}`);
         const data = await res.json();
         if (!res.ok) throw new Error(data.error ?? "조회에 실패했습니다.");
+        if (isStale()) return;
         setCounterResult(data);
         setCounterBuild(null);
         fetch(`/api/build?championId=${championId}&position=${position}`)
@@ -941,6 +954,7 @@ export default function Home() {
         const res = await fetch(`/api/build?championId=${championId}&position=${position}&source=lolps`);
         const data = await res.json();
         if (!res.ok) throw new Error(data.error ?? "빌드 조회에 실패했습니다.");
+        if (isStale()) return;
         setBuildResult(data);
         setBuildResultDeeplol(null);
         fetch(`/api/build?championId=${championId}&position=${position}&source=deeplol`)
@@ -957,6 +971,7 @@ export default function Home() {
         const res = await fetch(`/api/duo?adcId=${adcId}&supportId=${supportId}`);
         const data = await res.json();
         if (!res.ok) throw new Error(data.error ?? "조회에 실패했습니다.");
+        if (isStale()) return;
         setDuoResult(data);
       } else {
         const params = new URLSearchParams({ position });
@@ -969,6 +984,7 @@ export default function Home() {
         const res = await fetch(`/api/pickadvice?${params.toString()}`);
         const data = await res.json();
         if (!res.ok) throw new Error(data.error ?? "조회에 실패했습니다.");
+        if (isStale()) return;
         setAdviceResult(data);
       }
     } catch (e) {
@@ -977,9 +993,32 @@ export default function Home() {
       // 않으므로). 콘솔에는 남겨서 devtools로는 원인을 볼 수 있게 함.
       console.error(e);
     } finally {
+      if (isStale()) return;
       setLoading(false);
     }
   }
+
+  /** 픽 추천은 "픽 추천 받기" 버튼을 눌러야만 조회되던 걸 버리고, 챔피언을
+   * 한 명씩 슬롯에 넣을 때마다(또는 지울 때, 포지션을 바꿀 때, 챔피언 풀을
+   * 바꿀 때) 자동으로 다시 조회하도록 함 — canRun이 이미 "슬롯 하나라도
+   * 채워지면 true"라서 그 조건을 그대로 재사용. 빠르게 여러 슬롯을 연달아
+   * 클릭할 때마다 6개 사이트를 매번 스크래핑하는 걸 막기 위해 마지막
+   * 변경 이후 500ms 동안 조용하면 그때 한 번만 실행(디바운스) — 그 사이
+   * 또 슬롯이 바뀌면 이전 타이머는 취소되고 다시 500ms를 기다림. 버튼은
+   * 그대로 남겨뒀으니 디바운스를 기다리지 않고 바로 조회하고 싶으면 눌러도
+   * 됨. canRun이 false면(챔피언이 하나도 없으면) 아예 조회하지 않고,
+   * 화면에서도 이전 추천 결과를 숨김(아래 렌더링 쪽 canRun 체크 참고 —
+   * 상태를 여기서 지우는 대신 렌더링 시점에만 숨겨서 이펙트 안에서
+   * setState를 안 부르도록 함). 다른 3개 모드(카운터/듀오/빌드)는 여기
+   * 대상이 아니라 지금처럼 버튼을 눌러야 조회됨 — 필요하면 알려주세요. */
+  useEffect(() => {
+    if (mode !== "advice" || !canRun) return;
+    const timeout = setTimeout(() => {
+      runLookup();
+    }, 500);
+    return () => clearTimeout(timeout);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, canRun, slots, position, championPool]);
 
   function renderSlot(slot: Slot) {
     if (slot.disabled) {
@@ -1175,8 +1214,11 @@ export default function Home() {
                 ? "듀오 시너지 조회"
                 : mode === "build"
                   ? "빌드 조회"
-                  : "픽 추천 받기"}
+                  : "지금 바로 새로고침"}
         </button>
+        {mode === "advice" && (
+          <p className="empty-hint">챔피언을 넣거나 뺄 때마다 자동으로 다시 조회돼요. 버튼은 기다리지 않고 바로 새로고침하고 싶을 때만 누르세요.</p>
+        )}
       </section>
 
       {champLoadError && <p className="error-banner">{champLoadError}</p>}
@@ -1252,7 +1294,7 @@ export default function Home() {
         </section>
       )}
 
-      {mode === "advice" && adviceResult && (
+      {mode === "advice" && canRun && adviceResult && (
         <section className="results">
           <h2>{POSITIONS.find((p) => p.value === adviceResult.position)?.label} 픽 추천</h2>
           {adviceResult.championPoolActive && (
