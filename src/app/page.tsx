@@ -728,13 +728,11 @@ export default function Home() {
    * buildResult (lol.ps) as a second, separately-labeled card, best-effort
    * (a DeepLoL failure doesn't block the lol.ps card from showing). */
   const [buildResultDeeplol, setBuildResultDeeplol] = useState<BuildResult | null>(null);
-  const [buildErrorDeeplol, setBuildErrorDeeplol] = useState<string | null>(null);
   /** Build recommendation auto-fetched alongside 라인 카운터's own result, for
    * the same champion+position — separate from buildResult (the dedicated
    * 빌드 tab's own fetch) so switching modes doesn't clobber either. */
   const [counterBuild, setCounterBuild] = useState<BuildResult | null>(null);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [championPool, setChampionPool] = useState<ChampionPool>(EMPTY_POOL);
   const [poolLoaded, setPoolLoaded] = useState(false);
 
@@ -800,14 +798,12 @@ export default function Home() {
 
   function switchMode(next: Mode) {
     setMode(next);
-    setError(null);
     setCounterResult(null);
     setDuoResult(null);
     setAdviceResult(null);
     setLastPickedChampionId(null);
     setBuildResult(null);
     setBuildResultDeeplol(null);
-    setBuildErrorDeeplol(null);
     setCounterBuild(null);
     if (next === "counter" || next === "build") {
       const nextSlots: Slot[] = [{ key: "target", label: "기준 챔피언", championId: null }];
@@ -873,7 +869,6 @@ export default function Home() {
         : slots.some((s) => s.championId !== null);
 
   async function runLookup() {
-    setError(null);
     setLoading(true);
     try {
       if (mode === "counter") {
@@ -898,14 +893,14 @@ export default function Home() {
         if (!res.ok) throw new Error(data.error ?? "빌드 조회에 실패했습니다.");
         setBuildResult(data);
         setBuildResultDeeplol(null);
-        setBuildErrorDeeplol(null);
         fetch(`/api/build?championId=${championId}&position=${position}&source=deeplol`)
           .then((r) => r.json().then((d) => ({ ok: r.ok, data: d })))
           .then(({ ok, data: deeplolData }) => {
             if (ok) setBuildResultDeeplol(deeplolData);
-            else setBuildErrorDeeplol(deeplolData.error ?? "DeepLoL 빌드 조회에 실패했습니다.");
           })
-          .catch(() => setBuildErrorDeeplol("DeepLoL 빌드 조회에 실패했습니다."));
+          .catch(() => {
+            // Best-effort — lol.ps 빌드 카드는 이미 떴으니 조용히 무시.
+          });
       } else if (mode === "duo") {
         const adcId = slots.find((s) => s.key === "adc")?.championId;
         const supportId = slots.find((s) => s.key === "support")?.championId;
@@ -927,7 +922,10 @@ export default function Home() {
         setAdviceResult(data);
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : "알 수 없는 오류가 발생했습니다.");
+      // 사용자에게는 에러 메시지를 보여주지 않음 — 조회에 실패하면 해당
+      // 결과 영역이 그냥 비어있는 채로 남음(각 setXxxResult가 호출되지
+      // 않으므로). 콘솔에는 남겨서 devtools로는 원인을 볼 수 있게 함.
+      console.error(e);
     } finally {
       setLoading(false);
     }
@@ -1131,16 +1129,6 @@ export default function Home() {
         </button>
       </section>
 
-      {error && (
-        <p className="error-banner">
-          {error}
-          <br />
-          <span className="empty-hint">
-            연동된 사이트의 페이지 구조가 예상과 달라 발생하는 문제일 수 있습니다. 이 메시지를 그대로
-            알려주시면 바로잡을게요.
-          </span>
-        </p>
-      )}
       {champLoadError && <p className="error-banner">{champLoadError}</p>}
 
       {mode === "counter" && counterResult && (
@@ -1190,9 +1178,6 @@ export default function Home() {
           </h2>
           <BuildCard build={buildResult} sourceLabel="lol.ps" />
           {buildResultDeeplol && <BuildCard build={buildResultDeeplol} sourceLabel="DeepLoL" />}
-          {buildErrorDeeplol && !buildResultDeeplol && (
-            <p className="empty-hint">DeepLoL: {buildErrorDeeplol}</p>
-          )}
         </section>
       )}
 
@@ -1252,13 +1237,11 @@ export default function Home() {
             </>
           )}
 
-          {adviceResult.enemyLaneChampion && (
+          {adviceResult.enemyLaneChampion && adviceResult.counterPicks && (
             <>
               <h3>{adviceResult.enemyLaneChampion.name} 상대 라인전 유리한 픽</h3>
-              {adviceResult.counterError && <p className="error-banner">{adviceResult.counterError}</p>}
-              {adviceResult.counterPicks && (
-                <ol className="recommend-list">
-                  {adviceResult.counterPicks.map((c) => (
+              <ol className="recommend-list">
+                {adviceResult.counterPicks.map((c) => (
                     <li key={c.championId} className="recommend-row recommend-row--stacked">
                       <div className="recommend-row-main">
                         <ChampionIcon src={c.iconUrl} name={c.name} />
@@ -1285,19 +1268,16 @@ export default function Home() {
                         ? "내 챔피언 풀 안에는 이 상대에 대한 카운터 데이터가 없습니다. 풀을 넓혀보세요."
                         : "카운터 데이터를 찾지 못했습니다."}
                     </p>
-                  )}
-                </ol>
-              )}
+                )}
+              </ol>
             </>
           )}
 
-          {adviceResult.allyAdcChampion && (
+          {adviceResult.allyAdcChampion && adviceResult.synergyPicks && (
             <>
               <h3>{adviceResult.allyAdcChampion.name}와 시너지 좋은 픽</h3>
-              {adviceResult.synergyError && <p className="error-banner">{adviceResult.synergyError}</p>}
-              {adviceResult.synergyPicks && (
-                <ol className="recommend-list">
-                  {adviceResult.synergyPicks.map((c) => (
+              <ol className="recommend-list">
+                {adviceResult.synergyPicks.map((c) => (
                     <li key={c.championId} className="recommend-row recommend-row--stacked">
                       <div className="recommend-row-main">
                         <ChampionIcon src={c.iconUrl} name={c.name} />
@@ -1324,9 +1304,8 @@ export default function Home() {
                         ? "내 챔피언 풀 안에는 이 조합에 대한 시너지 데이터가 없습니다. 풀을 넓혀보세요."
                         : "시너지 데이터를 찾지 못했습니다."}
                     </p>
-                  )}
-                </ol>
-              )}
+                )}
+              </ol>
             </>
           )}
 
@@ -1355,7 +1334,7 @@ export default function Home() {
                       {l.winRate !== null && l.games !== null ? (
                         <WinRateBar rate={l.winRate} games={l.games} />
                       ) : (
-                        <span className="empty-hint">{l.error ?? "이 매치업 데이터를 찾지 못했습니다."}</span>
+                        <span className="empty-hint">이 매치업 데이터를 찾지 못했습니다.</span>
                       )}
                     </div>
                     {l.bySource.length > 0 && <SourceBreakdown sources={l.bySource} />}
@@ -1379,9 +1358,7 @@ export default function Home() {
                           games={adviceResult.measuredSynergy.duo.games}
                         />
                       ) : (
-                        <span className="empty-hint">
-                          {adviceResult.measuredSynergy.duo.error ?? "이 조합 데이터를 찾지 못했습니다."}
-                        </span>
+                        <span className="empty-hint">이 조합 데이터를 찾지 못했습니다.</span>
                       )}
                     </div>
                     {adviceResult.measuredSynergy.duo.bySource.length > 0 && (
