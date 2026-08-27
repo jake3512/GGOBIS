@@ -13,7 +13,6 @@ import type { AggregatedCounters } from "@/lib/sources/aggregate";
 import type { ChampionRef } from "@/lib/sources/types";
 import {
   getChampionBuild,
-  getLaneShare,
   getPowerCurve,
   getVersusStats,
   laneIdToPosition,
@@ -35,11 +34,13 @@ const SKILL_FIT_CANDIDATE_LIMIT = 5;
 // lol.ps only ever has build/power-curve data for a champion's own primary
 // lane. A candidate (or, for the team power curve below, an already-picked
 // ally) recommended/placed at a different position still gets that
-// primary-lane data shown (rather than silently omitted) as long as the
-// *requested* position is at least this common among the champion's own
-// games — filters out showing e.g. a support's build on a jungle
-// recommendation just because they were jungled once in a thousand games.
-const LANE_MISMATCH_MIN_SHARE = 0.07;
+// primary-lane data shown rather than silently omitted — annotateWithBuild/
+// computeTeamPowerCurve just flag the mismatch via a `laneNote` caveat
+// instead. (Used to gate this behind a "is the requested position at least
+// 7% of the candidate's own games" check via getLaneShare, but that field's
+// still-unconfirmed names always returned share=0 in practice, so the gate
+// dropped EVERY off-primary-lane candidate instead of the rare
+// truly-irrelevant one — see README.)
 
 const POSITION_LABEL = new Map(POSITIONS.map((p) => [p.value, p.label]));
 
@@ -469,9 +470,13 @@ async function refineTopWithPowerCurveAndLaning(
  * recommendation where available. Best-effort like annotateWithPowerCurve —
  * failures (lol.ps or Data Dragon down) just leave `build` unset for that
  * entry. Shows the champion's own primary-lane build even when it doesn't
- * match `position`, same as the "빌드" tab, but only when `position` itself
- * is at least BUILD_LANE_MISMATCH_MIN_SHARE of the candidate's own games —
- * otherwise (as before) the mismatch just leaves `build` unset. */
+ * match `position`, same as the "빌드" tab (`/api/build`) and
+ * computeTeamPowerCurve below — always shown with a `laneNote` caveat rather
+ * than gated behind LANE_MISMATCH_MIN_SHARE. That gate used to rely on
+ * getLaneShare's still-unconfirmed `top1LaneId`/`top1LaneRatio` field names,
+ * which turned out to always return share=0 (same root cause as the "팀 파워
+ * 커브" bug this mirrors) — so it dropped EVERY off-primary-lane candidate's
+ * build instead of the rare truly-irrelevant one. */
 async function annotateWithBuild(picks: PickEntry[], position: Position): Promise<void> {
   const top = picks.slice(0, BUILD_CANDIDATE_LIMIT);
   if (top.length === 0) return;
@@ -484,24 +489,23 @@ async function annotateWithBuild(picks: PickEntry[], position: Position): Promis
     const results = await Promise.allSettled(
       top.map((p) => getChampionBuild(p.championId, position, { allowMismatch: true })),
     );
-    await Promise.all(
-      results.map(async (r, i) => {
-        if (r.status !== "fulfilled") return;
-        const build = r.value;
-        const actualPosition = laneIdToPosition(build.laneId);
-        if (actualPosition && actualPosition !== position) {
-          const share = await getLaneShare(top[i].championId, position).catch(() => 0);
-          if (share < LANE_MISMATCH_MIN_SHARE) return;
-        }
-        const entry = top[i];
-        entry.build = toBuildResult(
-          { id: entry.championId, name: entry.name, iconUrl: entry.iconUrl },
-          position,
-          build,
-          { items, spells, runes: runesData.runes, trees: runesData.trees },
-        );
-      }),
-    );
+    results.forEach((r, i) => {
+      if (r.status !== "fulfilled") return;
+      const build = r.value;
+      const actualPosition = laneIdToPosition(build.laneId);
+      const entry = top[i];
+      const laneNote =
+        actualPosition && actualPosition !== position
+          ? `lol.ps는 ${entry.name}의 ${POSITION_LABEL.get(actualPosition) ?? actualPosition} 라인 데이터만 갖고 있어요 — 아래 빌드는 실제로 그 라인 기준입니다.`
+          : null;
+      entry.build = toBuildResult(
+        { id: entry.championId, name: entry.name, iconUrl: entry.iconUrl },
+        position,
+        build,
+        { items, spells, runes: runesData.runes, trees: runesData.trees },
+        laneNote,
+      );
+    });
   } catch {
     // Data Dragon or lol.ps unreachable — leave build fields unset.
   }
@@ -518,8 +522,7 @@ interface LanerPowerCurve {
   midWinRate: number | null;
   lateWinRate: number | null;
   /** Set when this laner's numbers are actually lol.ps's data for a
-   * DIFFERENT lane (see LANE_MISMATCH_MIN_SHARE) — same idea as
-   * BuildResult.laneNote. */
+   * DIFFERENT lane — same idea as BuildResult.laneNote. */
   laneNote: string | null;
 }
 
@@ -564,12 +567,9 @@ function teamPeakPhase(curve: TeamPowerCurve): "early" | "mid" | "late" | null {
  * curve for, or unreachable, just isn't counted rather than failing the
  * whole request). Each laner's numbers come from their own primary lane on
  * lol.ps; when that's not the slot's actual position, it's shown anyway
- * (flagged via laneNote) rather than gated behind LANE_MISMATCH_MIN_SHARE
- * like annotateWithBuild — a champion's early/late-game tendency is still
- * informative even off their main lane, and the lane check here would drop
- * EVERY off-role pick (the common case, not the exception) since it relies
- * on getLaneShare's still-unconfirmed field names — better to always show
- * real numbers with a caveat than risk silently emptying this section. */
+ * (flagged via laneNote), same "always show real numbers with a caveat"
+ * approach annotateWithBuild uses now too — a champion's early/late-game
+ * tendency is still informative even off their main lane. */
 async function computeTeamPowerCurve(
   allySlots: { position: Position; champ: DDragonChampion }[],
 ): Promise<TeamPowerCurve> {
