@@ -15,9 +15,9 @@ import {
   getChampionBuild,
   getLaneShare,
   getPowerCurve,
-  getPowerCurvesForPosition,
   getVersusStats,
   laneIdToPosition,
+  type VersusStats,
 } from "@/lib/sources/lolps";
 import { toBuildResult, type BuildResult } from "@/lib/buildRefs";
 import { analyzeTeamComp, applySkillFitBonus, scoreEnemyCompFit } from "@/lib/teamComp";
@@ -65,6 +65,23 @@ const PICK_ALLY_SYNERGY_WEIGHT = 0.2;
 // that a candidate doesn't need to be literally the #1 partner for every
 // single already-picked ally to register as a match.
 const ALLY_SYNERGY_TOP_K = 20;
+
+// How much the two lol.ps signals below (already-real data, not tag
+// heuristics) get blended INTO the two existing weighted slots they're
+// conceptually closest to, rather than adding brand-new top-level weights
+// that would force re-normalizing PICK_REAL_WEIGHT/PICK_ENEMY_FIT_WEIGHT/
+// PICK_ALLY_SYNERGY_WEIGHT again. See refineTopWithPowerCurveAndLaning.
+//   - POWER_CURVE_TEAM_FIT_BLEND: does this candidate's early/mid/late
+//     tendency line up with when the TEAM (allies already picked) is
+//     strongest — same "fits the team" spirit as allySynergyFit, so it's
+//     blended into that slot rather than compFit (which is about the enemy
+//     comp, not our own team's plan).
+//   - LANING_STATS_BLEND: real measured gold-at-15 differential against the
+//     SPECIFIC enemy laner — this is actual win-probability-adjacent data,
+//     same spirit as the real lane-counter win rate, so it blends into the
+//     "goodness" (real winRate) term rather than a fit score.
+const POWER_CURVE_TEAM_FIT_BLEND = 0.3;
+const LANING_STATS_BLEND = 0.25;
 
 const VALID_POSITIONS = new Set(POSITIONS.map((p) => p.value));
 
@@ -120,6 +137,12 @@ interface PickEntry {
   /** Average of the real measured win rates across just the allies it
    * matched (null when allySynergyMatchCount is 0). */
   allySynergyAvgWinRate?: number | null;
+  /** Head-to-head laning-phase stats (gold/XP/CS @15, solo kills, level
+   * lead) vs the specific enemy laner — only set on counterPicks entries
+   * (there's no single enemy laner to compare against for synergyPicks),
+   * same top-N-only limit as power curve/build above. See
+   * refineTopWithPowerCurveAndLaning. */
+  laningStats?: VersusStats | null;
 }
 
 /** Parses a comma-separated list of champion IDs from a tier1/tier2/tier3
@@ -345,28 +368,101 @@ async function fetchAbilitiesMap(
   return map;
 }
 
-/** Mutates the top N entries of `picks` in place, attaching lol.ps
- * power-curve early/late-game win rates where available. Best-effort: any
- * failure (lol.ps down, no matching lane data) just leaves those fields
- * unset rather than failing the whole request. */
-async function annotateWithPowerCurve(picks: PickEntry[], position: Position): Promise<void> {
+/** Maps a phase win rate (0-1, centered on 0.5) to the same 0.5-neutral-to-
+ * 1.0 "fit" scale scoreEnemyCompFit/allySynergyFitScore use — doubles the
+ * distance from 0.5 so a modest 55% phase win rate already reads as a
+ * meaningful 0.6 fit, then clamps. Null (no data for this phase) passes
+ * through so the caller can fall back to the neutral 0.5 itself. */
+function phaseFitScore(phaseWinRate: number | null): number | null {
+  if (phaseWinRate === null) return null;
+  return Math.max(0, Math.min(1, 0.5 + (phaseWinRate - 0.5) * 2));
+}
+
+/** Turns a real measured gold-at-15 differential against the specific enemy
+ * laner into the same 0-1 goodness scale as `winRate` — 0.5 at even gold,
+ * moving toward 1.0/0.0 as the gap widens. ±2000 gold is treated as roughly
+ * a full swing (a substantial 15-minute lead/deficit in most lanes) rather
+ * than picking an empirically-derived threshold, since there's no larger
+ * dataset here to calibrate against — deliberately conservative/simple. */
+function laningFitScore(stats: VersusStats): number {
+  const goldDiff = stats.ally.goldAt15 - stats.enemy.goldAt15;
+  return Math.max(0, Math.min(1, 0.5 + goldDiff / 2000));
+}
+
+/** Mutates the top N entries of `picks` in place and re-sorts them, folding
+ * two more real lol.ps signals into the ranking (not just display, unlike
+ * the old annotateWithPowerCurve this replaces):
+ *   - power curve (early/mid/late win rate) — blended into allySynergyFit
+ *     via how well the candidate's own peak phase lines up with `teamPeak`
+ *     (the team's already-computed peak phase, see teamPeakPhase/
+ *     computeTeamPowerCurve). Still also sets earlyWinRate/lateWinRate for
+ *     display, same as before.
+ *   - laning-phase stats vs the specific enemy laner (`enemyLanerChampionId`,
+ *     null for synergyPicks — there's no single opposing laner there) —
+ *     blended into the real winRate goodness term.
+ * Runs AFTER refineTopWithSkillFit so it has final say on ordering within
+ * the shortlist; tier (if a pool is active) stays the dominant sort key,
+ * same convention as every other refine pass here. Best-effort per
+ * candidate (Promise.allSettled): a lol.ps failure for one candidate just
+ * leaves its blend inputs at neutral rather than failing the whole pass. */
+async function refineTopWithPowerCurveAndLaning(
+  picks: PickEntry[],
+  position: Position,
+  teamPeak: "early" | "mid" | "late" | null,
+  enemyLanerChampionId: number | null,
+  order: "asc" | "desc",
+): Promise<void> {
   const top = picks.slice(0, POWER_CURVE_CANDIDATE_LIMIT);
   if (top.length === 0) return;
-  try {
-    const curves = await getPowerCurvesForPosition(
-      top.map((p) => p.championId),
-      position,
-    );
-    for (const entry of top) {
-      const curve = curves.get(entry.championId);
-      if (curve) {
-        entry.earlyWinRate = curve.earlyWinRate;
-        entry.lateWinRate = curve.lateWinRate;
+
+  const curveResults = await Promise.allSettled(top.map((p) => getPowerCurve(p.championId)));
+  const laningResults = enemyLanerChampionId
+    ? await Promise.allSettled(
+        top.map((p) => getVersusStats(p.championId, enemyLanerChampionId, position)),
+      )
+    : [];
+
+  top.forEach((entry, i) => {
+    const curveResult = curveResults[i];
+    if (curveResult.status === "fulfilled") {
+      const curve = curveResult.value;
+      entry.earlyWinRate = curve.earlyWinRate;
+      entry.lateWinRate = curve.lateWinRate;
+      if (teamPeak) {
+        const phaseRate =
+          teamPeak === "early" ? curve.earlyWinRate : teamPeak === "mid" ? curve.midWinRate : curve.lateWinRate;
+        const powerCurveFit = phaseFitScore(phaseRate);
+        if (powerCurveFit !== null) {
+          const base = entry.allySynergyFit ?? 0.5;
+          entry.allySynergyFit = base * (1 - POWER_CURVE_TEAM_FIT_BLEND) + powerCurveFit * POWER_CURVE_TEAM_FIT_BLEND;
+        }
       }
     }
-  } catch {
-    // lol.ps unreachable or shape changed — leave power-curve fields unset.
-  }
+
+    const laningResult = laningResults[i];
+    if (laningResult && laningResult.status === "fulfilled") {
+      entry.laningStats = laningResult.value;
+    }
+  });
+
+  top.sort((a, b) => {
+    const tierDiff = (a.tier ?? 0) - (b.tier ?? 0);
+    if (tierDiff !== 0) return tierDiff;
+    const rank = (e: PickEntry) => {
+      let goodness = order === "asc" ? 1 - e.winRate : e.winRate;
+      if (e.laningStats) {
+        const laningFit = laningFitScore(e.laningStats);
+        goodness = goodness * (1 - LANING_STATS_BLEND) + laningFit * LANING_STATS_BLEND;
+      }
+      return (
+        PICK_REAL_WEIGHT * goodness +
+        PICK_ENEMY_FIT_WEIGHT * (e.compFit ?? 0.5) +
+        PICK_ALLY_SYNERGY_WEIGHT * (e.allySynergyFit ?? 0.5)
+      );
+    };
+    return rank(b) - rank(a);
+  });
+  picks.splice(0, top.length, ...top);
 }
 
 /** Mutates the top N entries of `picks` in place, attaching a lol.ps build
@@ -440,6 +536,26 @@ interface TeamPowerCurve {
 
 function average(values: number[]): number | null {
   return values.length > 0 ? values.reduce((a, b) => a + b, 0) / values.length : null;
+}
+
+/** Whichever of early/mid/late the TEAM's averaged power curve peaks at —
+ * null when there's no usable team data at all yet (no allies filled, or
+ * lol.ps had nothing for any of them). Feeds refineTopWithPowerCurveAndLaning
+ * below; same "highest average wins" logic the frontend's TeamPowerCurveCard
+ * uses for its own "팀이 가장 강한 구간" label, just computed server-side too
+ * so it can be USED, not just shown. */
+function teamPeakPhase(curve: TeamPowerCurve): "early" | "mid" | "late" | null {
+  const phases: { key: "early" | "mid" | "late"; rate: number | null }[] = [
+    { key: "early", rate: curve.teamEarlyWinRate },
+    { key: "mid", rate: curve.teamMidWinRate },
+    { key: "late", rate: curve.teamLateWinRate },
+  ];
+  let best: { key: "early" | "mid" | "late"; rate: number } | null = null;
+  for (const p of phases) {
+    if (p.rate === null) continue;
+    if (!best || p.rate > best.rate) best = { key: p.key, rate: p.rate };
+  }
+  return best?.key ?? null;
 }
 
 /** Aggregates lol.ps power curves across every filled ally slot into a
@@ -611,6 +727,14 @@ export async function GET(req: Request) {
   const allyChamps = allySlotsWithPosition.map((s) => s.champ);
   const allySynergy = await computeAllySynergyScores(allySlotsWithPosition, champions);
 
+  // --- lol.ps 파워 커브(분당 승률)를 우리팀 채워진 라인 전체에 걸쳐 종합해서
+  // 팀이 어느 구간(초반/중반/후반)에 가장 강한지, 각 라이너는 초반/후반 중
+  // 어느 쪽에 가까운지 보여줌. src 상단 computeTeamPowerCurve 참고. 픽 추천
+  // 랭킹(refineTopWithPowerCurveAndLaning)에서도 쓰이므로 counterPicks/
+  // synergyPicks보다 먼저 계산. ---
+  const teamPowerCurve = await computeTeamPowerCurve(allySlotsWithPosition);
+  const teamPeak = teamPeakPhase(teamPowerCurve);
+
   // --- single-pick recommendation for MY empty slot (unchanged logic from
   // before the draft board — just re-derived from the 10-slot params) ---
   let counterPicks: PickEntry[] | null = null;
@@ -621,7 +745,7 @@ export async function GET(req: Request) {
       const ranked = rerankPicks(toPickEntries(result, champById, "asc"), champById, enemyChamps, allySynergy, "asc");
       counterPicks = restrictToPool(ranked, tierMap);
       await refineTopWithSkillFit(counterPicks, champById, enemyChamps, "asc");
-      await annotateWithPowerCurve(counterPicks, position);
+      await refineTopWithPowerCurveAndLaning(counterPicks, position, teamPeak, enemyLaneChampion.id, "asc");
       await annotateWithBuild(counterPicks, position);
     } catch (err) {
       counterError = err instanceof Error ? err.message : "라인전 카운터 조회에 실패했습니다.";
@@ -636,7 +760,10 @@ export async function GET(req: Request) {
       const ranked = rerankPicks(toPickEntries(result, champById, "desc"), champById, enemyChamps, allySynergy, "desc");
       synergyPicks = restrictToPool(ranked, tierMap);
       await refineTopWithSkillFit(synergyPicks, champById, enemyChamps, "desc");
-      await annotateWithPowerCurve(synergyPicks, position);
+      // No single opposing laner for a bottom-duo synergy pick, so the
+      // laning-stats half of the refine pass is skipped (enemyLanerChampionId
+      // null) — only the power-curve/team-phase blend applies here.
+      await refineTopWithPowerCurveAndLaning(synergyPicks, position, teamPeak, null, "desc");
       await annotateWithBuild(synergyPicks, position);
     } catch (err) {
       synergyError = err instanceof Error ? err.message : "시너지 조회에 실패했습니다.";
@@ -780,10 +907,9 @@ export async function GET(req: Request) {
     enemy: analyzeTeamComp(enemyChamps),
   };
 
-  // --- lol.ps 파워 커브(분당 승률)를 우리팀 채워진 라인 전체에 걸쳐 종합해서
-  // 팀이 어느 구간(초반/중반/후반)에 가장 강한지, 각 라이너는 초반/후반 중
-  // 어느 쪽에 가까운지 보여줌. src 상단 computeTeamPowerCurve 참고. ---
-  const teamPowerCurve = await computeTeamPowerCurve(allySlotsWithPosition);
+  // teamPowerCurve/teamPeak were already computed earlier (before
+  // counterPicks/synergyPicks) so refineTopWithPowerCurveAndLaning could use
+  // teamPeak — reused here as-is for the response payload.
 
   // --- 조합 컨셉(돌진/포킹/쌍포/한타/스플릿) 감지 + 정적 상성 참고표.
   // src/lib/compConcepts.ts 참고 — 실측 승률이 아니라 전략 지식 참고표임을

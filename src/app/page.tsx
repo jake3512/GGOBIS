@@ -78,6 +78,10 @@ interface PickEntry {
   allySynergyMatchCount?: number;
   allySynergyOutOf?: number;
   allySynergyAvgWinRate?: number | null;
+  /** Head-to-head laning-phase stats vs the specific enemy laner — only set
+   * on counter-pick candidates (no single enemy laner to compare against
+   * for bottom-duo synergy candidates). */
+  laningStats?: VersusStats | null;
 }
 
 interface CombinedPickEntry {
@@ -1351,6 +1355,7 @@ export default function Home() {
                           avgWinRate={c.allySynergyAvgWinRate}
                         />
                       </div>
+                      {c.laningStats && <LaningStatsRow stats={c.laningStats} />}
                       {c.build && <BuildCardCompact build={c.build} />}
                     </li>
                   ))}
