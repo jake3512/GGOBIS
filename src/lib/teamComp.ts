@@ -14,6 +14,7 @@ import type { DDragonChampion } from "@/lib/ddragon";
 import type { ChampionAbilities } from "@/lib/championSkills";
 import { getAdcArchetype, type AdcAttribute } from "@/lib/adcArchetype";
 import { getTankArchetype, type TankAttribute } from "@/lib/tankArchetype";
+import { getBruiserArchetype, type BruiserAttribute } from "@/lib/bruiserArchetype";
 
 export interface DamageBalance {
   physicalPct: number;
@@ -35,6 +36,11 @@ export interface TankArchetypeEntry {
   attributes: TankAttribute[];
 }
 
+export interface BruiserArchetypeEntry {
+  championId: number;
+  attributes: BruiserAttribute[];
+}
+
 export interface TeamCompAnalysis {
   filledCount: number;
   /** e.g. {Fighter: 2, Tank: 1, Mage: 1, Marksman: 1} */
@@ -51,6 +57,12 @@ export interface TeamCompAnalysis {
    * covers tank supports too — Riot tags e.g. Leona/Braum/Nautilus with both
    * Support and Tank) — see tankArchetype.ts. */
   tankArchetypes: TankArchetypeEntry[];
+  /** Same idea again, for Fighter-tagged champions that are actually curated
+   * in bruiserArchetype.ts — unlike the two above, the Fighter tag itself
+   * covers many non-"bruiser" champions (junglers, supports, mage hybrids),
+   * so most Fighter-tagged champs are simply absent from that table on
+   * purpose, not because of a data gap. See that file. */
+  bruiserArchetypes: BruiserArchetypeEntry[];
 }
 
 export function analyzeTeamComp(champs: DDragonChampion[]): TeamCompAnalysis | null {
@@ -90,6 +102,13 @@ export function analyzeTeamComp(champs: DDragonChampion[]): TeamCompAnalysis | n
       return archetype ? [{ championId: c.id, attributes: archetype.attributes }] : [];
     });
 
+  const bruiserArchetypes: BruiserArchetypeEntry[] = champs
+    .filter((c) => c.tags.includes("Fighter"))
+    .flatMap((c) => {
+      const archetype = getBruiserArchetype(c.slug);
+      return archetype ? [{ championId: c.id, attributes: archetype.attributes }] : [];
+    });
+
   return {
     filledCount: champs.length,
     tagCounts,
@@ -97,6 +116,7 @@ export function analyzeTeamComp(champs: DDragonChampion[]): TeamCompAnalysis | n
     hasFrontline: champs.some((c) => c.tags.includes("Tank")),
     adcArchetypes,
     tankArchetypes,
+    bruiserArchetypes,
   };
 }
 
