@@ -1080,18 +1080,11 @@ textarea {
   white-space: nowrap;
 }
 
-.picker-section {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 1rem;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
-}
-
-/* 픽 추천(advice) 전용 전체화면 챔피언 픽커 — .mode-tabs(z-index 10)보다도
-   위에 떠서 페이지 전체를 덮음. 안쪽 .champion-picker/.champion-grid는
-   picker-section 안에서 쓰던 max-height:480px 대신 이 오버레이 자체의 남는
-   높이를 다 쓰도록 flex로 늘림(아래 오버라이드). */
+/* 전체화면 챔피언 픽커 — 라인 카운터/빌드/픽 추천 세 모드 모두 공용.
+   .mode-tabs(z-index 10)보다도 위에 떠서 페이지 전체를 덮음. 안쪽
+   .champion-picker/.champion-grid는 예전에 인라인 섹션에서 쓰던
+   max-height:480px 대신 이 오버레이 자체의 남는 높이를 다 쓰도록 flex로
+   늘림(아래 오버라이드). */
 .champion-picker-overlay {
   position: fixed;
   inset: 0;
