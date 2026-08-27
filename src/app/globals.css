@@ -202,16 +202,12 @@ textarea {
   box-shadow: 0 0 0 2px rgba(91, 155, 255, 0.45);
 }
 
-/* Advice mode's champ-select-style board: a big portrait preview of the
-   most recently picked champion up top, two narrow team columns below —
-   loosely mirrors the real LoL champ-select screen's layout (opposing
-   team columns either side of a center preview) within this app's
-   mobile-first width constraints. */
-.champ-select {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
+/* Advice mode's champ-select-style board — loosely mirrors the real LoL
+   champ-select screen's layout within this app's mobile-first width
+   constraints. Split across two siblings: the sticky 10-slot team columns
+   (.champ-select-teams, top-level so it can stay pinned while scrolling —
+   see that rule) and the big portrait preview inside .selected-bar below
+   it (not sticky, scrolls away normally). */
 
 .champ-select-portrait {
   position: relative;
@@ -251,7 +247,24 @@ textarea {
   font-weight: 700;
 }
 
+/* Sticky 10-slot (우리팀 5 + 상대팀 5) summary — a top-level page section
+   (not nested inside .selected-bar) so its sticky containing block is the
+   whole page, not just that one card. Stacks directly below the always-
+   sticky .mode-tabs bar (see that rule's own `top`) so the two never
+   overlap. Needs its own opaque background since content (the champion
+   grid, results) scrolls up underneath it once pinned. */
 .champ-select-teams {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  position: sticky;
+  top: calc(env(safe-area-inset-top, 0px) + 3.05rem);
+  z-index: 9;
+  background: var(--background);
+  padding-bottom: 0.4rem;
+}
+
+.champ-select-teams-columns {
   display: flex;
   gap: 0.4rem;
 }
@@ -323,7 +336,9 @@ textarea {
 
 .champ-select-slot--active {
   border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgba(91, 155, 255, 0.45);
+  background: rgba(91, 155, 255, 0.2);
+  box-shadow: 0 0 0 2px var(--accent);
+  font-weight: 700;
 }
 
 .champ-select-slot--disabled {
@@ -848,6 +863,64 @@ textarea {
   font-size: 0.85rem;
 }
 
+/* Native <details>/<summary> toggle for collapsed-by-default explanations
+   and detail metrics — see the Details component in page.tsx. Kept full-
+   width tap-friendly (min-height 44px) since this is the primary way to
+   reveal secondary info on mobile. */
+.details-toggle {
+  margin-top: 0.4rem;
+}
+
+.details-toggle summary {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  min-height: 32px;
+  padding: 0.15rem 0;
+  color: var(--accent);
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.details-toggle summary::-webkit-details-marker {
+  display: none;
+}
+
+.details-toggle summary::before {
+  content: "▸";
+  font-size: 0.7em;
+}
+
+.details-toggle[open] summary::before {
+  content: "▾";
+}
+
+.details-toggle[open] summary {
+  margin-bottom: 0.2rem;
+}
+
+.details-toggle-label-open {
+  display: none;
+}
+
+.details-toggle[open] .details-toggle-label-closed {
+  display: none;
+}
+
+.details-toggle[open] .details-toggle-label-open {
+  display: inline;
+}
+
+.details-toggle-content {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
 .build-lane-note {
   background: rgba(91, 155, 255, 0.12);
   border: 1px solid var(--accent);
@@ -962,6 +1035,60 @@ textarea {
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
 }
 
+/* 픽 추천(advice) 전용 전체화면 챔피언 픽커 — .mode-tabs(z-index 10)보다도
+   위에 떠서 페이지 전체를 덮음. 안쪽 .champion-picker/.champion-grid는
+   picker-section 안에서 쓰던 max-height:480px 대신 이 오버레이 자체의 남는
+   높이를 다 쓰도록 flex로 늘림(아래 오버라이드). */
+.champion-picker-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  background: var(--background);
+  padding: calc(env(safe-area-inset-top, 0px) + 0.75rem) 1rem
+    calc(env(safe-area-inset-bottom, 0px) + 0.75rem);
+}
+
+.champion-picker-overlay-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.6rem;
+}
+
+.champion-picker-overlay-title {
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--foreground);
+}
+
+.champion-picker-close {
+  flex-shrink: 0;
+  min-width: 44px;
+  min-height: 44px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-alt);
+  color: var(--foreground);
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.champion-picker-overlay .champion-picker {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+}
+
+.champion-picker-overlay .champion-grid {
+  flex: 1;
+  max-height: none;
+}
+
 .champion-search {
   width: 100%;
   padding: 0.6rem 0.8rem;
@@ -984,6 +1111,7 @@ textarea {
 }
 
 .champion-tile {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1015,7 +1143,26 @@ textarea {
 
 .champion-tile--selected {
   border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgba(91, 155, 255, 0.45);
+  background: rgba(91, 155, 255, 0.22);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.champion-tile--selected::after {
+  content: "✓";
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  font-size: 0.65rem;
+  font-weight: 800;
+  line-height: 1;
 }
 
 .champion-tile:disabled {
