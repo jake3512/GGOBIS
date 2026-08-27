@@ -901,12 +901,24 @@ export default function Home() {
    * right after every pick. */
   const [lastPickedChampionId, setLastPickedChampionId] = useState<number | null>(null);
   const [counterResult, setCounterResult] = useState<CounterResult | null>(null);
+  /** True once a 라인 카운터 lookup has completed and every one of the 6
+   * sites failed (the only case /api/counters returns a non-ok response) —
+   * distinct from counterResult itself being null before any lookup has run
+   * yet. Drives a fallback hint so a total-failure lookup doesn't just leave
+   * the results section silently missing (see runLookup's counter branch). */
+  const [counterLookupFailed, setCounterLookupFailed] = useState(false);
   const [adviceResult, setAdviceResult] = useState<AdviceResult | null>(null);
   const [buildResult, setBuildResult] = useState<BuildResult | null>(null);
   /** DeepLoL's build for the same champion+position — fetched alongside
-   * buildResult (lol.ps) as a second, separately-labeled card, best-effort
-   * (a DeepLoL failure doesn't block the lol.ps card from showing). */
+   * buildResult (lol.ps) as a second, separately-labeled card. The two are
+   * mutually best-effort (fetched concurrently via Promise.allSettled in
+   * runLookup) — either one failing never blocks the other from showing. */
   const [buildResultDeeplol, setBuildResultDeeplol] = useState<BuildResult | null>(null);
+  /** Whether a 빌드 tab lookup has actually completed at least once — lets
+   * the render distinguish "haven't queried yet" (show nothing) from
+   * "queried and both sources came back empty" (show a hint instead of a
+   * silently blank page — see runLookup's build branch). */
+  const [buildLookupAttempted, setBuildLookupAttempted] = useState(false);
   /** Build recommendation auto-fetched alongside 라인 카운터's own result, for
    * the same champion+position — separate from buildResult (the dedicated
    * 빌드 tab's own fetch) so switching modes doesn't clobber either. */
@@ -999,10 +1011,12 @@ export default function Home() {
   function switchMode(next: Mode) {
     setMode(next);
     setCounterResult(null);
+    setCounterLookupFailed(false);
     setAdviceResult(null);
     setLastPickedChampionId(null);
     setBuildResult(null);
     setBuildResultDeeplol(null);
+    setBuildLookupAttempted(false);
     setCounterBuild(null);
     setPickerOpen(false);
     if (next === "counter" || next === "build") {
@@ -1122,8 +1136,20 @@ export default function Home() {
         const championId = slots[0].championId;
         const res = await fetch(`/api/counters?championId=${championId}&position=${position}`);
         const data = await res.json();
-        if (!res.ok) throw new Error(data.error ?? "조회에 실패했습니다.");
         if (isStale()) return;
+        if (!res.ok) {
+          // 6개 소스가 전부 실패했을 때(getAggregatedLaneCounters가 던지는
+          // 유일한 경우) — 예전엔 여기서 그냥 throw해서 바깥 catch가 조용히
+          // console.error만 하고 끝나, 결과 섹션 자체가 아예 안 뜨는 채로
+          // 남아 사용자 입장에선 "조회했는데 화면에 아무것도 안 나옴"으로만
+          // 보였음. counterResult를 명시적으로 비우고 counterLookupFailed를
+          // 켜서 아래 렌더링에서 안내 문구라도 보여주도록 고침.
+          console.error(data.error ?? "조회에 실패했습니다.");
+          setCounterResult(null);
+          setCounterLookupFailed(true);
+          return;
+        }
+        setCounterLookupFailed(false);
         setCounterResult(data);
         setCounterBuild(null);
         fetch(`/api/build?championId=${championId}&position=${position}`)
@@ -1135,21 +1161,31 @@ export default function Home() {
             // Best-effort — 라인 카운터 결과 자체는 이미 떴으니 조용히 무시.
           });
       } else if (mode === "build") {
+        // lol.ps와 DeepLoL을 서로 독립적인 best-effort 소스로 취급 — 예전엔
+        // lol.ps(source=lolps)를 먼저 fetch해서 실패하면 즉시 throw하고
+        // DeepLoL은 시도조차 안 했음(아래 두 번째 fetch가 그 뒤에 있어서
+        // throw가 나면 실행되지 않음). 그래서 lol.ps 쪽만 일시적으로 막히거나
+        // (사이트 구조 변경, 레이트 리밋 등) 실패해도 DeepLoL 데이터가 멀쩡히
+        // 있는데도 빌드 탭 전체가 빈 화면으로 보였음. Promise.allSettled로
+        // 두 요청을 동시에 시작하고 각자 독립적으로 성공/실패를 반영해서,
+        // 한쪽만 살아있어도 그 카드는 뜨도록 고침 — 픽 추천 API가
+        // annotateWithBuild/annotateWithDeeplolBuild를 이미 같은 방식(둘 다
+        // best-effort, Promise.all로 동시 실행)으로 다루는 것과 같은 원칙.
         const championId = slots[0].championId;
-        const res = await fetch(`/api/build?championId=${championId}&position=${position}&source=lolps`);
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error ?? "빌드 조회에 실패했습니다.");
+        const fetchBuild = (source: "lolps" | "deeplol") =>
+          fetch(`/api/build?championId=${championId}&position=${position}&source=${source}`).then((r) =>
+            r.json().then((d) => ({ ok: r.ok, data: d as BuildResult })),
+          );
+        const [lolpsResult, deeplolResult] = await Promise.allSettled([
+          fetchBuild("lolps"),
+          fetchBuild("deeplol"),
+        ]);
         if (isStale()) return;
-        setBuildResult(data);
-        setBuildResultDeeplol(null);
-        fetch(`/api/build?championId=${championId}&position=${position}&source=deeplol`)
-          .then((r) => r.json().then((d) => ({ ok: r.ok, data: d })))
-          .then(({ ok, data: deeplolData }) => {
-            if (ok && !isStale()) setBuildResultDeeplol(deeplolData);
-          })
-          .catch(() => {
-            // Best-effort — lol.ps 빌드 카드는 이미 떴으니 조용히 무시.
-          });
+        setBuildResult(lolpsResult.status === "fulfilled" && lolpsResult.value.ok ? lolpsResult.value.data : null);
+        setBuildResultDeeplol(
+          deeplolResult.status === "fulfilled" && deeplolResult.value.ok ? deeplolResult.value.data : null,
+        );
+        setBuildLookupAttempted(true);
       } else {
         const params = new URLSearchParams({ position, count: String(recommendCount) });
         for (const slot of slots) {
@@ -1490,6 +1526,10 @@ export default function Home() {
         </section>
       )}
 
+      {mode === "counter" && !loading && counterLookupFailed && (
+        <p className="empty-hint">6개 소스 모두에서 카운터 데이터를 가져오지 못했습니다. 잠시 후 다시 시도해보세요.</p>
+      )}
+
       {mode === "counter" && counterResult && (
         <section className="results">
           <h2>
@@ -1534,14 +1574,26 @@ export default function Home() {
         </section>
       )}
 
-      {mode === "build" && buildResult && (
+      {mode === "build" && (buildResult || buildResultDeeplol) && (
         <section className="results">
           <h2>
-            {buildResult.champion.name} ({POSITIONS.find((p) => p.value === buildResult.position)?.label}) 빌드
+            {(buildResult ?? buildResultDeeplol)!.champion.name} (
+            {POSITIONS.find((p) => p.value === (buildResult ?? buildResultDeeplol)!.position)?.label}) 빌드
           </h2>
-          <BuildCard build={buildResult} sourceLabel="lol.ps" />
-          {buildResultDeeplol && <BuildCard build={buildResultDeeplol} sourceLabel="DeepLoL" />}
+          {buildResult ? (
+            <BuildCard build={buildResult} sourceLabel="lol.ps" />
+          ) : (
+            <p className="empty-hint">lol.ps 빌드 데이터를 가져오지 못했습니다.</p>
+          )}
+          {buildResultDeeplol ? (
+            <BuildCard build={buildResultDeeplol} sourceLabel="DeepLoL" />
+          ) : (
+            <p className="empty-hint">DeepLoL 빌드 데이터를 가져오지 못했습니다.</p>
+          )}
         </section>
+      )}
+      {mode === "build" && !loading && !buildResult && !buildResultDeeplol && buildLookupAttempted && (
+        <p className="empty-hint">lol.ps와 DeepLoL 모두 빌드 데이터를 가져오지 못했습니다. 잠시 후 다시 시도해보세요.</p>
       )}
 
       {mode === "advice" && canRun && adviceResult && (
