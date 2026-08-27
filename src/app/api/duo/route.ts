@@ -22,7 +22,10 @@ export async function GET(req: Request) {
   }
 
   try {
-    const result = await getAggregatedDuoSynergy(adc.slug, support.slug, support.id, champions);
+    // This tab is always specifically ADC+Support — "adc" is the ADC's own
+    // position, matching getAggregatedDuoSynergy's new (slug, position,
+    // partnerSlug, partnerChampionId, champions) signature.
+    const result = await getAggregatedDuoSynergy(adc.slug, "adc", support.slug, support.id, champions);
     return NextResponse.json({
       adc: { id: adc.id, name: adc.name, iconUrl: adc.iconUrl },
       support: { id: support.id, name: support.name, iconUrl: support.iconUrl },

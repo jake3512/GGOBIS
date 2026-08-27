@@ -74,7 +74,7 @@ textarea {
   padding-right: max(1rem, env(safe-area-inset-right));
   display: flex;
   flex-direction: column;
-  gap: 1.25rem;
+  gap: 0.9rem;
 }
 
 .page-header h1 {
@@ -141,11 +141,11 @@ textarea {
 .selected-bar {
   display: flex;
   flex-direction: column;
-  gap: 0.6rem;
+  gap: 0.5rem;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 12px;
-  padding: 1rem;
+  padding: 0.85rem;
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
 }
 
@@ -210,14 +210,14 @@ textarea {
 .champ-select {
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
+  gap: 0.5rem;
 }
 
 .champ-select-portrait {
   position: relative;
   display: flex;
   align-items: flex-end;
-  min-height: 160px;
+  min-height: 120px;
   border-radius: 10px;
   overflow: hidden;
   background: var(--surface-alt);
@@ -236,7 +236,7 @@ textarea {
 .champ-select-portrait-empty {
   width: 100%;
   text-align: center;
-  padding: 1.5rem 1rem;
+  padding: 1.1rem 1rem;
   color: var(--muted);
   font-size: 0.85rem;
 }
@@ -245,7 +245,7 @@ textarea {
   position: relative;
   z-index: 1;
   width: 100%;
-  padding: 0.5rem 0.75rem;
+  padding: 0.4rem 0.65rem;
   background: linear-gradient(to top, rgba(0, 0, 0, 0.75), transparent);
   color: #fff;
   font-weight: 700;
@@ -253,7 +253,7 @@ textarea {
 
 .champ-select-teams {
   display: flex;
-  gap: 0.5rem;
+  gap: 0.4rem;
 }
 
 .champ-select-team {
@@ -261,8 +261,8 @@ textarea {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.35rem;
-  padding: 0.4rem;
+  gap: 0.3rem;
+  padding: 0.35rem;
   border-radius: 10px;
   border-left: 3px solid var(--accent);
   background: var(--surface-alt);
@@ -338,10 +338,43 @@ textarea {
   font-size: 0.8rem;
 }
 
+/* Per-slot CC (hard crowd control) indicator dot — --yes/--no reflect the
+   real championSkills.ts hasHardCC value from the pickadvice API's ccInfo,
+   --unknown is the neutral "not looked up yet / lookup failed" state so it
+   never reads as a false "no CC". */
+.champ-select-cc-dot {
+  flex-shrink: 0;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+}
+
+.champ-select-cc-dot--yes {
+  background: var(--bad);
+  border-color: var(--bad);
+}
+
+.champ-select-cc-dot--no {
+  background: transparent;
+}
+
+.champ-select-cc-dot--unknown {
+  background: var(--surface-alt);
+  border-style: dashed;
+}
+
+.champ-select-cc-total {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--muted);
+  text-align: center;
+}
+
 .build-card {
   display: flex;
   flex-direction: column;
-  gap: 0.9rem;
+  gap: 0.7rem;
 }
 
 .build-section h4 {
@@ -364,7 +397,17 @@ textarea {
 }
 
 .build-icon-row--compact {
-  margin-top: 0.4rem;
+  margin-top: 0.3rem;
+}
+
+.build-source-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--muted);
+  padding: 0.1rem 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  white-space: nowrap;
 }
 
 .build-divider {
@@ -387,9 +430,29 @@ textarea {
   letter-spacing: 0.02em;
 }
 
+/* Wraps PowerCurveBadge/CompFitBadge/AllySynergyBadge (and, on its own,
+   combinedPicks' CompFitBadge) so multiple short badges flow side by side
+   instead of each claiming a full stacked row — the badges below no longer
+   carry their own margin-top, this row's is the single source of spacing
+   above them. Empty when every badge inside returns null, so it can't leave
+   a bare gap. */
+.badge-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.3rem;
+}
+
+/* Each badge component renders null (no DOM node) when its own condition
+   doesn't hold — if none of them do, this row is a genuinely empty div and
+   :empty catches it, so it takes zero space instead of leaving a bare gap. */
+.badge-row:empty {
+  display: none;
+}
+
 .power-curve-badge {
   display: inline-block;
-  margin-top: 0.35rem;
   font-size: 0.75rem;
   color: var(--muted);
 }
@@ -397,12 +460,12 @@ textarea {
 .team-power-curve {
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
+  gap: 0.5rem;
 }
 
 .team-power-curve-phases {
   display: flex;
-  gap: 0.5rem;
+  gap: 0.4rem;
 }
 
 .team-power-curve-phase {
@@ -410,8 +473,8 @@ textarea {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 0.2rem;
-  padding: 0.6rem 0.4rem;
+  gap: 0.15rem;
+  padding: 0.45rem 0.4rem;
   border-radius: 8px;
   background: var(--surface-alt);
   border: 1px solid var(--border);
@@ -432,17 +495,61 @@ textarea {
   font-weight: 700;
 }
 
+.laning-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.laning-stats-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.laning-stat {
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--foreground);
+}
+
+.laning-stat--good {
+  color: var(--good);
+  border-color: var(--good);
+}
+
+.laning-stat--bad {
+  color: var(--bad);
+  border-color: var(--bad);
+}
+
 /* Explicitly NOT a win-rate color (good/bad/accent) — this is the tag-based
    "fits the enemy comp" heuristic, so it gets its own neutral-but-visible
    treatment to avoid reading as a percentage or a real stat. */
 .comp-fit-badge {
   display: inline-block;
-  margin-top: 0.35rem;
   font-size: 0.75rem;
   font-weight: 600;
   color: var(--neutral);
   background: var(--surface-alt);
   border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.15rem 0.55rem;
+}
+
+/* Real measured synergy data (not a tag heuristic like comp-fit-badge), so
+   it gets the --good tint to read as closer to an actual stat. */
+.ally-synergy-badge {
+  display: inline-block;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--good);
+  background: rgba(69, 220, 154, 0.12);
+  border: 1px solid var(--good);
   border-radius: 999px;
   padding: 0.15rem 0.55rem;
 }
@@ -475,7 +582,7 @@ textarea {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 12px;
-  padding: 1rem 1.25rem;
+  padding: 0.85rem 1rem;
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
 }
 
@@ -566,19 +673,30 @@ textarea {
 .comp-heuristic-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 0.75rem;
+  gap: 0.6rem;
 }
 
 .comp-card {
   background: var(--surface-alt);
   border: 1px solid var(--border);
   border-radius: 12px;
-  padding: 0.85rem 1rem;
+  padding: 0.7rem 0.85rem;
 }
 
 .comp-card h4 {
   margin: 0 0 0.4rem;
   font-size: 0.95rem;
+}
+
+.adc-flex-badge {
+  display: inline-block;
+  margin-left: 0.4rem;
+  padding: 0.05rem 0.4rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 999px;
 }
 
 .concept-dominant-label {
@@ -667,7 +785,7 @@ textarea {
 .recommend-row--stacked {
   flex-direction: column;
   align-items: stretch;
-  gap: 0.4rem;
+  gap: 0.3rem;
 }
 
 .recommend-row-main {
@@ -679,8 +797,8 @@ textarea {
 .source-breakdown {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.4rem;
-  padding-left: 2.5rem;
+  gap: 0.3rem;
+  padding-left: 2.2rem;
 }
 
 .source-badge {
@@ -743,10 +861,10 @@ textarea {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 12px;
-  padding: 1.25rem;
+  padding: 1rem;
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
+  gap: 0.6rem;
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
 }
 
@@ -758,7 +876,7 @@ textarea {
 .results h3 {
   font-size: 1.05rem;
   font-weight: 700;
-  margin-top: 0.9rem;
+  margin-top: 0.6rem;
   padding-left: 0.6rem;
   border-left: 3px solid var(--accent);
   color: var(--foreground);
@@ -768,22 +886,22 @@ textarea {
   list-style: none;
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: 0.4rem;
 }
 
 .recommend-row {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
+  gap: 0.6rem;
   background: var(--surface-alt);
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 0.6rem 0.75rem;
+  padding: 0.5rem 0.65rem;
 }
 
 .recommend-row img {
-  width: 38px;
-  height: 38px;
+  width: 34px;
+  height: 34px;
   border-radius: 50%;
   border: 1px solid var(--border);
   flex-shrink: 0;
@@ -840,7 +958,7 @@ textarea {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 12px;
-  padding: 1.25rem;
+  padding: 1rem;
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
 }
 
@@ -852,7 +970,7 @@ textarea {
   border: 1px solid var(--border);
   background: var(--surface-alt);
   color: var(--foreground);
-  margin-bottom: 1rem;
+  margin-bottom: 0.75rem;
   /* Keep this >=16px — iOS Safari auto-zooms the page on focus otherwise. */
   font-size: 1rem;
 }
@@ -860,7 +978,7 @@ textarea {
 .champion-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
-  gap: 0.6rem;
+  gap: 0.5rem;
   max-height: 480px;
   overflow-y: auto;
 }

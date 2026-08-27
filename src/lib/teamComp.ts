@@ -12,6 +12,9 @@
 
 import type { DDragonChampion } from "@/lib/ddragon";
 import type { ChampionAbilities } from "@/lib/championSkills";
+import { getAdcArchetype, type AdcAttribute } from "@/lib/adcArchetype";
+import { getTankArchetype, type TankAttribute } from "@/lib/tankArchetype";
+import { getBruiserArchetype, type BruiserAttribute } from "@/lib/bruiserArchetype";
 
 export interface DamageBalance {
   physicalPct: number;
@@ -22,6 +25,22 @@ export interface DamageBalance {
   sampledCount: number;
 }
 
+export interface AdcArchetypeEntry {
+  championId: number;
+  attributes: AdcAttribute[];
+  flexibleBuild: boolean;
+}
+
+export interface TankArchetypeEntry {
+  championId: number;
+  attributes: TankAttribute[];
+}
+
+export interface BruiserArchetypeEntry {
+  championId: number;
+  attributes: BruiserAttribute[];
+}
+
 export interface TeamCompAnalysis {
   filledCount: number;
   /** e.g. {Fighter: 2, Tank: 1, Mage: 1, Marksman: 1} */
@@ -29,6 +48,21 @@ export interface TeamCompAnalysis {
   /** null if none of the analyzed champions had `info` data. */
   damageBalance: DamageBalance | null;
   hasFrontline: boolean;
+  /** Marksman-tagged champions among `champs` that have a curated entry in
+   * adcArchetype.ts — see that file for what this is and its "hand-curated,
+   * not measured" caveat. Marksman champs missing from the table are simply
+   * left out here (not padded with an empty entry). */
+  adcArchetypes: AdcArchetypeEntry[];
+  /** Same idea as `adcArchetypes`, for Tank-tagged champions (which already
+   * covers tank supports too — Riot tags e.g. Leona/Braum/Nautilus with both
+   * Support and Tank) — see tankArchetype.ts. */
+  tankArchetypes: TankArchetypeEntry[];
+  /** Same idea again, for Fighter-tagged champions that are actually curated
+   * in bruiserArchetype.ts — unlike the two above, the Fighter tag itself
+   * covers many non-"bruiser" champions (junglers, supports, mage hybrids),
+   * so most Fighter-tagged champs are simply absent from that table on
+   * purpose, not because of a data gap. See that file. */
+  bruiserArchetypes: BruiserArchetypeEntry[];
 }
 
 export function analyzeTeamComp(champs: DDragonChampion[]): TeamCompAnalysis | null {
@@ -54,11 +88,35 @@ export function analyzeTeamComp(champs: DDragonChampion[]): TeamCompAnalysis | n
     }
   }
 
+  const adcArchetypes: AdcArchetypeEntry[] = champs
+    .filter((c) => c.tags.includes("Marksman"))
+    .flatMap((c) => {
+      const archetype = getAdcArchetype(c.slug);
+      return archetype ? [{ championId: c.id, attributes: archetype.attributes, flexibleBuild: archetype.flexibleBuild }] : [];
+    });
+
+  const tankArchetypes: TankArchetypeEntry[] = champs
+    .filter((c) => c.tags.includes("Tank"))
+    .flatMap((c) => {
+      const archetype = getTankArchetype(c.slug);
+      return archetype ? [{ championId: c.id, attributes: archetype.attributes }] : [];
+    });
+
+  const bruiserArchetypes: BruiserArchetypeEntry[] = champs
+    .filter((c) => c.tags.includes("Fighter"))
+    .flatMap((c) => {
+      const archetype = getBruiserArchetype(c.slug);
+      return archetype ? [{ championId: c.id, attributes: archetype.attributes }] : [];
+    });
+
   return {
     filledCount: champs.length,
     tagCounts,
     damageBalance,
     hasFrontline: champs.some((c) => c.tags.includes("Tank")),
+    adcArchetypes,
+    tankArchetypes,
+    bruiserArchetypes,
   };
 }
 

@@ -10,13 +10,15 @@ import {
 import { POSITIONS, type Position } from "@/lib/positions";
 import { getAggregatedDuoCandidates, getAggregatedLaneCounters } from "@/lib/sources/aggregate";
 import type { AggregatedCounters } from "@/lib/sources/aggregate";
+import type { ChampionRef } from "@/lib/sources/types";
 import {
   getChampionBuild,
-  getLaneShare,
   getPowerCurve,
-  getPowerCurvesForPosition,
+  getVersusStats,
   laneIdToPosition,
+  type VersusStats,
 } from "@/lib/sources/lolps";
+import { getChampionBuild as getDeeplolChampionBuild } from "@/lib/sources/deeplol";
 import { toBuildResult, type BuildResult } from "@/lib/buildRefs";
 import { analyzeTeamComp, applySkillFitBonus, scoreEnemyCompFit } from "@/lib/teamComp";
 import { getChampionAbilitiesWithCache, type ChampionAbilities } from "@/lib/championSkills";
@@ -33,22 +35,67 @@ const SKILL_FIT_CANDIDATE_LIMIT = 5;
 // lol.ps only ever has build/power-curve data for a champion's own primary
 // lane. A candidate (or, for the team power curve below, an already-picked
 // ally) recommended/placed at a different position still gets that
-// primary-lane data shown (rather than silently omitted) as long as the
-// *requested* position is at least this common among the champion's own
-// games — filters out showing e.g. a support's build on a jungle
-// recommendation just because they were jungled once in a thousand games.
-const LANE_MISMATCH_MIN_SHARE = 0.07;
+// primary-lane data shown rather than silently omitted — annotateWithBuild/
+// computeTeamPowerCurve just flag the mismatch via a `laneNote` caveat
+// instead. (Used to gate this behind a "is the requested position at least
+// 7% of the candidate's own games" check via getLaneShare, but that field's
+// still-unconfirmed names always returned share=0 in practice, so the gate
+// dropped EVERY off-primary-lane candidate instead of the rare
+// truly-irrelevant one — see README.)
 
 const POSITION_LABEL = new Map(POSITIONS.map((p) => [p.value, p.label]));
 
-// How much the enemy-comp-fit heuristics (tags/stats, and separately actual
-// skill kits, vs the FULL filled-in enemy roster) are allowed to move the
-// ranking, next to real scraped win rates. Real data stays dominant — this
-// can only nudge order among close picks, never flip a clear lane-counter/
-// synergy edge. See rerankByEnemyCompFit/refineTopWithSkillFit below and
-// scoreEnemyCompFit/applySkillFitBonus in teamComp.ts.
-const PICK_REAL_WEIGHT = 0.75;
-const PICK_FIT_WEIGHT = 0.25;
+// How much the two secondary signals below are allowed to move the ranking,
+// next to real scraped lane-counter/synergy win rate. Real data stays
+// dominant (0.65) — these can only nudge order among close picks, never
+// flip a clear lane-counter/synergy edge:
+//   - PICK_ENEMY_FIT_WEIGHT: the tag/stat-based "fits the enemy comp"
+//     heuristic (and, for the top few, actual skill kits) — see
+//     rerankPicks/refineTopWithSkillFit below and
+//     scoreEnemyCompFit/applySkillFitBonus in teamComp.ts.
+//   - PICK_ALLY_SYNERGY_WEIGHT: real scraped per-champion synergy data
+//     against EVERY already-picked ally (not a tag heuristic) — see
+//     computeAllySynergyScores below. Weighted higher than the tag-based
+//     enemy fit since it's actual measured win-rate data, just per-pair
+//     rather than a true 5-champion team stat.
+const PICK_REAL_WEIGHT = 0.65;
+const PICK_ENEMY_FIT_WEIGHT = 0.15;
+const PICK_ALLY_SYNERGY_WEIGHT = 0.2;
+
+// How many of a filled ally's top synergy partners (by measured win rate)
+// count toward computeAllySynergyScores's "intersection" — generous enough
+// that a candidate doesn't need to be literally the #1 partner for every
+// single already-picked ally to register as a match.
+const ALLY_SYNERGY_TOP_K = 20;
+
+// How much the two lol.ps signals below (already-real data, not tag
+// heuristics) get blended INTO the two existing weighted slots they're
+// conceptually closest to, rather than adding brand-new top-level weights
+// that would force re-normalizing PICK_REAL_WEIGHT/PICK_ENEMY_FIT_WEIGHT/
+// PICK_ALLY_SYNERGY_WEIGHT again. See refineTopWithPowerCurveAndLaning.
+//   - POWER_CURVE_TEAM_FIT_BLEND: does this candidate's early/mid/late
+//     tendency line up with when the TEAM (allies already picked) is
+//     strongest — same "fits the team" spirit as allySynergyFit, so it's
+//     blended into that slot rather than compFit (which is about the enemy
+//     comp, not our own team's plan).
+//   - LANING_STATS_BLEND: real measured gold-at-15 differential against the
+//     SPECIFIC enemy laner — this is actual win-probability-adjacent data,
+//     same spirit as the real lane-counter win rate, so it blends into the
+//     "goodness" (real winRate) term rather than a fit score.
+const POWER_CURVE_TEAM_FIT_BLEND = 0.3;
+const LANING_STATS_BLEND = 0.25;
+
+// applyBuildFitBonus: how much compFit is bumped when a candidate's own
+// REAL recommended build (lol.ps and/or DeepLoL) itemizes defensively
+// against the enemy team's actual damage-type split — same small additive-
+// bonus-then-clamp style as applySkillFitBonus/scoreEnemyCompFit
+// (teamComp.ts), just grounded in Data Dragon item `tags` instead of
+// champion tags/kit text. DAMAGE_MAJORITY_THRESHOLD (0-100, matches
+// DamageBalance.physicalPct/magicPct) is how skewed the enemy's damage
+// split needs to be before "itemize defensively" is even a meaningful ask —
+// a near-50/50 comp doesn't clearly call for one item type over the other.
+const BUILD_DEFENSE_BONUS = 0.15;
+const DAMAGE_MAJORITY_THRESHOLD = 60;
 
 const VALID_POSITIONS = new Set(POSITIONS.map((p) => p.value));
 
@@ -80,14 +127,40 @@ interface PickEntry {
   /** lol.ps build recommendation — same top-N-only, same-position-only
    * limits as the power curve above. */
   build?: BuildResult | null;
+  /** DeepLoL's build recommendation for the same champion+position, shown
+   * alongside `build` rather than merged with it — same "라인 카운터"/"빌드"
+   * tab convention (see BuildCard's sourceLabel). Same top-N-only limit. */
+  buildDeeplol?: BuildResult | null;
   /** User-declared mastery tier (1 = most proficient) — only set when the
    * caller supplied a champion pool (tier1/tier2/tier3 query params). */
   tier?: 1 | 2 | 3;
   /** How well this candidate's own tags/stats fit the FULL enemy roster
    * filled in so far (not just the laner) — 0.5 = neutral/no signal, up to
    * 1 when both signals in scoreEnemyCompFit apply. Only ever nudges the
-   * ranking (see PICK_FIT_WEIGHT) — never overrides real win-rate order. */
+   * ranking (see PICK_ENEMY_FIT_WEIGHT) — never overrides real win-rate
+   * order. */
   compFit?: number;
+  /** How well this candidate's REAL measured synergy data covers the
+   * already-picked allies — 0.5 = neutral (no allies filled, or matches
+   * none of them), up to 1.0 when it's among the top synergy partners for
+   * every filled ally. See computeAllySynergyScores/allySynergyFitScore.
+   * Only ever nudges the ranking (PICK_ALLY_SYNERGY_WEIGHT) alongside
+   * compFit — never overrides real lane-counter win-rate order. */
+  allySynergyFit?: number;
+  /** How many of the filled allies (out of allySynergyOutOf) this candidate
+   * actually showed up as a top synergy partner for — the real number
+   * behind allySynergyFit, shown in the UI instead of the abstract score. */
+  allySynergyMatchCount?: number;
+  allySynergyOutOf?: number;
+  /** Average of the real measured win rates across just the allies it
+   * matched (null when allySynergyMatchCount is 0). */
+  allySynergyAvgWinRate?: number | null;
+  /** Head-to-head laning-phase stats (gold/XP/CS @15, solo kills, level
+   * lead) vs the specific enemy laner — only set on counterPicks entries
+   * (there's no single enemy laner to compare against for synergyPicks),
+   * same top-N-only limit as power curve/build above. See
+   * refineTopWithPowerCurveAndLaning. */
+  laningStats?: VersusStats | null;
 }
 
 /** Parses a comma-separated list of champion IDs from a tier1/tier2/tier3
@@ -129,49 +202,135 @@ function restrictToPool(entries: PickEntry[], tierMap: Map<number, 1 | 2 | 3>): 
     .sort((a, b) => a.tier! - b.tier!);
 }
 
-/** Re-ranks a pick list to weigh in how well each candidate fits the FULL
- * enemy roster filled in so far — not just the one champion in my own lane
- * (`enemyChamps` here is every enemy slot the user has filled in, laner
- * included). Attaches `compFit` to every entry and re-sorts by a blended
- * score: real scraped win rate (PICK_REAL_WEIGHT) plus the tag-based fit
- * heuristic (PICK_FIT_WEIGHT). Must run BEFORE restrictToPool, since that
+/** How well a candidate's measured ally-synergy coverage looks, as the same
+ * 0.5-neutral-up-to-1.0 scale scoreEnemyCompFit uses — 0.5 when no allies
+ * are filled (no signal either way), rising toward 1.0 as `matchCount`
+ * approaches `outOf`. Deliberately simple/transparent (just the match
+ * ratio) rather than folding in the average win rate too — that real number
+ * is shown separately (allySynergyAvgWinRate) rather than baked into a
+ * fuzzy composite. */
+function allySynergyFitScore(matchCount: number, outOf: number): number {
+  if (outOf === 0) return 0.5;
+  return 0.5 + (matchCount / outOf) * 0.5;
+}
+
+/** For every already-picked ally, fetches their top ALLY_SYNERGY_TOP_K
+ * synergy partners (by real measured win rate, from every stat source) and
+ * looks for candidates that show up for MULTIPLE allies at once — the
+ * "intersection" of good-partner sets. `outOf` in the return value is how
+ * many allies actually returned usable synergy data (not necessarily every
+ * filled slot, if a source/page lookup failed for one) — that's the
+ * accurate denominator for how "complete" a match is. Best-effort per ally
+ * (Promise.allSettled): one ally's synergy page being unreachable just
+ * drops it from the intersection rather than failing the whole thing. */
+async function computeAllySynergyScores(
+  allySlots: { position: Position; champ: DDragonChampion }[],
+  champions: ChampionRef[],
+): Promise<{ scores: Map<number, { matchCount: number; avgWinRate: number | null }>; outOf: number }> {
+  if (allySlots.length === 0) return { scores: new Map(), outOf: 0 };
+  const settled = await Promise.allSettled(
+    allySlots.map(({ champ, position: p }) => getAggregatedDuoCandidates(champ.slug, p, champions)),
+  );
+  const perAllyTopK: Map<number, number>[] = [];
+  for (const r of settled) {
+    if (r.status !== "fulfilled") continue;
+    const ranked = [...r.value.entries]
+      .sort((a, b) => b.primary.winRate - a.primary.winRate)
+      .slice(0, ALLY_SYNERGY_TOP_K);
+    const map = new Map<number, number>();
+    for (const e of ranked) map.set(e.championId, e.primary.winRate);
+    perAllyTopK.push(map);
+  }
+  if (perAllyTopK.length === 0) return { scores: new Map(), outOf: 0 };
+
+  const candidateIds = new Set<number>();
+  for (const m of perAllyTopK) for (const id of m.keys()) candidateIds.add(id);
+
+  const scores = new Map<number, { matchCount: number; avgWinRate: number | null }>();
+  for (const id of candidateIds) {
+    const rates = perAllyTopK.map((m) => m.get(id)).filter((r): r is number => r !== undefined);
+    scores.set(id, {
+      matchCount: rates.length,
+      avgWinRate: rates.length > 0 ? rates.reduce((a, b) => a + b, 0) / rates.length : null,
+    });
+  }
+  return { scores, outOf: perAllyTopK.length };
+}
+
+/** The single ranking formula every refine pass in this file uses to sort
+ * (or re-sort) a pick list — factored out so rerankPicks, refineTopWithSkillFit,
+ * refineTopWithPowerCurveAndLaning, and applyBuildFitBonus can never drift
+ * out of sync with each other (a real risk once there were three separate
+ * inline copies: adding the laning-stats blend to one re-sort but not
+ * another would silently undo it on the next pass). Blends in
+ * laningFitScore only when `e.laningStats` is already set — it isn't yet at
+ * the earlier call sites (rerankPicks/refineTopWithSkillFit run before
+ * refineTopWithPowerCurveAndLaning attaches it), so this degrades to the
+ * plain real-winRate goodness there, unchanged from before this refactor. */
+function pickRankScore(e: PickEntry, order: "asc" | "desc"): number {
+  let goodness = order === "asc" ? 1 - e.winRate : e.winRate;
+  if (e.laningStats) {
+    const laningFit = laningFitScore(e.laningStats);
+    goodness = goodness * (1 - LANING_STATS_BLEND) + laningFit * LANING_STATS_BLEND;
+  }
+  return (
+    PICK_REAL_WEIGHT * goodness +
+    PICK_ENEMY_FIT_WEIGHT * (e.compFit ?? 0.5) +
+    PICK_ALLY_SYNERGY_WEIGHT * (e.allySynergyFit ?? 0.5)
+  );
+}
+
+/** Re-ranks a pick list against two secondary signals: how well each
+ * candidate fits the FULL enemy roster filled in so far (`enemyChamps` —
+ * every enemy slot the user has filled in, laner included, tag-based), and
+ * how well it covers the already-picked allies' real measured synergy data
+ * (`allySynergy` — see computeAllySynergyScores). Attaches `compFit` and
+ * `allySynergyFit` (+ the raw match count/win rate behind it) to every
+ * entry, then sorts by a blended score: real scraped win rate
+ * (PICK_REAL_WEIGHT) plus both secondary signals (PICK_ENEMY_FIT_WEIGHT /
+ * PICK_ALLY_SYNERGY_WEIGHT). Must run BEFORE restrictToPool, since that
  * function's tier sort is stable and relies on whatever order it's handed
  * as the tiebreaker within a tier — so this is what decides "same tier"
  * ordering once a champion pool is active, and the sole ordering when it
- * isn't. When enemyChamps is empty, scoreEnemyCompFit returns a neutral 0.5
- * for every candidate and this reduces to sorting by real win rate alone —
- * i.e. unchanged behavior from before this feature existed. */
-function rerankByEnemyCompFit(
+ * isn't. When enemyChamps/allySynergy are both empty, both secondary scores
+ * are a flat 0.5 for every candidate and this reduces to sorting by real
+ * win rate alone — i.e. unchanged relative order from before either
+ * feature existed. */
+function rerankPicks(
   entries: PickEntry[],
   champById: Map<number, DDragonChampion>,
   enemyChamps: DDragonChampion[],
+  allySynergy: { scores: Map<number, { matchCount: number; avgWinRate: number | null }>; outOf: number },
   order: "asc" | "desc",
 ): PickEntry[] {
   return entries
     .map((e) => {
       const champ = champById.get(e.championId);
       const compFit = champ ? scoreEnemyCompFit(champ, enemyChamps) : 0.5;
-      return { ...e, compFit };
+      const synergy = allySynergy.scores.get(e.championId);
+      return {
+        ...e,
+        compFit,
+        allySynergyFit: allySynergyFitScore(synergy?.matchCount ?? 0, allySynergy.outOf),
+        allySynergyMatchCount: synergy?.matchCount ?? 0,
+        allySynergyOutOf: allySynergy.outOf,
+        allySynergyAvgWinRate: synergy?.avgWinRate ?? null,
+      };
     })
-    .sort((a, b) => {
-      const goodnessA = order === "asc" ? 1 - a.winRate : a.winRate;
-      const goodnessB = order === "asc" ? 1 - b.winRate : b.winRate;
-      const rankA = PICK_REAL_WEIGHT * goodnessA + PICK_FIT_WEIGHT * a.compFit!;
-      const rankB = PICK_REAL_WEIGHT * goodnessB + PICK_FIT_WEIGHT * b.compFit!;
-      return rankB - rankA;
-    });
+    .sort((a, b) => pickRankScore(b, order) - pickRankScore(a, order));
 }
 
 /** Refines the top N entries of `picks` (mutated in place, then re-sorted)
  * using each side's ACTUAL passive/Q/W/E/R kit instead of just the coarse
- * champion tags rerankByEnemyCompFit already applied — see
- * applySkillFitBonus/championSkills.ts for what that adds and why it's
- * bounded to a shortlist (one Data Dragon request per champion). Re-sorts
- * only that shortlist, and tier (from a champion pool, if active) is kept
- * as the dominant key so this never reorders across tiers — it only
- * refines the order within whatever restrictToPool already grouped
- * together. Best-effort: any failure (Data Dragon down, shape changed)
- * just leaves the tag-based compFit from rerankByEnemyCompFit as-is. */
+ * champion tags rerankPicks already applied — see applySkillFitBonus/
+ * championSkills.ts for what that adds and why it's bounded to a shortlist
+ * (one Data Dragon request per champion). Re-sorts only that shortlist, and
+ * tier (from a champion pool, if active) is kept as the dominant key so
+ * this never reorders across tiers — it only refines the order within
+ * whatever restrictToPool already grouped together; allySynergyFit is left
+ * exactly as rerankPicks set it (this pass only bonuses compFit). Best-
+ * effort: any failure (Data Dragon down, shape changed) just leaves the
+ * tag-based compFit from rerankPicks as-is. */
 async function refineTopWithSkillFit(
   picks: PickEntry[],
   champById: Map<number, DDragonChampion>,
@@ -206,11 +365,7 @@ async function refineTopWithSkillFit(
     top.sort((a, b) => {
       const tierDiff = (a.tier ?? 0) - (b.tier ?? 0);
       if (tierDiff !== 0) return tierDiff;
-      const goodnessA = order === "asc" ? 1 - a.winRate : a.winRate;
-      const goodnessB = order === "asc" ? 1 - b.winRate : b.winRate;
-      const rankA = PICK_REAL_WEIGHT * goodnessA + PICK_FIT_WEIGHT * (a.compFit ?? 0.5);
-      const rankB = PICK_REAL_WEIGHT * goodnessB + PICK_FIT_WEIGHT * (b.compFit ?? 0.5);
-      return rankB - rankA;
+      return pickRankScore(b, order) - pickRankScore(a, order);
     });
     picks.splice(0, top.length, ...top);
   } catch {
@@ -236,37 +391,102 @@ async function fetchAbilitiesMap(
   return map;
 }
 
-/** Mutates the top N entries of `picks` in place, attaching lol.ps
- * power-curve early/late-game win rates where available. Best-effort: any
- * failure (lol.ps down, no matching lane data) just leaves those fields
- * unset rather than failing the whole request. */
-async function annotateWithPowerCurve(picks: PickEntry[], position: Position): Promise<void> {
+/** Maps a phase win rate (0-1, centered on 0.5) to the same 0.5-neutral-to-
+ * 1.0 "fit" scale scoreEnemyCompFit/allySynergyFitScore use — doubles the
+ * distance from 0.5 so a modest 55% phase win rate already reads as a
+ * meaningful 0.6 fit, then clamps. Null (no data for this phase) passes
+ * through so the caller can fall back to the neutral 0.5 itself. */
+function phaseFitScore(phaseWinRate: number | null): number | null {
+  if (phaseWinRate === null) return null;
+  return Math.max(0, Math.min(1, 0.5 + (phaseWinRate - 0.5) * 2));
+}
+
+/** Turns a real measured gold-at-15 differential against the specific enemy
+ * laner into the same 0-1 goodness scale as `winRate` — 0.5 at even gold,
+ * moving toward 1.0/0.0 as the gap widens. ±2000 gold is treated as roughly
+ * a full swing (a substantial 15-minute lead/deficit in most lanes) rather
+ * than picking an empirically-derived threshold, since there's no larger
+ * dataset here to calibrate against — deliberately conservative/simple. */
+function laningFitScore(stats: VersusStats): number {
+  const goldDiff = stats.ally.goldAt15 - stats.enemy.goldAt15;
+  return Math.max(0, Math.min(1, 0.5 + goldDiff / 2000));
+}
+
+/** Mutates the top N entries of `picks` in place and re-sorts them, folding
+ * two more real lol.ps signals into the ranking (not just display, unlike
+ * the old annotateWithPowerCurve this replaces):
+ *   - power curve (early/mid/late win rate) — blended into allySynergyFit
+ *     via how well the candidate's own peak phase lines up with `teamPeak`
+ *     (the team's already-computed peak phase, see teamPeakPhase/
+ *     computeTeamPowerCurve). Still also sets earlyWinRate/lateWinRate for
+ *     display, same as before.
+ *   - laning-phase stats vs the specific enemy laner (`enemyLanerChampionId`,
+ *     null for synergyPicks — there's no single opposing laner there) —
+ *     blended into the real winRate goodness term.
+ * Runs AFTER refineTopWithSkillFit so it has final say on ordering within
+ * the shortlist; tier (if a pool is active) stays the dominant sort key,
+ * same convention as every other refine pass here. Best-effort per
+ * candidate (Promise.allSettled): a lol.ps failure for one candidate just
+ * leaves its blend inputs at neutral rather than failing the whole pass. */
+async function refineTopWithPowerCurveAndLaning(
+  picks: PickEntry[],
+  position: Position,
+  teamPeak: "early" | "mid" | "late" | null,
+  enemyLanerChampionId: number | null,
+  order: "asc" | "desc",
+): Promise<void> {
   const top = picks.slice(0, POWER_CURVE_CANDIDATE_LIMIT);
   if (top.length === 0) return;
-  try {
-    const curves = await getPowerCurvesForPosition(
-      top.map((p) => p.championId),
-      position,
-    );
-    for (const entry of top) {
-      const curve = curves.get(entry.championId);
-      if (curve) {
-        entry.earlyWinRate = curve.earlyWinRate;
-        entry.lateWinRate = curve.lateWinRate;
+
+  const curveResults = await Promise.allSettled(top.map((p) => getPowerCurve(p.championId)));
+  const laningResults = enemyLanerChampionId
+    ? await Promise.allSettled(
+        top.map((p) => getVersusStats(p.championId, enemyLanerChampionId, position)),
+      )
+    : [];
+
+  top.forEach((entry, i) => {
+    const curveResult = curveResults[i];
+    if (curveResult.status === "fulfilled") {
+      const curve = curveResult.value;
+      entry.earlyWinRate = curve.earlyWinRate;
+      entry.lateWinRate = curve.lateWinRate;
+      if (teamPeak) {
+        const phaseRate =
+          teamPeak === "early" ? curve.earlyWinRate : teamPeak === "mid" ? curve.midWinRate : curve.lateWinRate;
+        const powerCurveFit = phaseFitScore(phaseRate);
+        if (powerCurveFit !== null) {
+          const base = entry.allySynergyFit ?? 0.5;
+          entry.allySynergyFit = base * (1 - POWER_CURVE_TEAM_FIT_BLEND) + powerCurveFit * POWER_CURVE_TEAM_FIT_BLEND;
+        }
       }
     }
-  } catch {
-    // lol.ps unreachable or shape changed — leave power-curve fields unset.
-  }
+
+    const laningResult = laningResults[i];
+    if (laningResult && laningResult.status === "fulfilled") {
+      entry.laningStats = laningResult.value;
+    }
+  });
+
+  top.sort((a, b) => {
+    const tierDiff = (a.tier ?? 0) - (b.tier ?? 0);
+    if (tierDiff !== 0) return tierDiff;
+    return pickRankScore(b, order) - pickRankScore(a, order);
+  });
+  picks.splice(0, top.length, ...top);
 }
 
 /** Mutates the top N entries of `picks` in place, attaching a lol.ps build
  * recommendation where available. Best-effort like annotateWithPowerCurve —
  * failures (lol.ps or Data Dragon down) just leave `build` unset for that
  * entry. Shows the champion's own primary-lane build even when it doesn't
- * match `position`, same as the "빌드" tab, but only when `position` itself
- * is at least BUILD_LANE_MISMATCH_MIN_SHARE of the candidate's own games —
- * otherwise (as before) the mismatch just leaves `build` unset. */
+ * match `position`, same as the "빌드" tab (`/api/build`) and
+ * computeTeamPowerCurve below — always shown with a `laneNote` caveat rather
+ * than gated behind LANE_MISMATCH_MIN_SHARE. That gate used to rely on
+ * getLaneShare's still-unconfirmed `top1LaneId`/`top1LaneRatio` field names,
+ * which turned out to always return share=0 (same root cause as the "팀 파워
+ * 커브" bug this mirrors) — so it dropped EVERY off-primary-lane candidate's
+ * build instead of the rare truly-irrelevant one. */
 async function annotateWithBuild(picks: PickEntry[], position: Position): Promise<void> {
   const top = picks.slice(0, BUILD_CANDIDATE_LIMIT);
   if (top.length === 0) return;
@@ -279,27 +499,107 @@ async function annotateWithBuild(picks: PickEntry[], position: Position): Promis
     const results = await Promise.allSettled(
       top.map((p) => getChampionBuild(p.championId, position, { allowMismatch: true })),
     );
-    await Promise.all(
-      results.map(async (r, i) => {
-        if (r.status !== "fulfilled") return;
-        const build = r.value;
-        const actualPosition = laneIdToPosition(build.laneId);
-        if (actualPosition && actualPosition !== position) {
-          const share = await getLaneShare(top[i].championId, position).catch(() => 0);
-          if (share < LANE_MISMATCH_MIN_SHARE) return;
-        }
-        const entry = top[i];
-        entry.build = toBuildResult(
-          { id: entry.championId, name: entry.name, iconUrl: entry.iconUrl },
-          position,
-          build,
-          { items, spells, runes: runesData.runes, trees: runesData.trees },
-        );
-      }),
-    );
+    results.forEach((r, i) => {
+      if (r.status !== "fulfilled") return;
+      const build = r.value;
+      const actualPosition = laneIdToPosition(build.laneId);
+      const entry = top[i];
+      const laneNote =
+        actualPosition && actualPosition !== position
+          ? `lol.ps는 ${entry.name}의 ${POSITION_LABEL.get(actualPosition) ?? actualPosition} 라인 데이터만 갖고 있어요 — 아래 빌드는 실제로 그 라인 기준입니다.`
+          : null;
+      entry.build = toBuildResult(
+        { id: entry.championId, name: entry.name, iconUrl: entry.iconUrl },
+        position,
+        build,
+        { items, spells, runes: runesData.runes, trees: runesData.trees },
+        laneNote,
+      );
+    });
   } catch {
     // Data Dragon or lol.ps unreachable — leave build fields unset.
   }
+}
+
+/** Mutates the top N entries of `picks` in place, attaching a DeepLoL build
+ * recommendation alongside the lol.ps one annotateWithBuild already set —
+ * same "라인 카운터"/"빌드" tab convention of showing both sources side by
+ * side rather than merging them (see BuildCard's `sourceLabel`). Unlike
+ * lol.ps, DeepLoL's build data is genuinely keyed by the requested lane (no
+ * primary-lane-only limitation — see deeplol.ts's getChampionBuild), so
+ * there's no laneNote/mismatch handling here: a lane just has no data if the
+ * champion doesn't play it, same as any other best-effort miss. */
+async function annotateWithDeeplolBuild(picks: PickEntry[], position: Position): Promise<void> {
+  const top = picks.slice(0, BUILD_CANDIDATE_LIMIT);
+  if (top.length === 0) return;
+  try {
+    const [items, spells, runesData] = await Promise.all([
+      getItemsWithCache(),
+      getSummonerSpellsWithCache(),
+      getRunesDataWithCache(),
+    ]);
+    const results = await Promise.allSettled(top.map((p) => getDeeplolChampionBuild(p.championId, position)));
+    results.forEach((r, i) => {
+      if (r.status !== "fulfilled") return;
+      const entry = top[i];
+      entry.buildDeeplol = toBuildResult(
+        { id: entry.championId, name: entry.name, iconUrl: entry.iconUrl },
+        position,
+        r.value,
+        { items, spells, runes: runesData.runes, trees: runesData.trees },
+      );
+    });
+  } catch {
+    // Data Dragon or DeepLoL unreachable — leave buildDeeplol unset.
+  }
+}
+
+/** Whether any of a candidate's own real recommended core-item builds
+ * (lol.ps and/or DeepLoL — either counts, since this just asks "does a real
+ * build for this champion itemize defensively here") includes an item
+ * carrying the given Data Dragon item tag ("Armor" or "SpellBlock"). Only
+ * looks at core items (the handful actually prioritized), not the full
+ * 6-item build, since that's the part of a build a pick decision can
+ * realistically hinge on this early. */
+function buildHasItemTag(entry: PickEntry, tag: string): boolean {
+  const coreItemSets = [entry.build?.coreItems, entry.buildDeeplol?.coreItems];
+  return coreItemSets.some((items) => items?.some((it) => it.tags?.includes(tag)) ?? false);
+}
+
+/** Bonuses (then re-sorts) the top N entries of `picks` using whether each
+ * candidate's own REAL recommended build (lol.ps and/or DeepLoL — must
+ * already be attached by annotateWithBuild/annotateWithDeeplolBuild, so this
+ * runs after both) itemizes defensively against the enemy team's actual
+ * damage-type split. Same house style as applySkillFitBonus/scoreEnemyCompFit
+ * (teamComp.ts): official Data Dragon fields only (item `tags`, champion
+ * `info.attack`/`info.magic` via analyzeTeamComp's damageBalance), a small
+ * additive bonus clamped to 1, and no bonus at all when the enemy comp isn't
+ * clearly leaning one damage type (see DAMAGE_MAJORITY_THRESHOLD) or no
+ * enemy champions are filled in yet. Synchronous — everything it reads was
+ * already fetched by earlier steps, no new network calls. */
+function applyBuildFitBonus(picks: PickEntry[], enemyChamps: DDragonChampion[], order: "asc" | "desc"): void {
+  const top = picks.slice(0, BUILD_CANDIDATE_LIMIT);
+  if (top.length === 0) return;
+  const damageBalance = analyzeTeamComp(enemyChamps)?.damageBalance;
+  if (!damageBalance) return;
+
+  const enemyIsPhysicalHeavy = damageBalance.physicalPct >= DAMAGE_MAJORITY_THRESHOLD;
+  const enemyIsMagicHeavy = damageBalance.magicPct >= DAMAGE_MAJORITY_THRESHOLD;
+  if (!enemyIsPhysicalHeavy && !enemyIsMagicHeavy) return;
+
+  for (const entry of top) {
+    let bonus = 0;
+    if (enemyIsPhysicalHeavy && buildHasItemTag(entry, "Armor")) bonus += BUILD_DEFENSE_BONUS;
+    if (enemyIsMagicHeavy && buildHasItemTag(entry, "SpellBlock")) bonus += BUILD_DEFENSE_BONUS;
+    if (bonus > 0) entry.compFit = Math.min(1, (entry.compFit ?? 0.5) + bonus);
+  }
+
+  top.sort((a, b) => {
+    const tierDiff = (a.tier ?? 0) - (b.tier ?? 0);
+    if (tierDiff !== 0) return tierDiff;
+    return pickRankScore(b, order) - pickRankScore(a, order);
+  });
+  picks.splice(0, top.length, ...top);
 }
 
 function toBrief(c: DDragonChampion): ChampionBrief {
@@ -313,8 +613,7 @@ interface LanerPowerCurve {
   midWinRate: number | null;
   lateWinRate: number | null;
   /** Set when this laner's numbers are actually lol.ps's data for a
-   * DIFFERENT lane (see LANE_MISMATCH_MIN_SHARE) — same idea as
-   * BuildResult.laneNote. */
+   * DIFFERENT lane — same idea as BuildResult.laneNote. */
   laneNote: string | null;
 }
 
@@ -333,14 +632,35 @@ function average(values: number[]): number | null {
   return values.length > 0 ? values.reduce((a, b) => a + b, 0) / values.length : null;
 }
 
+/** Whichever of early/mid/late the TEAM's averaged power curve peaks at —
+ * null when there's no usable team data at all yet (no allies filled, or
+ * lol.ps had nothing for any of them). Feeds refineTopWithPowerCurveAndLaning
+ * below; same "highest average wins" logic the frontend's TeamPowerCurveCard
+ * uses for its own "팀이 가장 강한 구간" label, just computed server-side too
+ * so it can be USED, not just shown. */
+function teamPeakPhase(curve: TeamPowerCurve): "early" | "mid" | "late" | null {
+  const phases: { key: "early" | "mid" | "late"; rate: number | null }[] = [
+    { key: "early", rate: curve.teamEarlyWinRate },
+    { key: "mid", rate: curve.teamMidWinRate },
+    { key: "late", rate: curve.teamLateWinRate },
+  ];
+  let best: { key: "early" | "mid" | "late"; rate: number } | null = null;
+  for (const p of phases) {
+    if (p.rate === null) continue;
+    if (!best || p.rate > best.rate) best = { key: p.key, rate: p.rate };
+  }
+  return best?.key ?? null;
+}
+
 /** Aggregates lol.ps power curves across every filled ally slot into a
  * per-laner early/mid/late breakdown plus a team-wide average per phase —
  * best-effort like the other lol.ps annotations (a champion lol.ps has no
  * curve for, or unreachable, just isn't counted rather than failing the
  * whole request). Each laner's numbers come from their own primary lane on
- * lol.ps; when that's not the slot's actual position, it's only used if
- * this position is at least LANE_MISMATCH_MIN_SHARE of that champion's own
- * games (flagged via laneNote), same leniency rule as annotateWithBuild. */
+ * lol.ps; when that's not the slot's actual position, it's shown anyway
+ * (flagged via laneNote), same "always show real numbers with a caveat"
+ * approach annotateWithBuild uses now too — a champion's early/late-game
+ * tendency is still informative even off their main lane. */
 async function computeTeamPowerCurve(
   allySlots: { position: Position; champ: DDragonChampion }[],
 ): Promise<TeamPowerCurve> {
@@ -349,27 +669,23 @@ async function computeTeamPowerCurve(
   }
   const settled = await Promise.allSettled(allySlots.map(({ champ }) => getPowerCurve(champ.id)));
   const laners: LanerPowerCurve[] = [];
-  await Promise.all(
-    settled.map(async (r, i) => {
-      if (r.status !== "fulfilled") return;
-      const { position, champ } = allySlots[i];
-      const curve = r.value;
-      let laneNote: string | null = null;
-      if (curve.actualPosition && curve.actualPosition !== position) {
-        const share = await getLaneShare(champ.id, position).catch(() => 0);
-        if (share < LANE_MISMATCH_MIN_SHARE) return;
-        laneNote = `lol.ps는 ${champ.name}의 ${POSITION_LABEL.get(curve.actualPosition) ?? curve.actualPosition} 라인 데이터만 갖고 있어요 — 아래 수치는 실제로 그 라인 기준입니다.`;
-      }
-      laners.push({
-        position,
-        champion: toBrief(champ),
-        earlyWinRate: curve.earlyWinRate,
-        midWinRate: curve.midWinRate,
-        lateWinRate: curve.lateWinRate,
-        laneNote,
-      });
-    }),
-  );
+  settled.forEach((r, i) => {
+    if (r.status !== "fulfilled") return;
+    const { position, champ } = allySlots[i];
+    const curve = r.value;
+    const laneNote =
+      curve.actualPosition && curve.actualPosition !== position
+        ? `lol.ps는 ${champ.name}의 ${POSITION_LABEL.get(curve.actualPosition) ?? curve.actualPosition} 라인 데이터만 갖고 있어요 — 아래 수치는 실제로 그 라인 기준입니다.`
+        : null;
+    laners.push({
+      position,
+      champion: toBrief(champ),
+      earlyWinRate: curve.earlyWinRate,
+      midWinRate: curve.midWinRate,
+      lateWinRate: curve.lateWinRate,
+      laneNote,
+    });
+  });
   laners.sort(
     (a, b) => POSITIONS.findIndex((p) => p.value === a.position) - POSITIONS.findIndex((p) => p.value === b.position),
   );
@@ -484,14 +800,31 @@ export async function GET(req: Request) {
   const enemyLaneChampion = slotChampion(`enemy-${position}`);
   const supportAdcChampion = slotChampion("ally-adc"); // only relevant when position === "support"
 
-  // Every enemy slot filled in so far (laner included) — feeds
-  // rerankByEnemyCompFit below so "내 픽 추천" weighs in the full known
-  // enemy roster, not just my direct lane opponent, per the tag-based
-  // heuristic in teamComp.ts. Also reused for compHeuristic.enemy further
-  // down, so it's computed once here instead of twice.
+  // Every enemy slot filled in so far (laner included) — feeds rerankPicks
+  // below so "내 픽 추천" weighs in the full known enemy roster, not just my
+  // direct lane opponent, per the tag-based heuristic in teamComp.ts. Also
+  // reused for compHeuristic.enemy further down, so it's computed once here
+  // instead of twice.
   const enemyChamps = POSITIONS.map((p) => slotChampion(`enemy-${p.value}`)).filter(
     (c): c is DDragonChampion => c !== null,
   );
+
+  // Every ALLY slot filled in so far, paired with its own position — feeds
+  // computeAllySynergyScores/rerankPicks below (real measured synergy
+  // against every already-picked ally, not just an ADC), and is reused
+  // as-is for compHeuristic.ally and teamPowerCurve further down.
+  const allySlotsWithPosition = POSITIONS.map((p) => ({ position: p.value, champ: slotChampion(`ally-${p.value}`) }))
+    .filter((s): s is { position: Position; champ: DDragonChampion } => s.champ !== null);
+  const allyChamps = allySlotsWithPosition.map((s) => s.champ);
+  const allySynergy = await computeAllySynergyScores(allySlotsWithPosition, champions);
+
+  // --- lol.ps 파워 커브(분당 승률)를 우리팀 채워진 라인 전체에 걸쳐 종합해서
+  // 팀이 어느 구간(초반/중반/후반)에 가장 강한지, 각 라이너는 초반/후반 중
+  // 어느 쪽에 가까운지 보여줌. src 상단 computeTeamPowerCurve 참고. 픽 추천
+  // 랭킹(refineTopWithPowerCurveAndLaning)에서도 쓰이므로 counterPicks/
+  // synergyPicks보다 먼저 계산. ---
+  const teamPowerCurve = await computeTeamPowerCurve(allySlotsWithPosition);
+  const teamPeak = teamPeakPhase(teamPowerCurve);
 
   // --- single-pick recommendation for MY empty slot (unchanged logic from
   // before the draft board — just re-derived from the 10-slot params) ---
@@ -500,11 +833,13 @@ export async function GET(req: Request) {
   if (enemyLaneChampion) {
     try {
       const result = await getAggregatedLaneCounters(enemyLaneChampion.slug, position, champions);
-      const ranked = rerankByEnemyCompFit(toPickEntries(result, champById, "asc"), champById, enemyChamps, "asc");
+      const ranked = rerankPicks(toPickEntries(result, champById, "asc"), champById, enemyChamps, allySynergy, "asc");
       counterPicks = restrictToPool(ranked, tierMap);
       await refineTopWithSkillFit(counterPicks, champById, enemyChamps, "asc");
-      await annotateWithPowerCurve(counterPicks, position);
+      await refineTopWithPowerCurveAndLaning(counterPicks, position, teamPeak, enemyLaneChampion.id, "asc");
       await annotateWithBuild(counterPicks, position);
+      await annotateWithDeeplolBuild(counterPicks, position);
+      applyBuildFitBonus(counterPicks, enemyChamps, "asc");
     } catch (err) {
       counterError = err instanceof Error ? err.message : "라인전 카운터 조회에 실패했습니다.";
     }
@@ -514,12 +849,17 @@ export async function GET(req: Request) {
   let synergyError: string | null = null;
   if (position === "support" && supportAdcChampion) {
     try {
-      const result = await getAggregatedDuoCandidates(supportAdcChampion.slug, champions);
-      const ranked = rerankByEnemyCompFit(toPickEntries(result, champById, "desc"), champById, enemyChamps, "desc");
+      const result = await getAggregatedDuoCandidates(supportAdcChampion.slug, "adc", champions);
+      const ranked = rerankPicks(toPickEntries(result, champById, "desc"), champById, enemyChamps, allySynergy, "desc");
       synergyPicks = restrictToPool(ranked, tierMap);
       await refineTopWithSkillFit(synergyPicks, champById, enemyChamps, "desc");
-      await annotateWithPowerCurve(synergyPicks, position);
+      // No single opposing laner for a bottom-duo synergy pick, so the
+      // laning-stats half of the refine pass is skipped (enemyLanerChampionId
+      // null) — only the power-curve/team-phase blend applies here.
+      await refineTopWithPowerCurveAndLaning(synergyPicks, position, teamPeak, null, "desc");
       await annotateWithBuild(synergyPicks, position);
+      await annotateWithDeeplolBuild(synergyPicks, position);
+      applyBuildFitBonus(synergyPicks, enemyChamps, "desc");
     } catch (err) {
       synergyError = err instanceof Error ? err.message : "시너지 조회에 실패했습니다.";
     }
@@ -532,8 +872,12 @@ export async function GET(req: Request) {
             const s = synergyPicks!.find((s) => s.championId === c.championId);
             if (!s) return [];
             const realScore = (1 - c.winRate + s.winRate) / 2;
-            const fitScore = ((c.compFit ?? 0.5) + (s.compFit ?? 0.5)) / 2;
-            const score = PICK_REAL_WEIGHT * realScore + PICK_FIT_WEIGHT * fitScore;
+            const enemyFitScore = ((c.compFit ?? 0.5) + (s.compFit ?? 0.5)) / 2;
+            const allySynergyFit = ((c.allySynergyFit ?? 0.5) + (s.allySynergyFit ?? 0.5)) / 2;
+            const score =
+              PICK_REAL_WEIGHT * realScore +
+              PICK_ENEMY_FIT_WEIGHT * enemyFitScore +
+              PICK_ALLY_SYNERGY_WEIGHT * allySynergyFit;
             return [
               {
                 championId: c.championId,
@@ -543,7 +887,7 @@ export async function GET(req: Request) {
                 counterGames: c.games,
                 synergyWinRate: s.winRate,
                 synergyGames: s.games,
-                compFit: fitScore,
+                compFit: enemyFitScore,
                 score,
                 tier: c.tier,
               },
@@ -568,6 +912,11 @@ export async function GET(req: Request) {
       const ally = slotChampion(`ally-${p.value}`);
       const enemy = slotChampion(`enemy-${p.value}`);
       if (!ally || !enemy) return null;
+      // Best-effort, independent of the win-rate lookup below — a lol.ps
+      // versus/stats.json failure (or lol.ps just not having games for this
+      // exact pairing+lane) shouldn't blank out the counter-matchup win
+      // rate, which comes from different sources entirely.
+      const laningStats = await getVersusStats(ally.id, enemy.id, p.value).catch(() => null);
       try {
         const result = await getAggregatedLaneCounters(enemy.slug, p.value, champions);
         const match = findMatch(result, ally.id);
@@ -581,6 +930,7 @@ export async function GET(req: Request) {
           winRate: match ? 1 - match.winRate : null,
           games: match?.games ?? null,
           bySource: match ? match.bySource.map((s) => ({ ...s, winRate: 1 - s.winRate })) : [],
+          laningStats,
           error: null as string | null,
         };
       } catch (err) {
@@ -591,6 +941,7 @@ export async function GET(req: Request) {
           winRate: null,
           games: null,
           bySource: [] as SourceValueOut[],
+          laningStats,
           error: err instanceof Error ? err.message : "조회에 실패했습니다.",
         };
       }
@@ -610,7 +961,7 @@ export async function GET(req: Request) {
   } | null = null;
   if (duoAdc && duoSupport) {
     try {
-      const result = await getAggregatedDuoCandidates(duoAdc.slug, champions);
+      const result = await getAggregatedDuoCandidates(duoAdc.slug, "adc", champions);
       const match = findMatch(result, duoSupport.id);
       duo = {
         adc: toBrief(duoAdc),
@@ -643,20 +994,17 @@ export async function GET(req: Request) {
 
   // --- "챔피언 특성 기반" 조합 분석: Riot 공식 정적 데이터(tags/info)만
   // 사용하는, 승률과 무관한 보조 지표. src/lib/teamComp.ts 참고.
-  // (enemyChamps was already computed above, before counterPicks/synergyPicks,
-  // so rerankByEnemyCompFit could use it too — reused here as-is.) ---
-  const allySlotsWithPosition = POSITIONS.map((p) => ({ position: p.value, champ: slotChampion(`ally-${p.value}`) }))
-    .filter((s): s is { position: Position; champ: DDragonChampion } => s.champ !== null);
-  const allyChamps = allySlotsWithPosition.map((s) => s.champ);
+  // (allySlotsWithPosition/allyChamps/enemyChamps were already computed
+  // above, before counterPicks/synergyPicks, so rerankPicks could use them
+  // too — reused here as-is.) ---
   const compHeuristic = {
     ally: analyzeTeamComp(allyChamps),
     enemy: analyzeTeamComp(enemyChamps),
   };
 
-  // --- lol.ps 파워 커브(분당 승률)를 우리팀 채워진 라인 전체에 걸쳐 종합해서
-  // 팀이 어느 구간(초반/중반/후반)에 가장 강한지, 각 라이너는 초반/후반 중
-  // 어느 쪽에 가까운지 보여줌. src 상단 computeTeamPowerCurve 참고. ---
-  const teamPowerCurve = await computeTeamPowerCurve(allySlotsWithPosition);
+  // teamPowerCurve/teamPeak were already computed earlier (before
+  // counterPicks/synergyPicks) so refineTopWithPowerCurveAndLaning could use
+  // teamPeak — reused here as-is for the response payload.
 
   // --- 조합 컨셉(돌진/포킹/쌍포/한타/스플릿) 감지 + 정적 상성 참고표.
   // src/lib/compConcepts.ts 참고 — 실측 승률이 아니라 전략 지식 참고표임을
@@ -667,6 +1015,17 @@ export async function GET(req: Request) {
     enemy: ReturnType<typeof analyzeCompConcepts>;
     matchup: ReturnType<typeof lookupConceptMatchup>;
   } = { ally: null, enemy: null, matchup: null };
+  // --- 채워진 챔피언들의 CC(하드 크라우드 컨트롤) 보유 여부 — 위 조합 컨셉과
+  // 같은 fetchAbilitiesMap 호출(챔피언당 Data Dragon 요청 1번, 이미 하고 있던
+  // 것)에서 나오는 championSkills.ts의 hasHardCC를 그대로 재사용. 별도 요청
+  // 추가 없이 챔피언 선택 화면에 팀별 CC 보유/미보유와 합계를 보여주기 위한
+  // 용도라 compConcepts와 같은 try/catch 블록 안에서 함께 계산함. ---
+  let ccInfo: {
+    ally: { championId: number; hasHardCC: boolean }[];
+    enemy: { championId: number; hasHardCC: boolean }[];
+    allyCount: number;
+    enemyCount: number;
+  } = { ally: [], enemy: [], allyCount: 0, enemyCount: 0 };
   try {
     const version = await getLatestVersion();
     const [allyAbilities, enemyAbilities] = await Promise.all([
@@ -683,8 +1042,24 @@ export async function GET(req: Request) {
           ? lookupConceptMatchup(allyConcepts.dominant, enemyConcepts.dominant)
           : null,
     };
+
+    const toCCEntries = (champs: DDragonChampion[], abilities: Map<number, ChampionAbilities>) =>
+      champs
+        .map((c) => {
+          const a = abilities.get(c.id);
+          return a ? { championId: c.id, hasHardCC: a.hasHardCC } : null;
+        })
+        .filter((e): e is { championId: number; hasHardCC: boolean } => e !== null);
+    const allyCC = toCCEntries(allyChamps, allyAbilities);
+    const enemyCC = toCCEntries(enemyChamps, enemyAbilities);
+    ccInfo = {
+      ally: allyCC,
+      enemy: enemyCC,
+      allyCount: allyCC.filter((c) => c.hasHardCC).length,
+      enemyCount: enemyCC.filter((c) => c.hasHardCC).length,
+    };
   } catch {
-    // Data Dragon unreachable — leave compConcepts at the all-null default.
+    // Data Dragon unreachable — leave compConcepts/ccInfo at the empty default.
   }
 
   return NextResponse.json({
@@ -700,6 +1075,7 @@ export async function GET(req: Request) {
     measuredSynergy,
     compHeuristic,
     compConcepts,
+    ccInfo,
     teamPowerCurve,
   });
 }

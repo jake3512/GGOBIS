@@ -32,9 +32,13 @@ const configs: GenericSourceConfig[] = [
     // synergies are separate sibling routes, not tabs within /build —
     // /lol/champions/{slug}/counters/{position} and
     // .../synergies/{position}, position as a path segment (no `?position=`
-    // query param, that guess was wrong twice over). "Champion synergies"
-    // isn't ADC+Support-specific, but requesting it from the ADC's page
-    // should surface support pairings among the results.
+    // query param, that guess was wrong twice over). Only .../synergies/adc
+    // was actually confirmed against a real response — duoUrl below now
+    // takes the champion's own position instead of hardcoding "adc" so
+    // pick-advice can check synergy for allies in any role, but whether
+    // op.gg's synergies page works the same way for top/jungle/mid/support
+    // as it does for adc is UNCONFIRMED, carried over from the general
+    // pattern the rest of this URL scheme follows.
     //
     // The query string (region/type/tier/patch) turned out to matter too —
     // confirmed via the user finding the exact network request (by content-
@@ -51,8 +55,8 @@ const configs: GenericSourceConfig[] = [
     slug: (s) => (s === "MonkeyKing" ? "wukong" : s.toLowerCase()),
     counterUrl: (slug, position) =>
       `https://op.gg/lol/champions/${slug}/counters/${position}?region=global&type=ranked&tier=emerald_plus`,
-    duoUrl: (adcSlug) =>
-      `https://op.gg/lol/champions/${adcSlug}/synergies/adc?region=global&type=ranked&tier=emerald_plus`,
+    duoUrl: (slug, position) =>
+      `https://op.gg/lol/champions/${slug}/synergies/${position}?region=global&type=ranked&tier=emerald_plus`,
   },
   {
     // Confidence: medium. u.gg is a well-known second major stats site with
@@ -62,7 +66,7 @@ const configs: GenericSourceConfig[] = [
     confidence: "medium",
     slug: (s) => (s === "MonkeyKing" ? "wukong" : s.toLowerCase()),
     counterUrl: (slug, position) => `https://u.gg/lol/champions/${slug}/counter?role=${position}`,
-    duoUrl: (adcSlug) => `https://u.gg/lol/champions/${adcSlug}/synergies?role=adc`,
+    duoUrl: (slug, position) => `https://u.gg/lol/champions/${slug}/synergies?role=${position}`,
   },
   {
     // Confidence: medium. lolalytics is well-known for granular per-lane
@@ -72,7 +76,7 @@ const configs: GenericSourceConfig[] = [
     confidence: "medium",
     slug: (s) => (s === "MonkeyKing" ? "wukong" : s.toLowerCase()),
     counterUrl: (slug, position) => `https://lolalytics.com/lol/${slug}/counters/?lane=${position}`,
-    duoUrl: (adcSlug) => `https://lolalytics.com/lol/${adcSlug}/synergy/?lane=adc`,
+    duoUrl: (slug, position) => `https://lolalytics.com/lol/${slug}/synergy/?lane=${position}`,
   },
   {
     // Confidence: low. Mobalytics is known to lean on kebab-case slugs for
@@ -84,7 +88,7 @@ const configs: GenericSourceConfig[] = [
     slug: toKebabSlug,
     counterUrl: (slug, position) =>
       `https://mobalytics.gg/lol/champions/${slug}/counters?role=${position}`,
-    duoUrl: (adcSlug) => `https://mobalytics.gg/lol/champions/${adcSlug}/synergies?role=adc`,
+    duoUrl: (slug, position) => `https://mobalytics.gg/lol/champions/${slug}/synergies?role=${position}`,
   },
 ];
 

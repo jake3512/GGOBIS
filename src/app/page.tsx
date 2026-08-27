@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ChampionPicker, type ChampionSummary } from "@/components/ChampionPicker";
 import { ChampionIcon } from "@/components/ChampionIcon";
 import { WinRateBar } from "@/components/WinRateBar";
@@ -66,11 +66,25 @@ interface PickEntry {
   earlyWinRate?: number | null;
   lateWinRate?: number | null;
   build?: BuildResult | null;
+  /** DeepLoL's build for the same champion+position, shown alongside `build`
+   * rather than merged with it — same "라인 카운터"/"빌드" tab convention. */
+  buildDeeplol?: BuildResult | null;
   /** Set only when the caller declared a champion pool — see ChampionPool below. */
   tier?: 1 | 2 | 3;
   /** How well this candidate fits the full enemy roster filled in so far
    * (tags/stats heuristic, not a win rate) — 0.5 neutral, up to 1. */
   compFit?: number;
+  /** Real measured synergy against every already-picked ally (not a
+   * heuristic) — how many of them this candidate is a top synergy partner
+   * for, out of how many, plus the average measured win rate across just
+   * those matches. */
+  allySynergyMatchCount?: number;
+  allySynergyOutOf?: number;
+  allySynergyAvgWinRate?: number | null;
+  /** Head-to-head laning-phase stats vs the specific enemy laner — only set
+   * on counter-pick candidates (no single enemy laner to compare against
+   * for bottom-duo synergy candidates). */
+  laningStats?: VersusStats | null;
 }
 
 interface CombinedPickEntry {
@@ -86,6 +100,21 @@ interface CombinedPickEntry {
   compFit?: number;
 }
 
+interface VersusLaneSide {
+  goldAt15: number;
+  xpAt15: number;
+  csAt15: number;
+  soloKillBefore15: number;
+  maxLevelLead: number;
+}
+
+interface VersusStats {
+  games: number;
+  ally: VersusLaneSide;
+  enemy: VersusLaneSide;
+  allyLevel6FirstRate: number | null;
+}
+
 interface LaneSynergyEntry {
   position: string;
   ally: ChampionBrief;
@@ -93,6 +122,7 @@ interface LaneSynergyEntry {
   winRate: number | null;
   games: number | null;
   bySource: SourceValue[];
+  laningStats: VersusStats | null;
   error: string | null;
 }
 
@@ -117,11 +147,36 @@ interface DamageBalance {
   sampledCount: number;
 }
 
+type AdcAttribute = "critAttackSpeed" | "attackSpeed" | "percentDamage" | "critDamage";
+
+interface AdcArchetypeEntry {
+  championId: number;
+  attributes: AdcAttribute[];
+  flexibleBuild: boolean;
+}
+
+type TankAttribute = "shield" | "armor" | "damageReduction" | "regen" | "health";
+
+interface TankArchetypeEntry {
+  championId: number;
+  attributes: TankAttribute[];
+}
+
+type BruiserAttribute = "lifesteal" | "attackSpeed" | "tanky";
+
+interface BruiserArchetypeEntry {
+  championId: number;
+  attributes: BruiserAttribute[];
+}
+
 interface TeamCompAnalysis {
   filledCount: number;
   tagCounts: Record<string, number>;
   damageBalance: DamageBalance | null;
   hasFrontline: boolean;
+  adcArchetypes: AdcArchetypeEntry[];
+  tankArchetypes: TankArchetypeEntry[];
+  bruiserArchetypes: BruiserArchetypeEntry[];
 }
 
 interface CompHeuristic {
@@ -172,6 +227,18 @@ interface TeamPowerCurve {
   sampledCount: number;
 }
 
+interface ChampionCCInfo {
+  championId: number;
+  hasHardCC: boolean;
+}
+
+interface CCInfo {
+  ally: ChampionCCInfo[];
+  enemy: ChampionCCInfo[];
+  allyCount: number;
+  enemyCount: number;
+}
+
 interface AdviceResult {
   position: string;
   enemyLaneChampion: ChampionBrief | null;
@@ -185,6 +252,7 @@ interface AdviceResult {
   measuredSynergy: MeasuredSynergy;
   compHeuristic: CompHeuristic;
   compConcepts: CompConcepts;
+  ccInfo: CCInfo;
   teamPowerCurve: TeamPowerCurve;
 }
 
@@ -332,7 +400,36 @@ const TAG_LABELS: Record<string, string> = {
   Marksman: "원거리 딜러",
 };
 
-function CompCard({ title, analysis }: { title: string; analysis: TeamCompAnalysis }) {
+const ADC_ATTRIBUTE_LABELS: Record<AdcAttribute, string> = {
+  critAttackSpeed: "치명타/공속",
+  attackSpeed: "공속",
+  percentDamage: "퍼센트 데미지",
+  critDamage: "치명타 데미지",
+};
+
+const TANK_ATTRIBUTE_LABELS: Record<TankAttribute, string> = {
+  shield: "보호막 탱커",
+  armor: "방어력 탱커",
+  damageReduction: "데미지 감소 탱커",
+  regen: "회복 탱커",
+  health: "체력 탱커",
+};
+
+const BRUISER_ATTRIBUTE_LABELS: Record<BruiserAttribute, string> = {
+  lifesteal: "흡혈 브루저",
+  attackSpeed: "공속 브루저",
+  tanky: "탱킹 브루저",
+};
+
+function CompCard({
+  title,
+  analysis,
+  championById,
+}: {
+  title: string;
+  analysis: TeamCompAnalysis;
+  championById: Map<number, ChampionSummary>;
+}) {
   return (
     <div className="comp-card">
       <h4>
@@ -351,6 +448,34 @@ function CompCard({ title, analysis }: { title: string; analysis: TeamCompAnalys
             " (한쪽으로 치우침 — 상대가 방어구/마법저항 몰아주기 쉬워요)"}
         </p>
       )}
+      {analysis.adcArchetypes.length > 0 &&
+        analysis.adcArchetypes.map((a) => {
+          const champ = championById.get(a.championId);
+          return (
+            <p key={a.championId} className="empty-hint">
+              {champ?.name ?? "원거리 딜러"}: {a.attributes.map((attr) => ADC_ATTRIBUTE_LABELS[attr]).join(" · ")}
+              {a.flexibleBuild && <span className="adc-flex-badge">빌드 유동적</span>}
+            </p>
+          );
+        })}
+      {analysis.tankArchetypes.length > 0 &&
+        analysis.tankArchetypes.map((t) => {
+          const champ = championById.get(t.championId);
+          return (
+            <p key={t.championId} className="empty-hint">
+              {champ?.name ?? "탱커"}: {t.attributes.map((attr) => TANK_ATTRIBUTE_LABELS[attr]).join(" · ")}
+            </p>
+          );
+        })}
+      {analysis.bruiserArchetypes.length > 0 &&
+        analysis.bruiserArchetypes.map((b) => {
+          const champ = championById.get(b.championId);
+          return (
+            <p key={b.championId} className="empty-hint">
+              {champ?.name ?? "브루저"}: {b.attributes.map((attr) => BRUISER_ATTRIBUTE_LABELS[attr]).join(" · ")}
+            </p>
+          );
+        })}
     </div>
   );
 }
@@ -447,6 +572,66 @@ function CompFitBadge({ compFit }: { compFit?: number }) {
   if (compFit == null || compFit <= 0.5) return null;
   const label = compFit >= 1 ? "상대팀 조합에 매우 적합" : "상대팀 조합에 적합";
   return <span className="comp-fit-badge">{label}</span>;
+}
+
+/** Real measured synergy against every already-picked ally — "우리팀에
+ * 2,3,4,5가 있을 때 각각과 시너지 좋은 챔피언의 교집합" 요청으로 추가된
+ * 배지. matchCount/outOf가 이 챔피언이 몇 명의 아군과 실제로(스크래핑된
+ * 데이터 기준) 상위 시너지 파트너로 겹치는지를 그대로 보여주고,
+ * matchCount === outOf일 때가 진짜 "교집합"(전원과 시너지 좋음)입니다.
+ * outOf가 0(채워진 아군 없음)이거나 matchCount가 0(아무와도 안 겹침)이면
+ * 표시할 정보가 없으므로 렌더링하지 않습니다. */
+function AllySynergyBadge({
+  matchCount,
+  outOf,
+  avgWinRate,
+}: {
+  matchCount?: number;
+  outOf?: number;
+  avgWinRate?: number | null;
+}) {
+  if (!outOf || !matchCount) return null;
+  const label = matchCount === outOf ? "우리팀 전원과 시너지 좋음" : `우리팀 ${outOf}명 중 ${matchCount}명과 시너지 좋음`;
+  return (
+    <span className="ally-synergy-badge">
+      {label}
+      {avgWinRate != null && ` (평균 ${(avgWinRate * 100).toFixed(1)}%)`}
+    </span>
+  );
+}
+
+/** lol.ps versus/stats.json 기반 라인전 세부지표 — "실측 데이터 기반 전체
+ * 시너지"의 각 라인 매치업(이미 아군/적군 챔피언과 라인이 둘 다 정해진
+ * 상태)에 붙는 부가 정보. 15분 골드/경험치/CS는 아군 기준 차이(양수=아군
+ * 우위)로, 나머지는 두 챔피언 실측 수치를 나란히 보여줌 — 전부 lol.ps가
+ * 그 매치업+라인에서 실제로 집계한 값이고 가공된 지표가 아님. */
+function LaningStatsRow({ stats }: { stats: VersusStats }) {
+  const goldDiff = stats.ally.goldAt15 - stats.enemy.goldAt15;
+  const xpDiff = stats.ally.xpAt15 - stats.enemy.xpAt15;
+  const csDiff = stats.ally.csAt15 - stats.enemy.csAt15;
+  const fmtDiff = (d: number) => `${d >= 0 ? "+" : ""}${Math.round(d).toLocaleString()}`;
+  return (
+    <div className="laning-stats">
+      <div className="laning-stats-row">
+        <span className={`laning-stat${goldDiff >= 0 ? " laning-stat--good" : " laning-stat--bad"}`}>
+          15분 골드 {fmtDiff(goldDiff)}
+        </span>
+        <span className={`laning-stat${xpDiff >= 0 ? " laning-stat--good" : " laning-stat--bad"}`}>
+          15분 경험치 {fmtDiff(xpDiff)}
+        </span>
+        <span className={`laning-stat${csDiff >= 0 ? " laning-stat--good" : " laning-stat--bad"}`}>
+          15분 CS {fmtDiff(csDiff)}
+        </span>
+      </div>
+      <p className="empty-hint">
+        15분 이전 솔로킬 {stats.ally.soloKillBefore15.toFixed(1)} : {stats.enemy.soloKillBefore15.toFixed(1)} · 최대
+        레벨 리드 {stats.ally.maxLevelLead.toFixed(1)} : {stats.enemy.maxLevelLead.toFixed(1)}
+        {stats.allyLevel6FirstRate !== null &&
+          ` · 6레벨 우위 ${(stats.allyLevel6FirstRate * 100).toFixed(0)}%`}{" "}
+        · 표본 {stats.games.toLocaleString()}게임 (lol.ps)
+      </p>
+    </div>
+  );
 }
 
 /** Shown next to a recommendation entry's name when a champion pool is
@@ -695,13 +880,16 @@ export default function Home() {
    * buildResult (lol.ps) as a second, separately-labeled card, best-effort
    * (a DeepLoL failure doesn't block the lol.ps card from showing). */
   const [buildResultDeeplol, setBuildResultDeeplol] = useState<BuildResult | null>(null);
-  const [buildErrorDeeplol, setBuildErrorDeeplol] = useState<string | null>(null);
   /** Build recommendation auto-fetched alongside 라인 카운터's own result, for
    * the same champion+position — separate from buildResult (the dedicated
    * 빌드 tab's own fetch) so switching modes doesn't clobber either. */
   const [counterBuild, setCounterBuild] = useState<BuildResult | null>(null);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  /** Bumped once per runLookup() call — lets an in-flight request tell,
+   * once its fetch resolves, whether a newer request has since started
+   * (see isStale() inside runLookup) so a slow response can never clobber
+   * a more recent one now that 픽 추천 auto-fetches on every slot edit. */
+  const requestIdRef = useRef(0);
   const [championPool, setChampionPool] = useState<ChampionPool>(EMPTY_POOL);
   const [poolLoaded, setPoolLoaded] = useState(false);
 
@@ -767,14 +955,12 @@ export default function Home() {
 
   function switchMode(next: Mode) {
     setMode(next);
-    setError(null);
     setCounterResult(null);
     setDuoResult(null);
     setAdviceResult(null);
     setLastPickedChampionId(null);
     setBuildResult(null);
     setBuildResultDeeplol(null);
-    setBuildErrorDeeplol(null);
     setCounterBuild(null);
     if (next === "counter" || next === "build") {
       const nextSlots: Slot[] = [{ key: "target", label: "기준 챔피언", championId: null }];
@@ -840,7 +1026,13 @@ export default function Home() {
         : slots.some((s) => s.championId !== null);
 
   async function runLookup() {
-    setError(null);
+    // 챔피언을 하나씩 입력할 때마다 자동으로 재조회하다 보니(아래
+    // auto-fetch useEffect), 느린 이전 요청의 응답이 더 최신 상태에 대한
+    // 요청보다 늦게 도착해서 최신 결과를 덮어쓸 수 있음 — 이 요청이
+    // "아직도 최신 요청인지"를 매번 확인해서, 그 사이 새 요청이 시작됐으면
+    // 응답이 와도 화면에 반영하지 않고 조용히 버림.
+    const requestId = ++requestIdRef.current;
+    const isStale = () => requestId !== requestIdRef.current;
     setLoading(true);
     try {
       if (mode === "counter") {
@@ -848,6 +1040,7 @@ export default function Home() {
         const res = await fetch(`/api/counters?championId=${championId}&position=${position}`);
         const data = await res.json();
         if (!res.ok) throw new Error(data.error ?? "조회에 실패했습니다.");
+        if (isStale()) return;
         setCounterResult(data);
         setCounterBuild(null);
         fetch(`/api/build?championId=${championId}&position=${position}`)
@@ -863,22 +1056,24 @@ export default function Home() {
         const res = await fetch(`/api/build?championId=${championId}&position=${position}&source=lolps`);
         const data = await res.json();
         if (!res.ok) throw new Error(data.error ?? "빌드 조회에 실패했습니다.");
+        if (isStale()) return;
         setBuildResult(data);
         setBuildResultDeeplol(null);
-        setBuildErrorDeeplol(null);
         fetch(`/api/build?championId=${championId}&position=${position}&source=deeplol`)
           .then((r) => r.json().then((d) => ({ ok: r.ok, data: d })))
           .then(({ ok, data: deeplolData }) => {
             if (ok) setBuildResultDeeplol(deeplolData);
-            else setBuildErrorDeeplol(deeplolData.error ?? "DeepLoL 빌드 조회에 실패했습니다.");
           })
-          .catch(() => setBuildErrorDeeplol("DeepLoL 빌드 조회에 실패했습니다."));
+          .catch(() => {
+            // Best-effort — lol.ps 빌드 카드는 이미 떴으니 조용히 무시.
+          });
       } else if (mode === "duo") {
         const adcId = slots.find((s) => s.key === "adc")?.championId;
         const supportId = slots.find((s) => s.key === "support")?.championId;
         const res = await fetch(`/api/duo?adcId=${adcId}&supportId=${supportId}`);
         const data = await res.json();
         if (!res.ok) throw new Error(data.error ?? "조회에 실패했습니다.");
+        if (isStale()) return;
         setDuoResult(data);
       } else {
         const params = new URLSearchParams({ position });
@@ -891,14 +1086,41 @@ export default function Home() {
         const res = await fetch(`/api/pickadvice?${params.toString()}`);
         const data = await res.json();
         if (!res.ok) throw new Error(data.error ?? "조회에 실패했습니다.");
+        if (isStale()) return;
         setAdviceResult(data);
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : "알 수 없는 오류가 발생했습니다.");
+      // 사용자에게는 에러 메시지를 보여주지 않음 — 조회에 실패하면 해당
+      // 결과 영역이 그냥 비어있는 채로 남음(각 setXxxResult가 호출되지
+      // 않으므로). 콘솔에는 남겨서 devtools로는 원인을 볼 수 있게 함.
+      console.error(e);
     } finally {
+      if (isStale()) return;
       setLoading(false);
     }
   }
+
+  /** 픽 추천은 "픽 추천 받기" 버튼을 눌러야만 조회되던 걸 버리고, 챔피언을
+   * 한 명씩 슬롯에 넣을 때마다(또는 지울 때, 포지션을 바꿀 때, 챔피언 풀을
+   * 바꿀 때) 자동으로 다시 조회하도록 함 — canRun이 이미 "슬롯 하나라도
+   * 채워지면 true"라서 그 조건을 그대로 재사용. 빠르게 여러 슬롯을 연달아
+   * 클릭할 때마다 6개 사이트를 매번 스크래핑하는 걸 막기 위해 마지막
+   * 변경 이후 500ms 동안 조용하면 그때 한 번만 실행(디바운스) — 그 사이
+   * 또 슬롯이 바뀌면 이전 타이머는 취소되고 다시 500ms를 기다림. 버튼은
+   * 그대로 남겨뒀으니 디바운스를 기다리지 않고 바로 조회하고 싶으면 눌러도
+   * 됨. canRun이 false면(챔피언이 하나도 없으면) 아예 조회하지 않고,
+   * 화면에서도 이전 추천 결과를 숨김(아래 렌더링 쪽 canRun 체크 참고 —
+   * 상태를 여기서 지우는 대신 렌더링 시점에만 숨겨서 이펙트 안에서
+   * setState를 안 부르도록 함). 다른 3개 모드(카운터/듀오/빌드)는 여기
+   * 대상이 아니라 지금처럼 버튼을 눌러야 조회됨 — 필요하면 알려주세요. */
+  useEffect(() => {
+    if (mode !== "advice" || !canRun) return;
+    const timeout = setTimeout(() => {
+      runLookup();
+    }, 500);
+    return () => clearTimeout(timeout);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, canRun, slots, position, championPool]);
 
   function renderSlot(slot: Slot) {
     if (slot.disabled) {
@@ -944,6 +1166,10 @@ export default function Home() {
     }
     const champ = slot.championId !== null ? championById.get(slot.championId) : null;
     const active = slot.key === activeSlotKey;
+    // undefined = 아직 조회 안 됨/실패(회색 물음표), true/false = 실제 hasHardCC
+    // 값(championSkills.ts, ccInfo API 응답) — 조합 컨셉/픽 추천 순위 보정에
+    // 이미 쓰던 것과 같은 데이터를 챔피언 선택 화면에도 그대로 노출.
+    const ccEntry = champ ? adviceResult?.ccInfo[side]?.find((c) => c.championId === champ.id) : undefined;
     return (
       <button
         key={slot.key}
@@ -956,6 +1182,16 @@ export default function Home() {
           <>
             <ChampionIcon src={champ.iconUrl} name={champ.name} />
             <span>{champ.name}</span>
+            <span
+              className={`champ-select-cc-dot${
+                ccEntry === undefined
+                  ? " champ-select-cc-dot--unknown"
+                  : ccEntry.hasHardCC
+                    ? " champ-select-cc-dot--yes"
+                    : " champ-select-cc-dot--no"
+              }`}
+              title={ccEntry === undefined ? "CC 정보 확인 중" : ccEntry.hasHardCC ? "하드 CC 보유" : "하드 CC 없음"}
+            />
           </>
         ) : (
           <span className="empty-hint">선택</span>
@@ -1081,6 +1317,12 @@ export default function Home() {
                 {slots.filter((s) => s.key.startsWith("enemy-")).map((slot) => renderChampSelectSlot(slot, "enemy"))}
               </div>
             </div>
+            {adviceResult && (adviceResult.ccInfo.ally.length > 0 || adviceResult.ccInfo.enemy.length > 0) && (
+              <p className="champ-select-cc-total">
+                CC 보유 챔피언 — 우리팀 {adviceResult.ccInfo.allyCount}/{adviceResult.ccInfo.ally.length}명 · 상대팀{" "}
+                {adviceResult.ccInfo.enemyCount}/{adviceResult.ccInfo.enemy.length}명
+              </p>
+            )}
           </div>
         ) : (
           <div className="slot-row">{slots.map((slot) => renderSlot(slot))}</div>
@@ -1094,20 +1336,13 @@ export default function Home() {
                 ? "듀오 시너지 조회"
                 : mode === "build"
                   ? "빌드 조회"
-                  : "픽 추천 받기"}
+                  : "지금 바로 새로고침"}
         </button>
+        {mode === "advice" && (
+          <p className="empty-hint">챔피언을 넣거나 뺄 때마다 자동으로 다시 조회돼요. 버튼은 기다리지 않고 바로 새로고침하고 싶을 때만 누르세요.</p>
+        )}
       </section>
 
-      {error && (
-        <p className="error-banner">
-          {error}
-          <br />
-          <span className="empty-hint">
-            연동된 사이트의 페이지 구조가 예상과 달라 발생하는 문제일 수 있습니다. 이 메시지를 그대로
-            알려주시면 바로잡을게요.
-          </span>
-        </p>
-      )}
       {champLoadError && <p className="error-banner">{champLoadError}</p>}
 
       {mode === "counter" && counterResult && (
@@ -1157,9 +1392,6 @@ export default function Home() {
           </h2>
           <BuildCard build={buildResult} sourceLabel="lol.ps" />
           {buildResultDeeplol && <BuildCard build={buildResultDeeplol} sourceLabel="DeepLoL" />}
-          {buildErrorDeeplol && !buildResultDeeplol && (
-            <p className="empty-hint">DeepLoL: {buildErrorDeeplol}</p>
-          )}
         </section>
       )}
 
@@ -1184,7 +1416,7 @@ export default function Home() {
         </section>
       )}
 
-      {mode === "advice" && adviceResult && (
+      {mode === "advice" && canRun && adviceResult && (
         <section className="results">
           <h2>{POSITIONS.find((p) => p.value === adviceResult.position)?.label} 픽 추천</h2>
           {adviceResult.championPoolActive && (
@@ -1210,20 +1442,20 @@ export default function Home() {
                       라인전 {(c.counterWinRate * 100).toFixed(1)}% · 시너지{" "}
                       {(c.synergyWinRate * 100).toFixed(1)}%
                     </p>
-                    <CompFitBadge compFit={c.compFit} />
+                    <div className="badge-row">
+                      <CompFitBadge compFit={c.compFit} />
+                    </div>
                   </li>
                 ))}
               </ol>
             </>
           )}
 
-          {adviceResult.enemyLaneChampion && (
+          {adviceResult.enemyLaneChampion && adviceResult.counterPicks && (
             <>
               <h3>{adviceResult.enemyLaneChampion.name} 상대 라인전 유리한 픽</h3>
-              {adviceResult.counterError && <p className="error-banner">{adviceResult.counterError}</p>}
-              {adviceResult.counterPicks && (
-                <ol className="recommend-list">
-                  {adviceResult.counterPicks.map((c) => (
+              <ol className="recommend-list">
+                {adviceResult.counterPicks.map((c) => (
                     <li key={c.championId} className="recommend-row recommend-row--stacked">
                       <div className="recommend-row-main">
                         <ChampionIcon src={c.iconUrl} name={c.name} />
@@ -1232,9 +1464,18 @@ export default function Home() {
                         <WinRateBar rate={c.winRate} games={c.games} />
                       </div>
                       <SourceBreakdown sources={c.bySource} />
-                      <PowerCurveBadge earlyWinRate={c.earlyWinRate} lateWinRate={c.lateWinRate} />
-                      <CompFitBadge compFit={c.compFit} />
-                      {c.build && <BuildCardCompact build={c.build} />}
+                      <div className="badge-row">
+                        <PowerCurveBadge earlyWinRate={c.earlyWinRate} lateWinRate={c.lateWinRate} />
+                        <CompFitBadge compFit={c.compFit} />
+                        <AllySynergyBadge
+                          matchCount={c.allySynergyMatchCount}
+                          outOf={c.allySynergyOutOf}
+                          avgWinRate={c.allySynergyAvgWinRate}
+                        />
+                      </div>
+                      {c.laningStats && <LaningStatsRow stats={c.laningStats} />}
+                      {c.build && <BuildCardCompact build={c.build} sourceLabel="lol.ps" />}
+                      {c.buildDeeplol && <BuildCardCompact build={c.buildDeeplol} sourceLabel="DeepLoL" />}
                     </li>
                   ))}
                   {adviceResult.counterPicks.length === 0 && (
@@ -1243,19 +1484,16 @@ export default function Home() {
                         ? "내 챔피언 풀 안에는 이 상대에 대한 카운터 데이터가 없습니다. 풀을 넓혀보세요."
                         : "카운터 데이터를 찾지 못했습니다."}
                     </p>
-                  )}
-                </ol>
-              )}
+                )}
+              </ol>
             </>
           )}
 
-          {adviceResult.allyAdcChampion && (
+          {adviceResult.allyAdcChampion && adviceResult.synergyPicks && (
             <>
               <h3>{adviceResult.allyAdcChampion.name}와 시너지 좋은 픽</h3>
-              {adviceResult.synergyError && <p className="error-banner">{adviceResult.synergyError}</p>}
-              {adviceResult.synergyPicks && (
-                <ol className="recommend-list">
-                  {adviceResult.synergyPicks.map((c) => (
+              <ol className="recommend-list">
+                {adviceResult.synergyPicks.map((c) => (
                     <li key={c.championId} className="recommend-row recommend-row--stacked">
                       <div className="recommend-row-main">
                         <ChampionIcon src={c.iconUrl} name={c.name} />
@@ -1264,9 +1502,17 @@ export default function Home() {
                         <WinRateBar rate={c.winRate} games={c.games} />
                       </div>
                       <SourceBreakdown sources={c.bySource} />
-                      <PowerCurveBadge earlyWinRate={c.earlyWinRate} lateWinRate={c.lateWinRate} />
-                      <CompFitBadge compFit={c.compFit} />
-                      {c.build && <BuildCardCompact build={c.build} />}
+                      <div className="badge-row">
+                        <PowerCurveBadge earlyWinRate={c.earlyWinRate} lateWinRate={c.lateWinRate} />
+                        <CompFitBadge compFit={c.compFit} />
+                        <AllySynergyBadge
+                          matchCount={c.allySynergyMatchCount}
+                          outOf={c.allySynergyOutOf}
+                          avgWinRate={c.allySynergyAvgWinRate}
+                        />
+                      </div>
+                      {c.build && <BuildCardCompact build={c.build} sourceLabel="lol.ps" />}
+                      {c.buildDeeplol && <BuildCardCompact build={c.buildDeeplol} sourceLabel="DeepLoL" />}
                     </li>
                   ))}
                   {adviceResult.synergyPicks.length === 0 && (
@@ -1275,9 +1521,8 @@ export default function Home() {
                         ? "내 챔피언 풀 안에는 이 조합에 대한 시너지 데이터가 없습니다. 풀을 넓혀보세요."
                         : "시너지 데이터를 찾지 못했습니다."}
                     </p>
-                  )}
-                </ol>
-              )}
+                )}
+              </ol>
             </>
           )}
 
@@ -1306,10 +1551,11 @@ export default function Home() {
                       {l.winRate !== null && l.games !== null ? (
                         <WinRateBar rate={l.winRate} games={l.games} />
                       ) : (
-                        <span className="empty-hint">{l.error ?? "이 매치업 데이터를 찾지 못했습니다."}</span>
+                        <span className="empty-hint">이 매치업 데이터를 찾지 못했습니다.</span>
                       )}
                     </div>
                     {l.bySource.length > 0 && <SourceBreakdown sources={l.bySource} />}
+                    {l.laningStats && <LaningStatsRow stats={l.laningStats} />}
                   </li>
                 ))}
                 {adviceResult.measuredSynergy.duo && (
@@ -1330,9 +1576,7 @@ export default function Home() {
                           games={adviceResult.measuredSynergy.duo.games}
                         />
                       ) : (
-                        <span className="empty-hint">
-                          {adviceResult.measuredSynergy.duo.error ?? "이 조합 데이터를 찾지 못했습니다."}
-                        </span>
+                        <span className="empty-hint">이 조합 데이터를 찾지 못했습니다.</span>
                       )}
                     </div>
                     {adviceResult.measuredSynergy.duo.bySource.length > 0 && (
@@ -1352,14 +1596,17 @@ export default function Home() {
               <h3>챔피언 특성 기반 조합 분석</h3>
               <p className="empty-hint">
                 승률이 아니라 Riot 공식 챔피언 태그·능력치(공격형/마법형 비중)만 이용한 참고용 체크입니다.
-                CC기·이니시 성향처럼 공식 데이터로 확인 안 되는 항목은 포함하지 않았습니다.
+                CC기·이니시 성향처럼 공식 데이터로 확인 안 되는 항목은 포함하지 않았습니다. 단, 원거리 딜러의
+                치명타/공속/퍼센트 데미지/치명타 데미지 속성, 탱커(탱커 서포터 포함)의 보호막/방어력/데미지
+                감소/회복/체력 탱커 분류, 브루저의 흡혈/공속/탱킹 브루저 분류는 공식 데이터가 아니라 이 앱이
+                직접 정리한 참고용 분류입니다(빌드 유동적 = 매치업에 따라 실제 빌드 방향이 자주 바뀌는 챔피언).
               </p>
               <div className="comp-heuristic-grid">
                 {adviceResult.compHeuristic.ally && (
-                  <CompCard title="우리팀" analysis={adviceResult.compHeuristic.ally} />
+                  <CompCard title="우리팀" analysis={adviceResult.compHeuristic.ally} championById={championById} />
                 )}
                 {adviceResult.compHeuristic.enemy && (
-                  <CompCard title="상대팀" analysis={adviceResult.compHeuristic.enemy} />
+                  <CompCard title="상대팀" analysis={adviceResult.compHeuristic.enemy} championById={championById} />
                 )}
               </div>
             </>

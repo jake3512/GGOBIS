@@ -465,6 +465,122 @@ export async function getPowerCurvesForPosition(
   return result;
 }
 
+// --- 라인전 세부지표 (versus/stats.json) ---
+//
+// A dedicated head-to-head endpoint, separate from champSummary/graphs.json
+// — it takes BOTH champions explicitly (not just one champion's own page).
+// Found via the user's Network capture and confirmed against a real
+// response for champion1=41 vs champion2=2, lane=0 (top):
+//   GET https://lol.ps/api/versus/stats.json?region=0&version=154&tier=2&lane=0&champion1=41&champion2=2
+//   -> { data: { count, winRate, champ1Winrate, champ2Winrate, champ1Counts,
+//        champ2Counts, count1win, count1lose, goldAt15Min1/2, xpAt15Min1/2,
+//        csAt15Min1/2, soloKillBefore15Min1/2, champLevel1/2, kda1/2,
+//        percentRelatedKills1/2, turretPlatesTaken1/2,
+//        totalDamageDealtToChampionsPerMin1/2, totalDamageTakenPerMin1/2,
+//        visionScorePerMin1/2, jugGankingDeathsAt15Min1/2,
+//        jugGankingKillsAt15Min1/2, maxLevelLeadLaneOpponent1/2,
+//        levelUpFasterThanOpponentLv2/3/6Percent } }
+// `version`/`tier`/`region` are left out of our own request the same way
+// graphs.json's are (see CURVE_START_MINUTE comment above) — betting on
+// "current" defaults, unconfirmed either way. `champion1`/`champion2`
+// determine which side gets the "1"/"2" suffix in the response; we always
+// send the ally champion as champion1, so every "*1" field below
+// consistently means "our side" and "*2" means the enemy.
+//
+// Only a laning-phase-focused subset is surfaced here (CS/gold/XP at 15,
+// solo kills before 15, level-lead metrics) — this endpoint also has
+// whole-game stats (KDA, damage/min, vision score, overall win rate) that
+// aren't specifically about the laning phase and would duplicate what the
+// counter-matchup win rate already shows elsewhere, so those are left
+// unparsed for now.
+
+export interface VersusLaneSide {
+  goldAt15: number;
+  xpAt15: number;
+  csAt15: number;
+  soloKillBefore15: number;
+  maxLevelLead: number;
+}
+
+export interface VersusStats {
+  games: number;
+  ally: VersusLaneSide;
+  enemy: VersusLaneSide;
+  /** Fraction of these games (0-1) the ally side hit level 6 before the
+   * enemy did — only meaningful from the ally's perspective since it's
+   * always computed relative to whichever champion was sent as champion1
+   * (see levelUpFasterThanOpponentLv6Percent above). Null if lol.ps didn't
+   * return a usable number for it. */
+  allyLevel6FirstRate: number | null;
+}
+
+function toFiniteNumber(v: unknown): number | null {
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
+
+const POSITION_TO_LANE_ID: Record<Position, number> = { top: 0, jungle: 1, mid: 2, adc: 3, support: 4 };
+
+/** Head-to-head laning-phase stats between two specific already-known
+ * champions at a specific lane. Unlike every other lol.ps function in this
+ * file, this ISN'T gated by "does this match the champion's own primary
+ * lane" — there's no such concept here, since the API takes the lane
+ * explicitly and is presumably counting real games where both champions
+ * actually played that lane against each other. Throws (like the rest of
+ * this file) when the request fails or the response doesn't have the
+ * fields expected — callers wanting best-effort behavior should catch
+ * this themselves (same pattern as every other lol.ps call in this app,
+ * e.g. computeTeamPowerCurve's Promise.allSettled in pickadvice/route.ts). */
+export async function getVersusStats(
+  allyChampionId: number,
+  enemyChampionId: number,
+  position: Position,
+): Promise<VersusStats> {
+  const laneId = POSITION_TO_LANE_ID[position];
+  return cached(`lolps:versus:${allyChampionId}:${enemyChampionId}:${laneId}`, CACHE_TTL_MS, async () => {
+    const res = await fetch(
+      `https://lol.ps/api/versus/stats.json?lane=${laneId}&champion1=${allyChampionId}&champion2=${enemyChampionId}`,
+      {
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (compatible; semips-lol-app/1.0; personal project, non-commercial)",
+          Accept: "application/json",
+        },
+      },
+    );
+    if (!res.ok) {
+      throw new Error(`lol.ps: versus stats request failed (HTTP ${res.status}).`);
+    }
+    const body = await res.json();
+    const d = body?.data;
+    const games = toFiniteNumber(d?.count);
+    const ally: Partial<VersusLaneSide> = {
+      goldAt15: toFiniteNumber(d?.goldAt15Min1) ?? undefined,
+      xpAt15: toFiniteNumber(d?.xpAt15Min1) ?? undefined,
+      csAt15: toFiniteNumber(d?.csAt15Min1) ?? undefined,
+      soloKillBefore15: toFiniteNumber(d?.soloKillBefore15Min1) ?? undefined,
+      maxLevelLead: toFiniteNumber(d?.maxLevelLeadLaneOpponent1) ?? undefined,
+    };
+    const enemy: Partial<VersusLaneSide> = {
+      goldAt15: toFiniteNumber(d?.goldAt15Min2) ?? undefined,
+      xpAt15: toFiniteNumber(d?.xpAt15Min2) ?? undefined,
+      csAt15: toFiniteNumber(d?.csAt15Min2) ?? undefined,
+      soloKillBefore15: toFiniteNumber(d?.soloKillBefore15Min2) ?? undefined,
+      maxLevelLead: toFiniteNumber(d?.maxLevelLeadLaneOpponent2) ?? undefined,
+    };
+    const complete = (side: Partial<VersusLaneSide>): side is VersusLaneSide =>
+      Object.values(side).every((v) => v !== undefined);
+    if (games === null || games === 0 || !complete(ally) || !complete(enemy)) {
+      throw new Error("lol.ps: fetched versus stats but couldn't locate laning-phase fields in it.");
+    }
+    return {
+      games,
+      ally,
+      enemy,
+      allyLevel6FirstRate: toFiniteNumber(d?.levelUpFasterThanOpponentLv6Percent),
+    };
+  });
+}
+
 export const lolpsSource: StatSource = {
   id: "lolps",
   label: "lol.ps",

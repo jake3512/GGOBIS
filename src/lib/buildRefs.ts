@@ -10,6 +10,10 @@ export interface IconRef {
   id: number;
   name: string;
   iconUrl: string;
+  /** Only meaningfully populated for items (DDragonItem carries `tags`;
+   * runes/spells/rune trees don't) — see DDragonItem.tags and
+   * pick-advice's applyBuildFitBonus, which reads this off `coreItems`. */
+  tags?: string[];
 }
 
 export interface BuildResult {

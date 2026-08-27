@@ -24,11 +24,15 @@ function IconRow({ items, size = 32 }: { items: IconRef[]; size?: number }) {
 }
 
 /** Condensed one-line version for pick-advice's top-N candidate rows —
- * keystone + core items + spells only, no skill order/full breakdown. */
-export function BuildCardCompact({ build }: { build: BuildResult }) {
+ * keystone + core items + spells only, no skill order/full breakdown.
+ * `sourceLabel` is optional and only needed once more than one compact card
+ * can appear on the same candidate (lol.ps + DeepLoL) — same "always name
+ * which source a value came from" rule BuildCard's sourceLabel follows. */
+export function BuildCardCompact({ build, sourceLabel }: { build: BuildResult; sourceLabel?: string }) {
   const keystone = build.mainRunes[0];
   return (
     <div className="build-icon-row build-icon-row--compact">
+      {sourceLabel && <span className="build-source-label">{sourceLabel}</span>}
       {keystone && (
         // eslint-disable-next-line @next/next/no-img-element -- external CDN icons, no next/image domain config needed
         <img src={keystone.iconUrl} alt={keystone.name} title={keystone.name} width={22} height={22} referrerPolicy="no-referrer" />
