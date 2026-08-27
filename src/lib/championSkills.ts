@@ -40,6 +40,11 @@ export interface ChampionAbilities {
   passive: AbilitySummary;
   spells: AbilitySummary[]; // [Q, W, E, R]
   hasHardCC: boolean;
+  /** Slow-only CC (둔화) — kept separate from hasHardCC so the UI can tell
+   * "완전히 무력화하는 CC" apart from "그냥 느려지는" softer CC, even for a
+   * champion whose kit has both (hasHardCC already covers that case; this
+   * just isn't downgraded by it). */
+  hasSoftCC: boolean;
   hasMobility: boolean;
   hasShieldOrHeal: boolean;
   /** Any non-ultimate spell (Q/W/E) with maxRange >= LONG_RANGE_THRESHOLD. */
@@ -128,6 +133,7 @@ async function fetchChampionAbilities(slug: string, locale: string, version: str
     passive,
     spells,
     hasHardCC: [passive, ...spells].some((a) => a.tags.includes("hardCC")),
+    hasSoftCC: [passive, ...spells].some((a) => a.tags.includes("slow")),
     hasMobility: [passive, ...spells].some((a) => a.tags.includes("mobility")),
     hasShieldOrHeal: [passive, ...spells].some((a) => a.tags.includes("shield") || a.tags.includes("heal")),
     hasLongRange: nonUltimateSpells.some((a) => (a.maxRange ?? 0) >= LONG_RANGE_THRESHOLD),

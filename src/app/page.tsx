@@ -226,6 +226,7 @@ interface TeamPowerCurve {
 interface ChampionCCInfo {
   championId: number;
   hasHardCC: boolean;
+  hasSoftCC: boolean;
 }
 
 interface CCInfo {
@@ -333,6 +334,15 @@ const CONCEPT_COUNTER_TIPS: Record<CompConceptId, string[]> = {
 type ChampionPool = Record<1 | 2 | 3, number[]>;
 const EMPTY_POOL: ChampionPool = { 1: [], 2: [], 3: [] };
 const POOL_STORAGE_KEY = "semips-champion-pool";
+
+/** How many entries 픽 추천's recommendation lists (라인전 유리한 픽/시너지
+ * 좋은 픽/둘 다 좋은 픽) show — sent as the `count` query param, matching
+ * RECOMMEND_COUNT_OPTIONS in the API route (src/app/api/pickadvice/route.ts).
+ * Kept as a plain literal union (not persisted) — same as position/mode,
+ * which also reset to a sane default on reload rather than remembering the
+ * user's last choice. */
+type RecommendCount = 5 | 10 | 15;
+const RECOMMEND_COUNT_OPTIONS: RecommendCount[] = [5, 10, 15];
 
 interface Slot {
   key: string;
@@ -795,11 +805,15 @@ function ChampionPoolEditor({
   champions,
   championById,
   pool,
+  poolApplied,
+  onTogglePoolApplied,
   onToggleChampion,
 }: {
   champions: ChampionSummary[];
   championById: Map<number, ChampionSummary>;
   pool: ChampionPool;
+  poolApplied: boolean;
+  onTogglePoolApplied: (applied: boolean) => void;
   onToggleChampion: (tier: 1 | 2 | 3, championId: number) => void;
 }) {
   const [openTier, setOpenTier] = useState<1 | 2 | 3 | null>(null);
@@ -807,12 +821,25 @@ function ChampionPoolEditor({
 
   return (
     <details className="champion-pool-editor">
-      <summary>내 챔피언 풀 (숙련도 우선순위){total > 0 ? ` — ${total}명 설정됨` : " — 설정 안 함 (전체 챔피언 대상)"}</summary>
+      <summary>
+        내 챔피언 풀 (숙련도 우선순위)
+        {total > 0 ? ` — ${total}명 설정됨${poolApplied ? "" : " (미적용)"}` : " — 설정 안 함 (전체 챔피언 대상)"}
+      </summary>
       <p className="empty-hint">
         챔피언을 등록하면 아래 픽 추천이 이 안에서만 나오고, 1티어 → 2티어 → 3티어 순으로 우선 추천됩니다. 같은
         티어 안에서는 지금까지와 같은 승률 순위가 적용됩니다. 아무것도 등록하지 않으면 전체 챔피언을 대상으로
         추천합니다.
       </p>
+      {total > 0 && (
+        <label className="pool-apply-toggle">
+          <input
+            type="checkbox"
+            checked={poolApplied}
+            onChange={(e) => onTogglePoolApplied(e.target.checked)}
+          />
+          챔피언 풀 적용 (끄면 풀은 그대로 두고 전체 챔피언 대상으로 추천)
+        </label>
+      )}
       {([1, 2, 3] as const).map((tier) => (
         <ChampionPoolTier
           key={tier}
@@ -892,6 +919,15 @@ export default function Home() {
   const requestIdRef = useRef(0);
   const [championPool, setChampionPool] = useState<ChampionPool>(EMPTY_POOL);
   const [poolLoaded, setPoolLoaded] = useState(false);
+  /** Whether the champion pool (if any is set) actually restricts 픽 추천's
+   * recommendation lists — separate from the pool itself so the user can
+   * flip this off to see unrestricted recommendations without having to
+   * clear out their saved pool first. No-op when the pool is empty either
+   * way. Not persisted (see RecommendCount above for why). */
+  const [poolApplied, setPoolApplied] = useState(true);
+  /** How many entries 픽 추천's recommendation lists show — see
+   * RecommendCount above. */
+  const [recommendCount, setRecommendCount] = useState<RecommendCount>(5);
   /** The champion picker (search + grid) always renders at the very bottom
    * of the page, after the entire results section — on mobile, tapping a
    * slot up near the top (or in the champ-select board) leaves it fully
@@ -1115,13 +1151,15 @@ export default function Home() {
             // Best-effort — lol.ps 빌드 카드는 이미 떴으니 조용히 무시.
           });
       } else {
-        const params = new URLSearchParams({ position });
+        const params = new URLSearchParams({ position, count: String(recommendCount) });
         for (const slot of slots) {
           if (slot.championId !== null) params.set(slot.key, String(slot.championId));
         }
-        if (championPool[1].length > 0) params.set("tier1", championPool[1].join(","));
-        if (championPool[2].length > 0) params.set("tier2", championPool[2].join(","));
-        if (championPool[3].length > 0) params.set("tier3", championPool[3].join(","));
+        if (poolApplied) {
+          if (championPool[1].length > 0) params.set("tier1", championPool[1].join(","));
+          if (championPool[2].length > 0) params.set("tier2", championPool[2].join(","));
+          if (championPool[3].length > 0) params.set("tier3", championPool[3].join(","));
+        }
         const res = await fetch(`/api/pickadvice?${params.toString()}`);
         const data = await res.json();
         if (!res.ok) throw new Error(data.error ?? "조회에 실패했습니다.");
@@ -1151,7 +1189,9 @@ export default function Home() {
    * 화면에서도 이전 추천 결과를 숨김(아래 렌더링 쪽 canRun 체크 참고 —
    * 상태를 여기서 지우는 대신 렌더링 시점에만 숨겨서 이펙트 안에서
    * setState를 안 부르도록 함). 다른 3개 모드(카운터/듀오/빌드)는 여기
-   * 대상이 아니라 지금처럼 버튼을 눌러야 조회됨 — 필요하면 알려주세요. */
+   * 대상이 아니라 지금처럼 버튼을 눌러야 조회됨 — 필요하면 알려주세요.
+   * poolApplied/recommendCount도 championPool과 같은 이유로 의존성에 포함 —
+   * 둘 다 바뀌면 서버로 보내는 쿼리 파라미터가 달라지므로 재조회가 필요함. */
   useEffect(() => {
     if (mode !== "advice" || !canRun) return;
     const timeout = setTimeout(() => {
@@ -1159,7 +1199,7 @@ export default function Home() {
     }, 500);
     return () => clearTimeout(timeout);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, canRun, slots, position, championPool]);
+  }, [mode, canRun, slots, position, championPool, poolApplied, recommendCount]);
 
   function renderSlot(slot: Slot) {
     if (slot.disabled) {
@@ -1190,6 +1230,17 @@ export default function Home() {
     );
   }
 
+  /** Which of the four CC-dot states (yes/soft/no/unknown) a slot's champion
+   * falls into, plus its tooltip — factored out of renderChampSelectSlot so
+   * the yes/soft priority order (hard CC wins even when a champion also has
+   * a slow) lives in exactly one place. */
+  function ccDotState(entry: ChampionCCInfo | undefined): { kind: "yes" | "soft" | "no" | "unknown"; title: string } {
+    if (entry === undefined) return { kind: "unknown", title: "CC 정보 확인 중" };
+    if (entry.hasHardCC) return { kind: "yes", title: "하드 CC 보유 (기절/속박/공포/도발 등)" };
+    if (entry.hasSoftCC) return { kind: "soft", title: "일반 CC만 보유 (둔화)" };
+    return { kind: "no", title: "CC 없음" };
+  }
+
   /** advice mode's champ-select-style slot — same select/clear behavior as
    * renderSlot, just laid out to sit in a narrow vertical team column (role
    * tag + icon + name in one row) instead of a horizontal pill row. */
@@ -1205,10 +1256,13 @@ export default function Home() {
     }
     const champ = slot.championId !== null ? championById.get(slot.championId) : null;
     const active = slot.key === activeSlotKey;
-    // undefined = 아직 조회 안 됨/실패(회색 물음표), true/false = 실제 hasHardCC
-    // 값(championSkills.ts, ccInfo API 응답) — 조합 컨셉/픽 추천 순위 보정에
-    // 이미 쓰던 것과 같은 데이터를 챔피언 선택 화면에도 그대로 노출.
+    // undefined = 아직 조회 안 됨/실패(회색 물음표) — 그 외엔 championSkills.ts/
+    // ccInfo API 응답의 hasHardCC/hasSoftCC 값 그대로(조합 컨셉/픽 추천 순위
+    // 보정에 이미 쓰던 것과 같은 데이터를 챔피언 선택 화면에도 그대로 노출).
+    // 하드 CC(기절/속박/공포/도발 등, 완전히 무력화)와 일반 CC(둔화만 있는
+    // 경우)를 점 색으로 구분 — 아래 ccDotState 참고.
     const ccEntry = champ ? adviceResult?.ccInfo[side]?.find((c) => c.championId === champ.id) : undefined;
+    const ccDot = ccDotState(ccEntry);
     return (
       <button
         key={slot.key}
@@ -1221,16 +1275,7 @@ export default function Home() {
           <>
             <ChampionIcon src={champ.iconUrl} name={champ.name} />
             <span>{champ.name}</span>
-            <span
-              className={`champ-select-cc-dot${
-                ccEntry === undefined
-                  ? " champ-select-cc-dot--unknown"
-                  : ccEntry.hasHardCC
-                    ? " champ-select-cc-dot--yes"
-                    : " champ-select-cc-dot--no"
-              }`}
-              title={ccEntry === undefined ? "CC 정보 확인 중" : ccEntry.hasHardCC ? "하드 CC 보유" : "하드 CC 없음"}
-            />
+            <span className={`champ-select-cc-dot champ-select-cc-dot--${ccDot.kind}`} title={ccDot.title} />
           </>
         ) : (
           <span className="empty-hint">선택</span>
@@ -1313,8 +1358,28 @@ export default function Home() {
           champions={champions}
           championById={championById}
           pool={championPool}
+          poolApplied={poolApplied}
+          onTogglePoolApplied={setPoolApplied}
           onToggleChampion={toggleChampionInPool}
         />
+      )}
+
+      {mode === "advice" && (
+        <div className="recommend-count-row">
+          <span className="recommend-count-label">추천 개수</span>
+          <div className="recommend-count-tabs">
+            {RECOMMEND_COUNT_OPTIONS.map((n) => (
+              <button
+                key={n}
+                type="button"
+                className={n === recommendCount ? "tab tab--active" : "tab"}
+                onClick={() => setRecommendCount(n)}
+              >
+                {n}개
+              </button>
+            ))}
+          </div>
+        </div>
       )}
 
       {/* 픽 추천의 10슬롯(우리팀 5 + 상대팀 5)은 아래 selected-bar 카드 안이
