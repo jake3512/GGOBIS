@@ -24,10 +24,10 @@ export default function AppleIcon() {
           fontFamily: "sans-serif",
         }}
       >
-        <div style={{ display: "flex", fontSize: 78, fontWeight: 800, letterSpacing: "-0.02em", lineHeight: 1 }}>
+        <div style={{ display: "flex", fontSize: 100, fontWeight: 800, letterSpacing: "-0.02em", lineHeight: 1 }}>
           GG
         </div>
-        <div style={{ display: "flex", fontSize: 32, fontWeight: 700, letterSpacing: "-0.01em", lineHeight: 1, marginTop: 6 }}>
+        <div style={{ display: "flex", fontSize: 28, fontWeight: 700, letterSpacing: "-0.01em", lineHeight: 1, marginTop: 4 }}>
           obis
         </div>
       </div>

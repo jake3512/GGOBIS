@@ -25,10 +25,10 @@ export default function Icon() {
           fontFamily: "sans-serif",
         }}
       >
-        <div style={{ display: "flex", fontSize: 15, fontWeight: 800, letterSpacing: "-0.03em", lineHeight: 1 }}>
+        <div style={{ display: "flex", fontSize: 20, fontWeight: 800, letterSpacing: "-0.03em", lineHeight: 1 }}>
           GG
         </div>
-        <div style={{ display: "flex", fontSize: 8, fontWeight: 700, letterSpacing: "-0.02em", lineHeight: 1, marginTop: 1 }}>
+        <div style={{ display: "flex", fontSize: 7, fontWeight: 700, letterSpacing: "-0.02em", lineHeight: 1 }}>
           obis
         </div>
       </div>
