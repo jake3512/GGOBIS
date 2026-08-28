@@ -206,7 +206,7 @@ interface TankArchetypeEntry {
   attributes: TankAttribute[];
 }
 
-type BruiserAttribute = "lifesteal" | "attackSpeed" | "tanky";
+type BruiserAttribute = "lifesteal" | "attackSpeed" | "tanky" | "utility";
 
 interface BruiserArchetypeEntry {
   championId: number;
@@ -505,6 +505,7 @@ const BRUISER_ATTRIBUTE_LABELS: Record<BruiserAttribute, string> = {
   lifesteal: "흡혈 브루저",
   attackSpeed: "공속 브루저",
   tanky: "탱킹 브루저",
+  utility: "유틸 브루저",
 };
 
 function CompCard({
