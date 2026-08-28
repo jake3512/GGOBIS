@@ -24,19 +24,19 @@ export interface TankArchetype {
 export const TANK_ARCHETYPES: Record<string, TankArchetype> = {
   Alistar: { attributes: ["regen", "damageReduction"] }, // 패시브 회복 + 궁 피해 감소
   Blitzcrank: { attributes: ["shield"] }, // 패시브 마나 배리어
-  Braum: { attributes: ["shield"] }, // W 보호막
+  Braum: { attributes: ["armor", "damageReduction"] },
   Chogath: { attributes: ["health"] }, // 패시브 최대 체력 영구 스택
   Galio: { attributes: ["shield", "armor"] }, // W 보호막 + 저항력 연동 패시브
-  Leona: { attributes: ["shield"] }, // E 사용 시 보호막
+  Leona: { attributes: ["armor", "damageReduction"] },
   Malphite: { attributes: ["shield", "armor"] }, // 패시브 체력 비례 보호막 + 방어력 연동 킷
   Maokai: { attributes: ["health", "regen"] }, // 패시브 체력 증가 + 피격 시 회복
   DrMundo: { attributes: ["regen", "health"] }, // 체력 비례 킷 전체 + 강력한 회복
   Nautilus: { attributes: ["shield"] }, // 패시브 스킬 사용 후 보호막
   Ornn: { attributes: ["armor"] }, // 자신·아군 방어력/마법저항 강화 중심 킷
-  Poppy: { attributes: ["shield"] }, // 패시브 방패 투척(줍기 전 보호막)
+  Poppy: { attributes: ["shield", "armor"] }, // 패시브 방패 투척(줍기 전 보호막)
   Rammus: { attributes: ["damageReduction", "armor"] }, // E 방어 자세(퍼센트 피해 감소) + 방어력 연동 킷
   Shen: { attributes: ["damageReduction", "shield"] }, // E 피해 감소 구역 + 궁 보호막
-  Sion: { attributes: ["health"] }, // 패시브 처치 시 영구 최대 체력 증가
+  Sion: { attributes: ["health", "shield"] }, // 패시브 처치 시 영구 최대 체력 증가 + E 보호막
   Taric: { attributes: ["regen", "armor"] }, // 패시브 연계 자힐/힐 + W로 아군과 방어력 공유
   Zac: { attributes: ["health", "regen"] }, // 킷 전체가 최대 체력 스케일링 + 지속 재생
 };
