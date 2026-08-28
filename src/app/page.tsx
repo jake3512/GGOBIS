@@ -191,7 +191,7 @@ interface DamageBalance {
   sampledCount: number;
 }
 
-type AdcAttribute = "critAttackSpeed" | "attackSpeed" | "percentDamage" | "critDamage";
+type AdcAttribute = "critAttackSpeed" | "attackSpeed" | "percentDamage" | "critDamage" | "spellblade";
 
 interface AdcArchetypeEntry {
   championId: number;
@@ -206,7 +206,7 @@ interface TankArchetypeEntry {
   attributes: TankAttribute[];
 }
 
-type BruiserAttribute = "lifesteal" | "attackSpeed" | "tanky";
+type BruiserAttribute = "lifesteal" | "attackSpeed" | "tanky" | "utility";
 
 interface BruiserArchetypeEntry {
   championId: number;
@@ -490,6 +490,7 @@ const ADC_ATTRIBUTE_LABELS: Record<AdcAttribute, string> = {
   attackSpeed: "공속",
   percentDamage: "퍼센트 데미지",
   critDamage: "치명타 데미지",
+  spellblade: "주문검",
 };
 
 const TANK_ATTRIBUTE_LABELS: Record<TankAttribute, string> = {
@@ -504,6 +505,7 @@ const BRUISER_ATTRIBUTE_LABELS: Record<BruiserAttribute, string> = {
   lifesteal: "흡혈 브루저",
   attackSpeed: "공속 브루저",
   tanky: "탱킹 브루저",
+  utility: "유틸 브루저",
 };
 
 function CompCard({
