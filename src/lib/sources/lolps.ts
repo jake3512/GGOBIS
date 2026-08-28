@@ -182,6 +182,57 @@ function fetchChampPageHtml(championId: number): Promise<string> {
   );
 }
 
+// --- Current lol.ps version, for graphs.json/versus/stats.json ---
+//
+// Confirmed by a real captured page (https://lol.ps/champ/75, fetched with
+// no `?version=` in the URL) that this same champion-page HTML we already
+// fetch for champSummary/build embeds the resolved-current version TWICE:
+//   - championArguments:{regionId:0,versionId:154,tierId:2,laneId:0} — the
+//     per-champion data block's OWN resolved query params for exactly this
+//     request (which omitted version), proving the server picks "current"
+//     here when it's left out.
+//   - versionInfo:[{versionId:154,description:"26.17",patchDate:"2026-08-26",
+//     isActive:true,...},{versionId:153,...},{versionId:152,...}] — a
+//     separate page-level (not per-champion) list of recent versions, newest
+//     first; championArguments.versionId matched its first/newest entry.
+// graphs.json and versus/stats.json are DIFFERENT endpoints and don't do
+// this same "current" fallback themselves (confirmed separately: omitting
+// version there returns a near-empty old snapshot, versionId 51) — but since
+// the version number is a global "current patch" value (same for every
+// champion on a given day, not per-champion), reading it back out of
+// whichever page HTML we already fetch works for any of them and avoids a
+// dedicated "what's current" request.
+const VERSION_CACHE_TTL_MS = 60 * 60 * 1000; // changes once per patch (~weeks), not per request — same idea as ddragon's getLatestVersion cache
+
+function extractCurrentVersionId(html: string): number | null {
+  const match = html.match(/championArguments:\{[^}]*versionId:(\d+)/);
+  return match ? Number(match[1]) : null;
+}
+
+let versionCache: { value: number; fetchedAt: number } | null = null;
+
+/** Best-effort current lol.ps versionId — `championId` is just which
+ * champion's page to read it FROM (any champion works, see above); pass
+ * whichever one the caller already needs a page fetch for so this can reuse
+ * `fetchChampPageHtml`'s cache instead of adding a new request. Cached
+ * separately from that page's own (shorter) TTL, and never throws — a
+ * failure just means the caller falls back to omitting `version`, the same
+ * degraded-but-not-broken behavior this app had before this existed. */
+async function getCurrentLolpsVersion(championId: number): Promise<number | null> {
+  if (versionCache && Date.now() - versionCache.fetchedAt < VERSION_CACHE_TTL_MS) {
+    return versionCache.value;
+  }
+  try {
+    const html = await fetchChampPageHtml(championId);
+    const versionId = extractCurrentVersionId(html);
+    if (versionId === null) return null;
+    versionCache = { value: versionId, fetchedAt: Date.now() };
+    return versionId;
+  } catch {
+    return null;
+  }
+}
+
 async function fetchChampSummary(championId: number): Promise<ChampSummary> {
   const html = await fetchChampPageHtml(championId);
   const summary = parseChampSummary(html);
@@ -370,16 +421,12 @@ function resolveChampionId(slug: string, champions: ChampionRef[]): number {
 // points); with 31 points total that lines up with one point per minute
 // starting at minute 3 (3,4,...,33) — inferred from that spacing, not
 // confirmed directly by the API response itself.
-// `region`/`tier` are sent (LOLPS_REGION/LOLPS_TIER above); `version` is left
-// out of the request the same way op.gg's `patch` is — betting the server
-// falls back to "current" rather than erroring. This used to omit
-// region/tier too "the same way as version", but that conflated a value that
-// changed between two real captures (version: 153 → 154, clearly patch-
-// specific) with two that stayed identical both times — matching op.gg's own
-// convention of always sending its stable region/type/tier params and only
-// gambling on the one genuinely time-varying value (`patch`). Still
-// unconfirmed against a live response either way (no outbound access to
-// lol.ps from this environment).
+// `region`/`tier` are sent (LOLPS_REGION/LOLPS_TIER above). `version` used to
+// be left out the same way op.gg's `patch` is, betting the server would fall
+// back to "current" — confirmed WRONG by a real capture: omitting it returns
+// a near-empty old snapshot (versionId 51, timelineWinrates: []), not the
+// current patch. Fixed by fetching the real current versionId (see
+// getCurrentLolpsVersion above) and always sending it explicitly.
 const CURVE_START_MINUTE = 3;
 
 export interface PowerCurvePoint {
@@ -402,8 +449,10 @@ function average(points: PowerCurvePoint[]): number | null {
 
 async function fetchPowerCurve(championId: number): Promise<PowerCurve> {
   return cached(`lolps:graphs:${championId}`, CACHE_TTL_MS, async () => {
+    const version = await getCurrentLolpsVersion(championId);
+    const versionParam = version !== null ? `&version=${version}` : "";
     const res = await fetch(
-      `https://lol.ps/api/champ/${championId}/graphs.json?region=${LOLPS_REGION}&tier=${LOLPS_TIER}&range=two_weeks`,
+      `https://lol.ps/api/champ/${championId}/graphs.json?region=${LOLPS_REGION}${versionParam}&tier=${LOLPS_TIER}&range=two_weeks`,
       {
         headers: {
           "User-Agent":
@@ -504,9 +553,10 @@ export async function getPowerCurvesForPosition(
 //        visionScorePerMin1/2, jugGankingDeathsAt15Min1/2,
 //        jugGankingKillsAt15Min1/2, maxLevelLeadLaneOpponent1/2,
 //        levelUpFasterThanOpponentLv2/3/6Percent } }
-// `region`/`tier` are sent (LOLPS_REGION/LOLPS_TIER); `version` is left out
-// of our own request the same way graphs.json's is (see CURVE_START_MINUTE
-// comment above) — betting on a "current" default, unconfirmed either way.
+// `region`/`tier` are sent (LOLPS_REGION/LOLPS_TIER); `version` is fetched
+// and sent explicitly the same way graphs.json's is (see
+// getCurrentLolpsVersion/CURVE_START_MINUTE comment above) rather than
+// omitted — confirmed the same "current" fallback doesn't happen here either.
 // `champion1`/`champion2`
 // determine which side gets the "1"/"2" suffix in the response; we always
 // send the ally champion as champion1, so every "*1" field below
@@ -562,8 +612,10 @@ export async function getVersusStats(
 ): Promise<VersusStats> {
   const laneId = POSITION_TO_LANE_ID[position];
   return cached(`lolps:versus:${allyChampionId}:${enemyChampionId}:${laneId}`, CACHE_TTL_MS, async () => {
+    const version = await getCurrentLolpsVersion(allyChampionId);
+    const versionParam = version !== null ? `&version=${version}` : "";
     const res = await fetch(
-      `https://lol.ps/api/versus/stats.json?region=${LOLPS_REGION}&tier=${LOLPS_TIER}&lane=${laneId}&champion1=${allyChampionId}&champion2=${enemyChampionId}`,
+      `https://lol.ps/api/versus/stats.json?region=${LOLPS_REGION}${versionParam}&tier=${LOLPS_TIER}&lane=${laneId}&champion1=${allyChampionId}&champion2=${enemyChampionId}`,
       {
         headers: {
           "User-Agent":
