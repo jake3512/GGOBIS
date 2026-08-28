@@ -16,6 +16,7 @@ import {
   getPowerCurve,
   getVersusStats,
   laneIdToPosition,
+  powerCurveVsFitScore,
   type VersusStats,
 } from "@/lib/sources/lolps";
 import { getChampionBuild as getDeeplolChampionBuild } from "@/lib/sources/deeplol";
@@ -202,6 +203,15 @@ interface PickEntry {
    * same top-N-only limit as power curve/build above. See
    * refineTopWithPowerCurveAndLaning. */
   laningStats?: VersusStats | null;
+  /** How much this candidate's own early/late power curve favors them
+   * against the SPECIFIC enemy laner's power curve (not the team-wide
+   * peak-phase fit blended into allySynergyFit below) — 0.5 neutral, up to
+   * 1.0. See powerCurveVsFitScore (src/lib/sources/lolps.ts). Only set on
+   * counterPicks entries (needs a specific enemy laner, same constraint as
+   * laningStats above), same top-N-only limit. Feeds combinedLaningFit
+   * (blended into the real-winRate goodness term via LANING_STATS_BLEND,
+   * same slot laningStats's gold-diff fit already used). */
+  powerCurveVsEnemyFit?: number;
   /** This candidate's real Data Dragon ability tags (championSkills.ts) —
    * the same signals already used to nudge compFit in refineTopWithSkillFit,
    * now also surfaced directly so the UI can show "핵심 태그" chips (CC/
@@ -464,14 +474,15 @@ async function computeCompFitPicks(
  * out of sync with each other (a real risk once there were three separate
  * inline copies: adding the laning-stats blend to one re-sort but not
  * another would silently undo it on the next pass). Blends in
- * laningFitScore only when `e.laningStats` is already set — it isn't yet at
- * the earlier call sites (rerankPicks/refineTopWithSkillFit run before
- * refineTopWithPowerCurveAndLaning attaches it), so this degrades to the
+ * combinedLaningFit (gold-diff + power-curve-vs-enemy) only when at least
+ * one of its inputs is already set — neither is yet at the earlier call
+ * sites (rerankPicks/refineTopWithSkillFit run before
+ * refineTopWithPowerCurveAndLaning attaches them), so this degrades to the
  * plain real-winRate goodness there, unchanged from before this refactor. */
 function pickRankScore(e: PickEntry, order: "asc" | "desc"): number {
   let goodness = order === "asc" ? 1 - e.winRate : e.winRate;
-  if (e.laningStats) {
-    const laningFit = laningFitScore(e.laningStats);
+  const laningFit = combinedLaningFit(e);
+  if (laningFit !== null) {
     goodness = goodness * (1 - LANING_STATS_BLEND) + laningFit * LANING_STATS_BLEND;
   }
   return (
@@ -652,6 +663,26 @@ function laningFitScore(stats: VersusStats): number {
   return Math.max(0, Math.min(1, 0.5 + goldDiff / 2000));
 }
 
+/** Combines every "how does this candidate stack up against the SPECIFIC
+ * enemy laner" signal currently available into one 0-1 goodness value —
+ * today that's the gold-diff-based laningFitScore (real measured 1:1 data)
+ * and powerCurveVsEnemyFit (early/late power-curve comparison against that
+ * same opponent, see refineTopWithPowerCurveAndLaning/powerCurveVsFitScore).
+ * When both are set they're averaged; when only one is, that one alone is
+ * used; null when neither is (no enemy laner filled in, or both lol.ps
+ * fetches failed) so the caller can skip the blend entirely rather than
+ * diluting the real winRate with a fabricated neutral 0.5. Feeds the same
+ * LANING_STATS_BLEND slot pickRankScore already had, rather than adding a
+ * new top-level weight that would need PICK_REAL_WEIGHT/PICK_ENEMY_FIT_WEIGHT/
+ * PICK_ALLY_SYNERGY_WEIGHT re-normalized again. */
+function combinedLaningFit(e: PickEntry): number | null {
+  const parts: number[] = [];
+  if (e.laningStats) parts.push(laningFitScore(e.laningStats));
+  if (e.powerCurveVsEnemyFit !== undefined) parts.push(e.powerCurveVsEnemyFit);
+  if (parts.length === 0) return null;
+  return parts.reduce((a, b) => a + b, 0) / parts.length;
+}
+
 /** Mutates the top N entries of `picks` in place and re-sorts them, folding
  * two more real lol.ps signals into the ranking (not just display, unlike
  * the old annotateWithPowerCurve this replaces):
@@ -688,6 +719,15 @@ async function refineTopWithPowerCurveAndLaning(
         top.map((p) => getVersusStats(p.championId, enemyLanerChampionId, position)),
       )
     : [];
+  // The enemy laner's OWN power curve — fetched once (not per-candidate),
+  // then compared against each candidate's already-fetched curve below
+  // (powerCurveVsFitScore) so the ranking reflects "does THIS candidate's
+  // early/late window actually favor them against THIS specific opponent",
+  // not just the team-wide peak-phase fit the block below already blends
+  // into allySynergyFit. null when there's no enemy laner filled in yet, or
+  // the fetch itself fails — either way the per-candidate blend below is
+  // just skipped (best-effort, same as every other lol.ps call here).
+  const enemyCurve = enemyLanerChampionId ? await getPowerCurve(enemyLanerChampionId).catch(() => null) : null;
 
   top.forEach((entry, i) => {
     const curveResult = curveResults[i];
@@ -707,6 +747,9 @@ async function refineTopWithPowerCurveAndLaning(
           const base = entry.allySynergyFit ?? 0.5;
           entry.allySynergyFit = base * (1 - POWER_CURVE_TEAM_FIT_BLEND) + powerCurveFit * POWER_CURVE_TEAM_FIT_BLEND;
         }
+      }
+      if (enemyCurve) {
+        entry.powerCurveVsEnemyFit = powerCurveVsFitScore(curve, enemyCurve) ?? undefined;
       }
     }
 

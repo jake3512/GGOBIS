@@ -516,6 +516,36 @@ export async function getPowerCurve(championId: number): Promise<PowerCurveWithL
   };
 }
 
+/** How much `candidate`'s own early/late power curve favors them against
+ * `opponent`'s — averages the early-phase and late-phase win-rate
+ * differences (candidate minus opponent) onto the same 0.5-neutral-to-1.0
+ * "fit" scale scoreEnemyCompFit/allySynergyFitScore use elsewhere in this
+ * app (`src/lib/teamComp.ts`, `src/app/api/pickadvice/route.ts`), ±10
+ * percentage points treated as roughly a full swing — deliberately
+ * conservative/simple, no larger dataset to calibrate an exact cutoff
+ * against, same spirit as pickadvice's `laningFitScore` (±2000 gold). Used
+ * both for a specific candidate vs the enemy laner (pickadvice) and for the
+ * user's own looked-up champion vs each lane counter (/api/counters) — in
+ * both cases `candidate` is "our side" and a positive fit means our side's
+ * power curve is favored. Returns null when neither phase has data for both
+ * sides (best-effort — callers skip this signal rather than forcing a fake
+ * neutral 0.5 in that case). */
+export function powerCurveVsFitScore(
+  candidate: { earlyWinRate: number | null; lateWinRate: number | null },
+  opponent: { earlyWinRate: number | null; lateWinRate: number | null },
+): number | null {
+  const diffs: number[] = [];
+  if (candidate.earlyWinRate !== null && opponent.earlyWinRate !== null) {
+    diffs.push(candidate.earlyWinRate - opponent.earlyWinRate);
+  }
+  if (candidate.lateWinRate !== null && opponent.lateWinRate !== null) {
+    diffs.push(candidate.lateWinRate - opponent.lateWinRate);
+  }
+  if (diffs.length === 0) return null;
+  const avgDiff = diffs.reduce((a, b) => a + b, 0) / diffs.length;
+  return Math.max(0, Math.min(1, 0.5 + avgDiff * 5));
+}
+
 /** Power-curve early/late averages for a batch of candidate champions,
  * keyed by championId — only for candidates whose lol.ps primary lane
  * actually matches `position` (same honesty rule as getLaneCounters).

@@ -56,6 +56,15 @@ interface CounterEntry {
    * only on the top few entries. See LaningTipList/buildLaningTips for the
    * "라인전 팁" derived from this. */
   laningStats?: VersusStats | null;
+  /** lol.ps power curve for THIS counter — only on the top few entries. */
+  earlyWinRate?: number | null;
+  lateWinRate?: number | null;
+  powerCurveLaneNote?: string | null;
+  /** How much the looked-up champion's power curve favors them against THIS
+   * counter — 0.5 neutral, up to 1.0. A high value means: even though this
+   * champion is a real statistical counter, your side's early/late-game
+   * window may still work in your favor. */
+  powerCurveVsMineFit?: number;
 }
 
 interface CounterResult {
@@ -100,6 +109,11 @@ interface PickEntry {
    * on counter-pick candidates (no single enemy laner to compare against
    * for bottom-duo synergy candidates). */
   laningStats?: VersusStats | null;
+  /** How much this candidate's own early/late power curve favors them
+   * against the SPECIFIC enemy laner (not the team-wide peak-phase fit
+   * already blended into allySynergyFit) — 0.5 neutral, up to 1.0. Only set
+   * on counter-pick candidates, same constraint as laningStats above. */
+  powerCurveVsEnemyFit?: number;
   /** "핵심 태그" (see KeyTags above) — only on the top few entries. */
   keyTags?: KeyTags;
   /** Which of the 5 known comp concepts this candidate individually fits
@@ -646,6 +660,19 @@ function PowerCurveBadge({ earlyWinRate, lateWinRate }: { earlyWinRate?: number 
       {lean}
     </span>
   );
+}
+
+/** Shown when the candidate's own power curve gives it a real early/late-game
+ * edge over the SPECIFIC opponent being compared against (the enemy laner in
+ * pick-advice, or the looked-up champion's own matchup in the lane-counter
+ * tab) — see powerCurveVsFitScore, src/lib/sources/lolps.ts. Same 0.5-neutral,
+ * only-shows-when-favorable convention as CompFitBadge, and explicitly a
+ * different signal from PowerCurveBadge's raw early/late % (this is a
+ * head-to-head comparison, not a standalone number). */
+function PowerCurveVsEnemyBadge({ fit }: { fit?: number }) {
+  if (fit == null || fit <= 0.5) return null;
+  const label = fit >= 0.85 ? "파워 커브상 상대보다 크게 유리" : "파워 커브상 상대보다 유리";
+  return <span className="power-curve-vs-badge">{label}</span>;
 }
 
 /** Shown when the server's tag-based heuristic found this candidate a good
@@ -1327,6 +1354,20 @@ export default function Home() {
     activateSlot(key);
   }
 
+  /** Empties the slot the picker is currently open for and closes it —
+   * exposed as an explicit "빈 슬롯으로 두기" button in the picker overlay
+   * header (see below) so leaving a slot blank is a clearly labeled action,
+   * not just an implicit side effect of pressing ✕ without picking anything
+   * (which happened to produce the same result, since clicking a filled slot
+   * already blanks it via clearSlot before the picker even opens — but that
+   * was never an obvious/intentional-looking way to clear a pick). Safe to
+   * call even when the slot is already empty (e.g. opened via activateSlot
+   * on an empty slot, changed your mind) — same no-op outcome either way. */
+  function blankActiveSlot() {
+    setSlots((prev) => prev.map((s) => (s.key === activeSlotKey ? { ...s, championId: null } : s)));
+    setPickerOpen(false);
+  }
+
   // Every champion currently placed in any slot (not just the active one) —
   // shows a checkmark on its tile in the picker grid. Previously this only
   // looked at the active slot's own championId, but assignActiveSlot
@@ -1739,6 +1780,9 @@ export default function Home() {
         <div className="champion-picker-overlay" role="dialog" aria-modal="true">
           <div className="champion-picker-overlay-header">
             <span className="champion-picker-overlay-title">{activeSlot?.label ?? "챔피언"} 선택</span>
+            <button type="button" className="champion-picker-blank" onClick={blankActiveSlot}>
+              빈 슬롯으로 두기
+            </button>
             <button
               type="button"
               className="champion-picker-close"
@@ -1787,12 +1831,15 @@ export default function Home() {
                   <WinRateBar rate={c.winRate} games={c.games} />
                 </div>
                 <div className="badge-row">
+                  <PowerCurveBadge earlyWinRate={c.earlyWinRate} lateWinRate={c.lateWinRate} />
+                  <PowerCurveVsEnemyBadge fit={c.powerCurveVsMineFit} />
                   <KeyTagBadges tags={c.keyTags} />
                   <ConceptFitBadges fits={c.conceptFits} />
                 </div>
                 <LaningTipList stats={c.laningStats} />
                 <Details label="소스별 상세">
                   <SourceBreakdown sources={c.bySource} />
+                  {c.powerCurveLaneNote && <p className="build-lane-note">⚠ {c.powerCurveLaneNote}</p>}
                   {c.laningStats && <LaningStatsRow stats={c.laningStats} />}
                 </Details>
               </li>
@@ -1884,6 +1931,7 @@ export default function Home() {
                       </div>
                       <div className="badge-row">
                         <PowerCurveBadge earlyWinRate={c.earlyWinRate} lateWinRate={c.lateWinRate} />
+                        <PowerCurveVsEnemyBadge fit={c.powerCurveVsEnemyFit} />
                         <CompFitBadge compFit={c.compFit} />
                         <AllySynergyBadge
                           matchCount={c.allySynergyMatchCount}

@@ -4,9 +4,10 @@ import { POSITIONS, type Position } from "@/lib/positions";
 import { getAggregatedLaneCounters } from "@/lib/sources/aggregate";
 import { getChampionAbilitiesWithCache, toKeyTags, type KeyTags } from "@/lib/championSkills";
 import { championConceptFit, type CompConceptId } from "@/lib/compConcepts";
-import { getVersusStats, type VersusStats } from "@/lib/sources/lolps";
+import { getPowerCurve, getVersusStats, powerCurveVsFitScore, type VersusStats } from "@/lib/sources/lolps";
 
 const VALID_POSITIONS = new Set(POSITIONS.map((p) => p.value));
+const POSITION_LABEL = new Map(POSITIONS.map((p) => [p.value, p.label]));
 
 // Same reasoning/value as pickadvice's SKILL_FIT_CANDIDATE_LIMIT — only the
 // best few counters (the ones actually looked at) get a per-champion Data
@@ -18,6 +19,12 @@ const KEY_TAGS_CANDIDATE_LIMIT = 5;
 // even though it's currently the same value, matching this app's convention
 // of one constant per feature (see pickadvice's *_CANDIDATE_LIMIT block).
 const LANING_STATS_CANDIDATE_LIMIT = 5;
+
+// Same reasoning again, for lol.ps's graphs.json power curve — pickadvice
+// already used this for its own recommendation lists (POWER_CURVE_CANDIDATE_LIMIT,
+// src/app/api/pickadvice/route.ts); this route never had it wired in at all
+// until now.
+const POWER_CURVE_CANDIDATE_LIMIT = 5;
 
 interface CounterEntry {
   championId: number;
@@ -35,6 +42,20 @@ interface CounterEntry {
    * how PowerCurveBadge/ccDotState already turn raw numbers into labels
    * client-side elsewhere in this app. */
   laningStats?: VersusStats | null;
+  /** lol.ps power-curve early/late win rate for THIS counter — same fields
+   * pickadvice's PickEntry already carries, only on the top few entries (see
+   * POWER_CURVE_CANDIDATE_LIMIT). lol.ps only ever tracks a champion's own
+   * primary lane, so shown even off-position with `powerCurveLaneNote`
+   * flagging the mismatch (same convention as pickadvice). */
+  earlyWinRate?: number | null;
+  lateWinRate?: number | null;
+  powerCurveLaneNote?: string | null;
+  /** How much the user's OWN looked-up champion's power curve favors them
+   * against THIS counter's — 0.5 neutral, up to 1.0 (see powerCurveVsFitScore,
+   * src/lib/sources/lolps.ts). A high value means: even though this
+   * champion is a real statistical counter, your side's early/late-game
+   * window may still work in your favor. Only on the top few entries. */
+  powerCurveVsMineFit?: number;
 }
 
 /** Best-effort attaches "핵심 태그"/"게임 스타일" to the top N counters (sorted
@@ -92,6 +113,39 @@ async function attachLaningStats(
   });
 }
 
+/** Best-effort attaches lol.ps's power curve to the top N counters — same
+ * endpoint/fields pickadvice's refineTopWithPowerCurveAndLaning already uses
+ * for its own recommendation lists, just never wired into this route before.
+ * Fetches the user's OWN looked-up champion's curve once (not per-entry),
+ * then compares each counter's curve against it (powerCurveVsFitScore) so
+ * `powerCurveVsMineFit` consistently means "favors my side" from the
+ * perspective of the champion being looked up. Independent per-entry
+ * failures just leave that entry's power-curve fields unset. */
+async function attachPowerCurve(
+  entries: CounterEntry[],
+  championId: number,
+  position: Position,
+): Promise<void> {
+  const top = entries.slice(0, POWER_CURVE_CANDIDATE_LIMIT);
+  if (top.length === 0) return;
+  const myCurve = await getPowerCurve(championId).catch(() => null);
+  const results = await Promise.allSettled(top.map((e) => getPowerCurve(e.championId)));
+  top.forEach((entry, i) => {
+    const r = results[i];
+    if (r.status !== "fulfilled") return;
+    const curve = r.value;
+    entry.earlyWinRate = curve.earlyWinRate;
+    entry.lateWinRate = curve.lateWinRate;
+    entry.powerCurveLaneNote =
+      curve.actualPosition && curve.actualPosition !== position
+        ? `lol.ps는 ${entry.name}의 ${POSITION_LABEL.get(curve.actualPosition) ?? curve.actualPosition} 라인 데이터만 갖고 있어요 — 아래 수치는 실제로 그 라인 기준입니다.`
+        : null;
+    if (myCurve) {
+      entry.powerCurveVsMineFit = powerCurveVsFitScore(myCurve, curve) ?? undefined;
+    }
+  });
+}
+
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const championId = Number(searchParams.get("championId"));
@@ -142,6 +196,7 @@ export async function GET(req: Request) {
     await Promise.all([
       attachKeyTagsAndConceptFits(counters, champById),
       attachLaningStats(counters, championId, position),
+      attachPowerCurve(counters, championId, position),
     ]);
     return NextResponse.json({
       champion: { id: champion.id, name: champion.name, iconUrl: champion.iconUrl },
