@@ -24,6 +24,7 @@ import { toBuildResult, type BuildResult } from "@/lib/buildRefs";
 import { analyzeTeamComp, applySkillFitBonus, scoreEnemyCompFit } from "@/lib/teamComp";
 import { getChampionAbilitiesWithCache, toKeyTags, type ChampionAbilities, type KeyTags } from "@/lib/championSkills";
 import { analyzeCompConcepts, championConceptFit, lookupConceptMatchup, type CompConceptId } from "@/lib/compConcepts";
+import { sampleReliabilityTier } from "@/lib/sampleSize";
 
 // Only the top handful of each recommendation list gets a power-curve/build/
 // skill-kit lookup — the list itself can be 20-40 champions long, and
@@ -80,6 +81,17 @@ const TIER_TIE_THRESHOLD = 0.015;
 // "close enough" cluster. Real win-rate data has nowhere near this much
 // precision anyway, so a tiny epsilon costs nothing.
 const TIER_TIE_EPSILON = 1e-9;
+
+// How much a candidate's sample-size reliability tier (see sampleSize.ts —
+// 100+/50-99/<50 games) dominates the blended pickRankScore below. The
+// blended score (goodness/compFit/allySynergyFit weighted sum) is always in
+// [0, 1], so multiplying the reliability rank (0-2, higher = more games) by
+// something well above that range guarantees a candidate with more games
+// always outranks one with fewer, regardless of how the blended score
+// compares — a 500-game 55% win rate never loses to a 3-game 100% one. Only
+// the reliability BUCKET matters past that point, not the exact game-count
+// gap within it (see sampleReliabilityTier's own comment).
+const SAMPLE_RELIABILITY_WEIGHT = 10;
 
 // How many of a filled ally's top synergy partners (by measured win rate)
 // count toward computeAllySynergyScores's "intersection" — generous enough
@@ -272,12 +284,23 @@ function buildTierMap(tier1: number[], tier2: number[], tier3: number[]): Map<nu
  * keep the order they already had, which is exactly the caller's own
  * ranking. Entries outside any multi-entry run (no neighbor close enough in
  * real win rate) are untouched. A no-op when nothing in `entries` has a
- * tier (no champion pool active), so this is always safe to call. */
+ * tier (no champion pool active), so this is always safe to call.
+ *
+ * A run also never crosses a sample-reliability-tier boundary (see
+ * sampleSize.ts) even when the raw win-rate gap is small — otherwise a
+ * low-sample entry that happens to land next to a high-sample one (real
+ * possibility once pickRankScore sorts reliability tier first) could get
+ * tier-tiebreak-promoted above it, quietly undoing that reliability
+ * ordering for pool-active users. */
 function applyTierTiebreak(entries: PickEntry[]): void {
   let i = 0;
   while (i < entries.length) {
     let j = i + 1;
-    while (j < entries.length && Math.abs(entries[j].winRate - entries[j - 1].winRate) <= TIER_TIE_THRESHOLD + TIER_TIE_EPSILON) {
+    while (
+      j < entries.length &&
+      sampleReliabilityTier(entries[j].games) === sampleReliabilityTier(entries[j - 1].games) &&
+      Math.abs(entries[j].winRate - entries[j - 1].winRate) <= TIER_TIE_THRESHOLD + TIER_TIE_EPSILON
+    ) {
       j++;
     }
     if (j - i > 1) {
@@ -478,18 +501,27 @@ async function computeCompFitPicks(
  * one of its inputs is already set — neither is yet at the earlier call
  * sites (rerankPicks/refineTopWithSkillFit run before
  * refineTopWithPowerCurveAndLaning attaches them), so this degrades to the
- * plain real-winRate goodness there, unchanged from before this refactor. */
+ * plain real-winRate goodness there, unchanged from before this refactor.
+ *
+ * Sample-size reliability (see sampleSize.ts) is layered on top of all of
+ * that, not blended into it — a low-sample entry's win rate is often just
+ * noise, so no amount of compFit/allySynergyFit/laningFit agreement should
+ * let it outrank a high-sample entry. SAMPLE_RELIABILITY_WEIGHT makes the
+ * reliability rank dominate the entire [0, 1]-bounded blended score below,
+ * so this is effectively "sort by reliability tier first, existing blended
+ * formula second" rather than a soft nudge. */
 function pickRankScore(e: PickEntry, order: "asc" | "desc"): number {
   let goodness = order === "asc" ? 1 - e.winRate : e.winRate;
   const laningFit = combinedLaningFit(e);
   if (laningFit !== null) {
     goodness = goodness * (1 - LANING_STATS_BLEND) + laningFit * LANING_STATS_BLEND;
   }
-  return (
+  const blended =
     PICK_REAL_WEIGHT * goodness +
     PICK_ENEMY_FIT_WEIGHT * (e.compFit ?? 0.5) +
-    PICK_ALLY_SYNERGY_WEIGHT * (e.allySynergyFit ?? 0.5)
-  );
+    PICK_ALLY_SYNERGY_WEIGHT * (e.allySynergyFit ?? 0.5);
+  const reliabilityRank = 2 - sampleReliabilityTier(e.games); // 0(적은 표본)~2(많은 표본), 높을수록 우선
+  return reliabilityRank * SAMPLE_RELIABILITY_WEIGHT + blended;
 }
 
 /** Re-ranks a pick list against two secondary signals: how well each
