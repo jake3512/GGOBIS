@@ -345,16 +345,23 @@ textarea {
   font-weight: 700;
 }
 
-.champ-select-slot--disabled {
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  min-height: 44px;
-  padding: 0.3rem 0.5rem;
-  border: 1px dashed var(--accent);
-  border-radius: 8px;
+/* 내 포지션에 해당하는 우리팀 슬롯 표시 — 더 이상 잠겨있지 않고(다른 슬롯과
+   동일하게 채울 수 있음) 그냥 "이게 내 픽 슬롯"이라는 정보만 알려줌. 채워진
+   상태(선택된 챔피언 색)와 헷갈리지 않게 accent 테두리만 살짝 주고 배경은
+   안 건드림 — .champ-select-slot--active(파란 배경 채움)와는 다른 강도. */
+.champ-select-slot--mine {
+  border-color: var(--accent);
+}
+
+.champ-select-mine-badge {
+  flex-shrink: 0;
+  padding: 1px 5px;
+  border-radius: 999px;
+  border: 1px solid var(--accent);
   color: var(--accent);
-  font-size: 0.8rem;
+  font-size: 0.62rem;
+  font-weight: 700;
+  white-space: nowrap;
 }
 
 /* Per-slot CC indicator dot — reflects the real championSkills.ts
@@ -553,6 +560,39 @@ textarea {
   border-color: var(--bad);
 }
 
+/* LaningTipList — real lol.ps 15분 CS/솔로킬 수치에서 도출한 짧은 조언 문장.
+   laning-stat과 달리 접힌 Details 안이 아니라 항상 보이는 위치에 렌더링되므로
+   (page.tsx의 LaningTipList 주석 참고), 카드 안에서 스스로 여백을 갖는다. */
+.laning-tip-list {
+  list-style: none;
+  margin: 0.3rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.laning-tip {
+  font-size: 0.78rem;
+  line-height: 1.4;
+  padding: 0.3rem 0.55rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface-alt);
+}
+
+.laning-tip--good {
+  color: var(--good);
+  border-color: var(--good);
+  background: rgba(69, 220, 154, 0.08);
+}
+
+.laning-tip--bad {
+  color: var(--bad);
+  border-color: var(--bad);
+  background: rgba(255, 107, 116, 0.08);
+}
+
 /* Explicitly NOT a win-rate color (good/bad/accent) — this is the tag-based
    "fits the enemy comp" heuristic, so it gets its own neutral-but-visible
    treatment to avoid reading as a percentage or a real stat. */
@@ -602,6 +642,48 @@ textarea {
 .tier-badge--3 {
   background: rgba(163, 171, 186, 0.28);
   color: var(--neutral);
+}
+
+/* KeyTagBadges — grounded in real (if keyword-classified) Data Dragon
+   ability text, so it gets the accent tint (same family as real-data-leaning
+   badges like ally-synergy-badge) rather than comp-fit-badge's neutral gray,
+   even though it's still a heuristic classifier, not official Riot data. */
+.key-tag-row {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.key-tag-chip {
+  display: inline-block;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--accent);
+  background: rgba(91, 155, 255, 0.14);
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  padding: 0.1rem 0.5rem;
+}
+
+/* ConceptFitBadges — explicitly NOT measured data (see championConceptFit/
+   compConcepts.ts), so it deliberately avoids both the real-data accent tint
+   above and the win-rate good/bad colors — a muted violet reads as "style
+   categorization" without implying a stat. */
+.concept-fit-row {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.concept-fit-chip {
+  display: inline-block;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #b79dff;
+  background: rgba(148, 112, 255, 0.14);
+  border: 1px solid #8f6fe8;
+  border-radius: 999px;
+  padding: 0.1rem 0.5rem;
 }
 
 .champion-pool-editor {
@@ -819,16 +901,6 @@ textarea {
   padding: 0.6rem 0.8rem;
 }
 
-.slot--disabled {
-  display: inline-flex;
-  align-items: center;
-  min-height: 44px;
-  padding: 0.4rem 1rem;
-  border: 1px dashed var(--accent);
-  border-radius: 999px;
-  color: var(--accent);
-  font-size: 0.85rem;
-}
 
 .source-status {
   font-size: 0.8rem;

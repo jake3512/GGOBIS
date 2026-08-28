@@ -30,6 +30,19 @@ interface SourceErrorInfo {
   message: string;
 }
 
+/** This app's own real-signal "핵심 태그" — the same hasHardCC/hasSoftCC/
+ * hasMobility/hasShieldOrHeal/hasLongRange booleans championSkills.ts derives
+ * from real (Korean) Data Dragon ability text via keyword matching. Only
+ * attached to the top few entries of each list (see *_CANDIDATE_LIMIT
+ * server-side) — a per-champion Data Dragon detail fetch, not free. */
+interface KeyTags {
+  hasHardCC: boolean;
+  hasSoftCC: boolean;
+  hasMobility: boolean;
+  hasShieldOrHeal: boolean;
+  hasLongRange: boolean;
+}
+
 interface CounterEntry {
   championId: number;
   name: string;
@@ -37,6 +50,12 @@ interface CounterEntry {
   winRate: number;
   games: number;
   bySource: SourceValue[];
+  keyTags?: KeyTags;
+  conceptFits?: CompConceptId[];
+  /** lol.ps head-to-head laning-phase stats (this champion vs the counter) —
+   * only on the top few entries. See LaningTipList/buildLaningTips for the
+   * "라인전 팁" derived from this. */
+  laningStats?: VersusStats | null;
 }
 
 interface CounterResult {
@@ -81,6 +100,13 @@ interface PickEntry {
    * on counter-pick candidates (no single enemy laner to compare against
    * for bottom-duo synergy candidates). */
   laningStats?: VersusStats | null;
+  /** "핵심 태그" (see KeyTags above) — only on the top few entries. */
+  keyTags?: KeyTags;
+  /** Which of the 5 known comp concepts this candidate individually fits
+   * (게임 스타일) — app-curated, not measured data (see compConcepts.ts
+   * server-side and CONCEPT_PILOT_TIPS below for the same caveat elsewhere
+   * in this file). Only on the top few entries. */
+  conceptFits?: CompConceptId[];
 }
 
 /** "내 픽 추천" fallback for when the direct lane opponent isn't filled in
@@ -101,6 +127,8 @@ interface CompFitPickEntry {
   allySynergyOutOf: number;
   allySynergyAvgWinRate: number | null;
   tier?: 1 | 2 | 3;
+  keyTags?: KeyTags;
+  conceptFits?: CompConceptId[];
 }
 
 interface CombinedPickEntry {
@@ -396,9 +424,6 @@ interface Slot {
   key: string;
   label: string;
   championId: number | null;
-  /** True for the one slot advice mode is recommending a pick for — not a
-   * fillable input. */
-  disabled?: boolean;
 }
 
 /** Advice mode shows a full 10-slot draft board (5 ally + 5 enemy
@@ -408,14 +433,20 @@ interface Slot {
  * whichever ally/enemy pairs are filled in also feed the "measured"
  * lane-by-lane + duo synergy comparison and the tag-based comp analysis
  * further down the results — see the hint text rendered alongside the
- * board for exactly which. */
-function adviceSlotsFor(myPosition: string): Slot[] {
+ * board for exactly which. My own position's ally slot ("내 픽") used to be
+ * locked (never fillable, reserved purely as "what am I being recommended
+ * a pick for") — it's a normal fillable slot like any other now, just
+ * tagged with a small badge (see renderChampSelectSlot) — filling it in
+ * lets you preview the full comp (조합 분석/조합 컨셉/CC/파워 커브) with your
+ * actual pick included, not just the other 9 slots. The recommendation
+ * lists still work independently of whether this slot is filled — they're
+ * keyed off the ENEMY laner slot, not this one. */
+function adviceSlotsFor(): Slot[] {
   return [
     ...POSITIONS.map((p) => ({
       key: `ally-${p.value}`,
       label: `우리팀 ${p.label}`,
       championId: null,
-      disabled: p.value === myPosition,
     })),
     ...POSITIONS.map((p) => ({
       key: `enemy-${p.value}`,
@@ -654,6 +685,54 @@ function AllySynergyBadge({
   );
 }
 
+/** Compact chip labels for KeyTags — order matches championSkills.ts's
+ * declaration order (hard CC first, most decisive signal). */
+const KEY_TAG_LABELS: { key: keyof KeyTags; label: string }[] = [
+  { key: "hasHardCC", label: "하드CC" },
+  { key: "hasSoftCC", label: "둔화" },
+  { key: "hasMobility", label: "기동성" },
+  { key: "hasShieldOrHeal", label: "보호막/회복" },
+  { key: "hasLongRange", label: "장거리" },
+];
+
+/** "핵심 태그" chips — this app's own classification of REAL Data Dragon
+ * ability text (see championSkills.ts), not a win rate. Only renders the
+ * tags that are actually true; nothing shown at all when keyTags wasn't
+ * attached (candidate outside the top-N Data Dragon fetch limit) or none of
+ * the five tags apply. */
+function KeyTagBadges({ tags }: { tags?: KeyTags }) {
+  if (!tags) return null;
+  const active = KEY_TAG_LABELS.filter((t) => tags[t.key]);
+  if (active.length === 0) return null;
+  return (
+    <span className="key-tag-row" title="이 챔피언의 실제 스킬 텍스트에서 이 앱이 분류한 핵심 태그입니다">
+      {active.map((t) => (
+        <span key={t.key} className="key-tag-chip">
+          {t.label}
+        </span>
+      ))}
+    </span>
+  );
+}
+
+/** "게임 스타일" chips — which of compConcepts.ts's 5 known comp-concept
+ * archetypes this ONE candidate individually fits (championConceptFit,
+ * server-side). Explicitly NOT measured data — same "app-curated strategic
+ * knowledge, not a win rate" caveat as CompConceptCard/CONCEPT_PILOT_TIPS
+ * elsewhere in this file, just per-champion instead of per-team. */
+function ConceptFitBadges({ fits }: { fits?: CompConceptId[] }) {
+  if (!fits || fits.length === 0) return null;
+  return (
+    <span className="concept-fit-row" title="실측 승률이 아니라 이 앱이 분류한 게임 스타일 성향입니다">
+      {fits.map((id) => (
+        <span key={id} className="concept-fit-chip">
+          {COMP_CONCEPT_LABELS[id]}
+        </span>
+      ))}
+    </span>
+  );
+}
+
 /** lol.ps versus/stats.json 기반 라인전 세부지표 — "실측 데이터 기반 전체
  * 시너지"의 각 라인 매치업(이미 아군/적군 챔피언과 라인이 둘 다 정해진
  * 상태)에 붙는 부가 정보. 15분 골드/경험치/CS는 아군 기준 차이(양수=아군
@@ -685,6 +764,84 @@ function LaningStatsRow({ stats }: { stats: VersusStats }) {
         · 표본 {stats.games.toLocaleString()}게임 (lol.ps)
       </p>
     </div>
+  );
+}
+
+/** How large a real 15분 CS/솔로킬 차이 needs to be before it's worth turning
+ * into a "라인전 팁" — same spirit as pickadvice's `laningFitScore` (±2000
+ * gold = "roughly a full swing"), just for CS/solo-kill counts instead of
+ * gold: there's no larger dataset here to calibrate an exact cutoff against,
+ * so these are kept deliberately conservative/simple rather than
+ * empirically derived. CS_LEAD_THRESHOLD (~10, roughly one minion wave) and
+ * SOLO_KILL_LEAD_THRESHOLD (0.15 — solo kill counts run well under 1 per
+ * game in most matchups, so even a small gap is meaningful) are both raw
+ * counts, not percentages. */
+const CS_LEAD_THRESHOLD = 10;
+const SOLO_KILL_LEAD_THRESHOLD = 0.15;
+
+interface LaningTip {
+  text: string;
+  tone: "good" | "bad";
+}
+
+/** Turns lol.ps's real 15분 CS/솔로킬 head-to-head numbers (`VersusStats`,
+ * already fetched for LaningStatsRow above) into short actionable Korean
+ * tips — computed purely client-side from numbers the server already ships,
+ * same pattern as `powerCurveLean`/`ccDotState` turning other raw real
+ * numbers into display labels elsewhere in this app, rather than adding a
+ * server-side text-generation step. Returns at most two tips (CS-based,
+ * solo-kill-based); returns none when neither gap clears its threshold —
+ * same "no badge is itself a (neutral) result" convention as CompFitBadge. */
+function buildLaningTips(stats: VersusStats): LaningTip[] {
+  const tips: LaningTip[] = [];
+  const csDiff = stats.ally.csAt15 - stats.enemy.csAt15;
+  if (csDiff >= CS_LEAD_THRESHOLD) {
+    tips.push({
+      tone: "good",
+      text: `15분 CS가 평균 ${csDiff.toFixed(1)}개 앞서는 매치업이에요 — 우위를 살려 라인을 밀고 상대를 압박해보세요.`,
+    });
+  } else if (csDiff <= -CS_LEAD_THRESHOLD) {
+    tips.push({
+      tone: "bad",
+      text: `15분 CS가 평균 ${Math.abs(csDiff).toFixed(1)}개 밀리는 매치업이에요 — 무리한 교전보다 안전하게 CS 챙기기에 집중하세요.`,
+    });
+  }
+
+  const soloDiff = stats.ally.soloKillBefore15 - stats.enemy.soloKillBefore15;
+  if (soloDiff >= SOLO_KILL_LEAD_THRESHOLD) {
+    tips.push({
+      tone: "good",
+      text: `이 매치업에서 우리가 솔로킬을 낸 경우가 상대보다 많았어요 — 상대가 무리하게 들어올 때 각을 노려보세요.`,
+    });
+  } else if (soloDiff <= -SOLO_KILL_LEAD_THRESHOLD) {
+    tips.push({
+      tone: "bad",
+      text: `이 매치업에서 상대가 솔로킬을 낸 경우가 더 많았어요 — 혼자 스킬 맞을 상황을 만들지 않도록 주의하세요.`,
+    });
+  }
+
+  return tips;
+}
+
+/** Renders buildLaningTips' output — nothing at all when `stats` is
+ * missing (candidate outside LANING_STATS_CANDIDATE_LIMIT server-side, or
+ * lol.ps had no games for this exact matchup+lane) or when neither gap
+ * clears its threshold, so this never leaves a bare empty block. Shown
+ * outside the collapsed "세부정보" Details (unlike LaningStatsRow's raw
+ * numbers) since these are meant to be an immediately visible suggestion,
+ * not a stat you have to expand to see. */
+function LaningTipList({ stats }: { stats?: VersusStats | null }) {
+  if (!stats) return null;
+  const tips = buildLaningTips(stats);
+  if (tips.length === 0) return null;
+  return (
+    <ul className="laning-tip-list">
+      {tips.map((t) => (
+        <li key={t.text} className={`laning-tip laning-tip--${t.tone}`}>
+          {t.text}
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -1118,25 +1275,21 @@ export default function Home() {
       setSlots(nextSlots);
       setActiveSlotKey(nextSlots[0].key);
     } else {
-      const nextSlots = adviceSlotsFor(position);
+      const nextSlots = adviceSlotsFor();
       setSlots(nextSlots);
       setActiveSlotKey(`enemy-${position}`);
     }
   }
 
   /** Position tabs are shared by counter mode and advice mode. In advice
-   * mode, changing position moves which ally slot is "my pick" (disabled,
-   * not fillable) — the slot keys themselves stay stable, so existing
-   * selections in every other slot are preserved. */
+   * mode, changing position just moves which ally slot counts as "내 픽" for
+   * labeling purposes and which enemy slot the recommendation is keyed off
+   * of — every slot's own value is left untouched (all 10 are equally
+   * fillable now, see adviceSlotsFor's doc comment), so switching position
+   * tabs back and forth never loses anything you've already filled in. */
   function changePosition(next: string) {
     setPosition(next);
     if (mode === "advice") {
-      setSlots((prev) =>
-        prev.map((s) => {
-          const isSelf = s.key === `ally-${next}`;
-          return { ...s, disabled: isSelf, championId: isSelf ? null : s.championId };
-        }),
-      );
       setActiveSlotKey(`enemy-${next}`);
       setAdviceResult(null);
     }
@@ -1146,9 +1299,7 @@ export default function Home() {
     setLastPickedChampionId(championId);
     setSlots((prev) => {
       const next = prev.map((s) => (s.key === activeSlotKey ? { ...s, championId } : s));
-      const nextEmpty = next.find(
-        (s) => s.key !== activeSlotKey && s.championId === null && !s.disabled,
-      );
+      const nextEmpty = next.find((s) => s.key !== activeSlotKey && s.championId === null);
       if (nextEmpty) setActiveSlotKey(nextEmpty.key);
       return next;
     });
@@ -1328,13 +1479,6 @@ export default function Home() {
   }, [mode, canRun, slots, position, championPool[position as Position], poolApplied, recommendCount]);
 
   function renderSlot(slot: Slot) {
-    if (slot.disabled) {
-      return (
-        <div key={slot.key} className="slot slot--disabled" title="추천 대상 자리">
-          <span>{slot.label} (내 픽)</span>
-        </div>
-      );
-    }
     const champ = slot.championId !== null ? championById.get(slot.championId) : null;
     const active = slot.key === activeSlotKey;
     return (
@@ -1372,14 +1516,13 @@ export default function Home() {
    * tag + icon + name in one row) instead of a horizontal pill row. */
   function renderChampSelectSlot(slot: Slot, side: "ally" | "enemy") {
     const shortLabel = POSITION_SHORT_LABEL[slot.key.replace(`${side}-`, "")] ?? "";
-    if (slot.disabled) {
-      return (
-        <div key={slot.key} className="champ-select-slot champ-select-slot--disabled" title="추천 대상 자리">
-          <span className="champ-select-role">{shortLabel}</span>
-          <span>내 픽</span>
-        </div>
-      );
-    }
+    // 내 포지션(위 포지션 탭에서 고른 값)에 해당하는 우리팀 슬롯 — 예전엔
+    // 이 슬롯만 항상 잠겨있어서("추천 대상 자리", 채울 수 없음) 정작 내가
+    // 여기 뭘 넣었을 때 조합이 어떻게 보이는지 확인할 방법이 없었음. 이제는
+    // 다른 슬롯과 똑같이 채울 수 있고, 이 배지로 "이게 내 포지션 슬롯"이라는
+    // 것만 표시함 — 픽 추천 순위 계산은 이 슬롯이 아니라 enemy 슬롯(맞
+    // 라이너) 기준이라 채워도 추천 자체는 그대로 계속 나옴.
+    const isMine = side === "ally" && slot.key === `ally-${position}`;
     const champ = slot.championId !== null ? championById.get(slot.championId) : null;
     const active = slot.key === activeSlotKey;
     // undefined = 아직 조회 안 됨/실패(회색 물음표) — 그 외엔 championSkills.ts/
@@ -1393,10 +1536,11 @@ export default function Home() {
       <button
         key={slot.key}
         type="button"
-        className={`champ-select-slot${active ? " champ-select-slot--active" : ""}${champ ? "" : " champ-select-slot--empty"}`}
+        className={`champ-select-slot${active ? " champ-select-slot--active" : ""}${champ ? "" : " champ-select-slot--empty"}${isMine ? " champ-select-slot--mine" : ""}`}
         onClick={() => (champ ? clearSlot(slot.key) : activateSlot(slot.key))}
       >
         <span className="champ-select-role">{shortLabel}</span>
+        {isMine && <span className="champ-select-mine-badge">내 픽</span>}
         {champ ? (
           <>
             <ChampionIcon src={champ.iconUrl} name={champ.name} />
@@ -1640,8 +1784,14 @@ export default function Home() {
                   <span className="recommend-name">{c.name}</span>
                   <WinRateBar rate={c.winRate} games={c.games} />
                 </div>
+                <div className="badge-row">
+                  <KeyTagBadges tags={c.keyTags} />
+                  <ConceptFitBadges fits={c.conceptFits} />
+                </div>
+                <LaningTipList stats={c.laningStats} />
                 <Details label="소스별 상세">
                   <SourceBreakdown sources={c.bySource} />
+                  {c.laningStats && <LaningStatsRow stats={c.laningStats} />}
                 </Details>
               </li>
             ))}
@@ -1738,7 +1888,10 @@ export default function Home() {
                           outOf={c.allySynergyOutOf}
                           avgWinRate={c.allySynergyAvgWinRate}
                         />
+                        <KeyTagBadges tags={c.keyTags} />
+                        <ConceptFitBadges fits={c.conceptFits} />
                       </div>
+                      <LaningTipList stats={c.laningStats} />
                       <Details label="세부정보">
                         <SourceBreakdown sources={c.bySource} />
                         {c.powerCurveLaneNote && <p className="build-lane-note">⚠ {c.powerCurveLaneNote}</p>}
@@ -1792,6 +1945,8 @@ export default function Home() {
                         outOf={c.allySynergyOutOf}
                         avgWinRate={c.allySynergyAvgWinRate}
                       />
+                      <KeyTagBadges tags={c.keyTags} />
+                      <ConceptFitBadges fits={c.conceptFits} />
                     </div>
                   </li>
                 ))}
@@ -1831,6 +1986,8 @@ export default function Home() {
                           outOf={c.allySynergyOutOf}
                           avgWinRate={c.allySynergyAvgWinRate}
                         />
+                        <KeyTagBadges tags={c.keyTags} />
+                        <ConceptFitBadges fits={c.conceptFits} />
                       </div>
                       <Details label="세부정보">
                         <SourceBreakdown sources={c.bySource} />
@@ -1880,6 +2037,7 @@ export default function Home() {
                         <span className="empty-hint">이 매치업 데이터를 찾지 못했습니다.</span>
                       )}
                     </div>
+                    <LaningTipList stats={l.laningStats} />
                     {(l.bySource.length > 0 || l.laningStats) && (
                       <Details label="세부정보">
                         {l.bySource.length > 0 && <SourceBreakdown sources={l.bySource} />}
