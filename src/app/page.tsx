@@ -52,6 +52,10 @@ interface CounterEntry {
   bySource: SourceValue[];
   keyTags?: KeyTags;
   conceptFits?: CompConceptId[];
+  /** lol.ps head-to-head laning-phase stats (this champion vs the counter) —
+   * only on the top few entries. See LaningTipList/buildLaningTips for the
+   * "라인전 팁" derived from this. */
+  laningStats?: VersusStats | null;
 }
 
 interface CounterResult {
@@ -760,6 +764,84 @@ function LaningStatsRow({ stats }: { stats: VersusStats }) {
         · 표본 {stats.games.toLocaleString()}게임 (lol.ps)
       </p>
     </div>
+  );
+}
+
+/** How large a real 15분 CS/솔로킬 차이 needs to be before it's worth turning
+ * into a "라인전 팁" — same spirit as pickadvice's `laningFitScore` (±2000
+ * gold = "roughly a full swing"), just for CS/solo-kill counts instead of
+ * gold: there's no larger dataset here to calibrate an exact cutoff against,
+ * so these are kept deliberately conservative/simple rather than
+ * empirically derived. CS_LEAD_THRESHOLD (~10, roughly one minion wave) and
+ * SOLO_KILL_LEAD_THRESHOLD (0.15 — solo kill counts run well under 1 per
+ * game in most matchups, so even a small gap is meaningful) are both raw
+ * counts, not percentages. */
+const CS_LEAD_THRESHOLD = 10;
+const SOLO_KILL_LEAD_THRESHOLD = 0.15;
+
+interface LaningTip {
+  text: string;
+  tone: "good" | "bad";
+}
+
+/** Turns lol.ps's real 15분 CS/솔로킬 head-to-head numbers (`VersusStats`,
+ * already fetched for LaningStatsRow above) into short actionable Korean
+ * tips — computed purely client-side from numbers the server already ships,
+ * same pattern as `powerCurveLean`/`ccDotState` turning other raw real
+ * numbers into display labels elsewhere in this app, rather than adding a
+ * server-side text-generation step. Returns at most two tips (CS-based,
+ * solo-kill-based); returns none when neither gap clears its threshold —
+ * same "no badge is itself a (neutral) result" convention as CompFitBadge. */
+function buildLaningTips(stats: VersusStats): LaningTip[] {
+  const tips: LaningTip[] = [];
+  const csDiff = stats.ally.csAt15 - stats.enemy.csAt15;
+  if (csDiff >= CS_LEAD_THRESHOLD) {
+    tips.push({
+      tone: "good",
+      text: `15분 CS가 평균 ${csDiff.toFixed(1)}개 앞서는 매치업이에요 — 우위를 살려 라인을 밀고 상대를 압박해보세요.`,
+    });
+  } else if (csDiff <= -CS_LEAD_THRESHOLD) {
+    tips.push({
+      tone: "bad",
+      text: `15분 CS가 평균 ${Math.abs(csDiff).toFixed(1)}개 밀리는 매치업이에요 — 무리한 교전보다 안전하게 CS 챙기기에 집중하세요.`,
+    });
+  }
+
+  const soloDiff = stats.ally.soloKillBefore15 - stats.enemy.soloKillBefore15;
+  if (soloDiff >= SOLO_KILL_LEAD_THRESHOLD) {
+    tips.push({
+      tone: "good",
+      text: `이 매치업에서 우리가 솔로킬을 낸 경우가 상대보다 많았어요 — 상대가 무리하게 들어올 때 각을 노려보세요.`,
+    });
+  } else if (soloDiff <= -SOLO_KILL_LEAD_THRESHOLD) {
+    tips.push({
+      tone: "bad",
+      text: `이 매치업에서 상대가 솔로킬을 낸 경우가 더 많았어요 — 혼자 스킬 맞을 상황을 만들지 않도록 주의하세요.`,
+    });
+  }
+
+  return tips;
+}
+
+/** Renders buildLaningTips' output — nothing at all when `stats` is
+ * missing (candidate outside LANING_STATS_CANDIDATE_LIMIT server-side, or
+ * lol.ps had no games for this exact matchup+lane) or when neither gap
+ * clears its threshold, so this never leaves a bare empty block. Shown
+ * outside the collapsed "세부정보" Details (unlike LaningStatsRow's raw
+ * numbers) since these are meant to be an immediately visible suggestion,
+ * not a stat you have to expand to see. */
+function LaningTipList({ stats }: { stats?: VersusStats | null }) {
+  if (!stats) return null;
+  const tips = buildLaningTips(stats);
+  if (tips.length === 0) return null;
+  return (
+    <ul className="laning-tip-list">
+      {tips.map((t) => (
+        <li key={t.text} className={`laning-tip laning-tip--${t.tone}`}>
+          {t.text}
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -1706,8 +1788,10 @@ export default function Home() {
                   <KeyTagBadges tags={c.keyTags} />
                   <ConceptFitBadges fits={c.conceptFits} />
                 </div>
+                <LaningTipList stats={c.laningStats} />
                 <Details label="소스별 상세">
                   <SourceBreakdown sources={c.bySource} />
+                  {c.laningStats && <LaningStatsRow stats={c.laningStats} />}
                 </Details>
               </li>
             ))}
@@ -1807,6 +1891,7 @@ export default function Home() {
                         <KeyTagBadges tags={c.keyTags} />
                         <ConceptFitBadges fits={c.conceptFits} />
                       </div>
+                      <LaningTipList stats={c.laningStats} />
                       <Details label="세부정보">
                         <SourceBreakdown sources={c.bySource} />
                         {c.powerCurveLaneNote && <p className="build-lane-note">⚠ {c.powerCurveLaneNote}</p>}
@@ -1952,6 +2037,7 @@ export default function Home() {
                         <span className="empty-hint">이 매치업 데이터를 찾지 못했습니다.</span>
                       )}
                     </div>
+                    <LaningTipList stats={l.laningStats} />
                     {(l.bySource.length > 0 || l.laningStats) && (
                       <Details label="세부정보">
                         {l.bySource.length > 0 && <SourceBreakdown sources={l.bySource} />}

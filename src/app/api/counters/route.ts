@@ -4,6 +4,7 @@ import { POSITIONS, type Position } from "@/lib/positions";
 import { getAggregatedLaneCounters } from "@/lib/sources/aggregate";
 import { getChampionAbilitiesWithCache, toKeyTags, type KeyTags } from "@/lib/championSkills";
 import { championConceptFit, type CompConceptId } from "@/lib/compConcepts";
+import { getVersusStats, type VersusStats } from "@/lib/sources/lolps";
 
 const VALID_POSITIONS = new Set(POSITIONS.map((p) => p.value));
 
@@ -11,6 +12,12 @@ const VALID_POSITIONS = new Set(POSITIONS.map((p) => p.value));
 // best few counters (the ones actually looked at) get a per-champion Data
 // Dragon detail fetch for "핵심 태그"/"게임 스타일".
 const KEY_TAGS_CANDIDATE_LIMIT = 5;
+
+// Same reasoning as above, but for lol.ps's separate versus/stats.json
+// head-to-head endpoint (라인전 세부지표/팁) — kept as its own named limit
+// even though it's currently the same value, matching this app's convention
+// of one constant per feature (see pickadvice's *_CANDIDATE_LIMIT block).
+const LANING_STATS_CANDIDATE_LIMIT = 5;
 
 interface CounterEntry {
   championId: number;
@@ -21,6 +28,13 @@ interface CounterEntry {
   bySource: { sourceId: string; sourceLabel: string; winRate: number; games: number }[];
   keyTags?: KeyTags;
   conceptFits?: CompConceptId[];
+  /** lol.ps head-to-head laning-phase stats (this champion vs the counter) —
+   * only on the top few entries (see LANING_STATS_CANDIDATE_LIMIT). The
+   * client derives "라인전 팁" text from this (see buildLaningTips,
+   * src/app/page.tsx) rather than the server computing tip text, matching
+   * how PowerCurveBadge/ccDotState already turn raw numbers into labels
+   * client-side elsewhere in this app. */
+  laningStats?: VersusStats | null;
 }
 
 /** Best-effort attaches "핵심 태그"/"게임 스타일" to the top N counters (sorted
@@ -52,6 +66,30 @@ async function attachKeyTagsAndConceptFits(
   } catch {
     // Data Dragon unreachable — leave keyTags/conceptFits unset.
   }
+}
+
+/** Best-effort attaches lol.ps's head-to-head laning-phase stats (this
+ * champion vs each of the top N counters) — same endpoint/fields pickadvice
+ * already uses for counterPicks (`getVersusStats`, `src/lib/sources/lolps.ts`),
+ * just never wired into this route before. `champion` (the route's own
+ * `championId` param) is always sent as the "ally" side, so `laningStats.ally`
+ * consistently means the champion the user is looking up, same convention
+ * pickadvice uses. Independent per-entry failures (lol.ps down, or no games
+ * for this exact matchup+lane) just leave that entry's laningStats unset. */
+async function attachLaningStats(
+  entries: CounterEntry[],
+  championId: number,
+  position: Position,
+): Promise<void> {
+  const top = entries.slice(0, LANING_STATS_CANDIDATE_LIMIT);
+  if (top.length === 0) return;
+  const results = await Promise.allSettled(
+    top.map((e) => getVersusStats(championId, e.championId, position)),
+  );
+  top.forEach((entry, i) => {
+    const r = results[i];
+    if (r.status === "fulfilled") entry.laningStats = r.value;
+  });
 }
 
 export async function GET(req: Request) {
@@ -98,7 +136,13 @@ export async function GET(req: Request) {
       })
       .filter((c): c is CounterEntry => c !== null)
       .sort((a, b) => a.winRate - b.winRate); // worst-for-us (best counters) first
-    await attachKeyTagsAndConceptFits(counters, champById);
+    // Independent sources writing disjoint fields — run concurrently instead
+    // of paying the sum of both round trips (same convention as pickadvice's
+    // annotateWithBuild/annotateWithDeeplolBuild Promise.all).
+    await Promise.all([
+      attachKeyTagsAndConceptFits(counters, champById),
+      attachLaningStats(counters, championId, position),
+    ]);
     return NextResponse.json({
       champion: { id: champion.id, name: champion.name, iconUrl: champion.iconUrl },
       position,
