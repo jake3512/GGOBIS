@@ -191,7 +191,7 @@ interface DamageBalance {
   sampledCount: number;
 }
 
-type AdcAttribute = "critAttackSpeed" | "attackSpeed" | "percentDamage" | "critDamage";
+type AdcAttribute = "critAttackSpeed" | "attackSpeed" | "percentDamage" | "critDamage" | "spellblade";
 
 interface AdcArchetypeEntry {
   championId: number;
@@ -490,6 +490,7 @@ const ADC_ATTRIBUTE_LABELS: Record<AdcAttribute, string> = {
   attackSpeed: "공속",
   percentDamage: "퍼센트 데미지",
   critDamage: "치명타 데미지",
+  spellblade: "주문검",
 };
 
 const TANK_ATTRIBUTE_LABELS: Record<TankAttribute, string> = {
