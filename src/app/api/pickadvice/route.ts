@@ -62,6 +62,24 @@ const PICK_REAL_WEIGHT = 0.65;
 const PICK_ENEMY_FIT_WEIGHT = 0.15;
 const PICK_ALLY_SYNERGY_WEIGHT = 0.2;
 
+// How close two candidates' REAL win rates need to be (as a 0-1 fraction —
+// 0.015 = 1.5 percentage points) before champion-pool tier is allowed to
+// reorder them — see applyTierTiebreak below. Previously restrictToPool and
+// every top-N re-sort pass (refineTopWithSkillFit etc.) let tier ALONE
+// decide ordering the instant two candidates were in different tiers, no
+// matter how large their real win-rate gap was — a tier-1 pick with a
+// genuinely much worse real win rate would still rank above a tier-3 pick
+// with a much better one. This narrows tier to a true tiebreaker: it only
+// reorders candidates the real data can't meaningfully separate.
+const TIER_TIE_THRESHOLD = 0.015;
+// Floating-point slop guard for the threshold comparison below — winRate
+// values arrive as divisions/averages (e.g. games won / games played) that
+// can land a hair past an exact boundary (0.53 - 0.515 === 0.015000000000000013
+// in IEEE 754), which would wrongly exclude an exact-1.5pp gap from the
+// "close enough" cluster. Real win-rate data has nowhere near this much
+// precision anyway, so a tiny epsilon costs nothing.
+const TIER_TIE_EPSILON = 1e-9;
+
 // How many of a filled ally's top synergy partners (by measured win rate)
 // count toward computeAllySynergyScores's "intersection" — generous enough
 // that a candidate doesn't need to be literally the #1 partner for every
@@ -208,21 +226,60 @@ function buildTierMap(tier1: number[], tier2: number[], tier3: number[]): Map<nu
   return map;
 }
 
-/** Restricts a recommendation list to the caller's declared champion pool
- * and ranks mastery tier ABOVE the underlying win-rate ranking: tier 1
- * candidates come first, then tier 2, then tier 3, and only within the same
- * tier does the existing win-rate order (asc/desc, already applied by
- * toPickEntries) break ties — Array.prototype.sort is stable, so a
- * tier-only comparator preserves that secondary order automatically. When
- * the pool is empty (tierMap.size === 0, i.e. the caller didn't set one up),
- * this is a no-op and every candidate is returned unrestricted, exactly like
- * before this feature existed. */
+/** Re-orders `entries` IN PLACE so champion-pool tier only breaks near-ties
+ * in real win rate — everywhere else, the order `entries` already has
+ * (whatever the caller ranked by — real win rate for restrictToPool, the
+ * fuller blended pickRankScore for the later refine passes) is left alone.
+ *
+ * Groups entries into contiguous runs where each step to the next entry's
+ * real `winRate` is within TIER_TIE_THRESHOLD — a CHAIN (adjacent-pair
+ * differences), not "every pair in the run within threshold of each
+ * other". That distinction matters: a naive per-pair comparator like
+ * `(a, b) => close(a, b) ? tierDiff : winRateDiff` is not transitive (A can
+ * be "close enough to tie" with B, and B with C, while A and C are far
+ * apart) — Array.prototype.sort assumes a consistent total order, and
+ * feeding it a non-transitive comparator can silently misorder entries in
+ * ways that are hard to predict or debug. Grouping into runs first, then
+ * sorting only WITHIN each run, sidesteps that entirely: every comparison
+ * that actually happens is well-defined.
+ *
+ * Within a run, entries are stable-sorted by tier alone (undefined/no-pool
+ * tier sorts last) — ties (same tier, or no tier for anyone in the run)
+ * keep the order they already had, which is exactly the caller's own
+ * ranking. Entries outside any multi-entry run (no neighbor close enough in
+ * real win rate) are untouched. A no-op when nothing in `entries` has a
+ * tier (no champion pool active), so this is always safe to call. */
+function applyTierTiebreak(entries: PickEntry[]): void {
+  let i = 0;
+  while (i < entries.length) {
+    let j = i + 1;
+    while (j < entries.length && Math.abs(entries[j].winRate - entries[j - 1].winRate) <= TIER_TIE_THRESHOLD + TIER_TIE_EPSILON) {
+      j++;
+    }
+    if (j - i > 1) {
+      const run = entries.slice(i, j);
+      run.sort((a, b) => (a.tier ?? Number.MAX_SAFE_INTEGER) - (b.tier ?? Number.MAX_SAFE_INTEGER));
+      entries.splice(i, j - i, ...run);
+    }
+    i = j;
+  }
+}
+
+/** Restricts a recommendation list to the caller's declared champion pool,
+ * then lets mastery tier break near-ties in real win rate (see
+ * applyTierTiebreak/TIER_TIE_THRESHOLD) — the incoming order (asc/desc,
+ * already applied by toPickEntries/rerankPicks) otherwise stands: a
+ * candidate with a clearly better real win rate still ranks first
+ * regardless of tier. When the pool is empty (tierMap.size === 0, i.e. the
+ * caller didn't set one up), this is a no-op and every candidate is
+ * returned unrestricted, exactly like before this feature existed. */
 function restrictToPool(entries: PickEntry[], tierMap: Map<number, 1 | 2 | 3>): PickEntry[] {
   if (tierMap.size === 0) return entries;
-  return entries
+  const filtered = entries
     .filter((e) => tierMap.has(e.championId))
-    .map((e) => ({ ...e, tier: tierMap.get(e.championId) }))
-    .sort((a, b) => a.tier! - b.tier!);
+    .map((e) => ({ ...e, tier: tierMap.get(e.championId) }));
+  applyTierTiebreak(filtered);
+  return filtered;
 }
 
 /** How well a candidate's measured ally-synergy coverage looks, as the same
@@ -417,13 +474,13 @@ function rerankPicks(
  * using each side's ACTUAL passive/Q/W/E/R kit instead of just the coarse
  * champion tags rerankPicks already applied — see applySkillFitBonus/
  * championSkills.ts for what that adds and why it's bounded to a shortlist
- * (one Data Dragon request per champion). Re-sorts only that shortlist, and
- * tier (from a champion pool, if active) is kept as the dominant key so
- * this never reorders across tiers — it only refines the order within
- * whatever restrictToPool already grouped together; allySynergyFit is left
- * exactly as rerankPicks set it (this pass only bonuses compFit). Best-
- * effort: any failure (Data Dragon down, shape changed) just leaves the
- * tag-based compFit from rerankPicks as-is. */
+ * (one Data Dragon request per champion). Re-sorts only that shortlist by
+ * the resulting blended score, then re-applies the tier tiebreak (see
+ * applyTierTiebreak) so a champion-pool tier still only reorders real
+ * near-ties, not the whole shortlist; allySynergyFit is left exactly as
+ * rerankPicks set it (this pass only bonuses compFit). Best-effort: any
+ * failure (Data Dragon down, shape changed) just leaves the tag-based
+ * compFit from rerankPicks as-is. */
 async function refineTopWithSkillFit(
   picks: PickEntry[],
   champById: Map<number, DDragonChampion>,
@@ -455,11 +512,8 @@ async function refineTopWithSkillFit(
       entry.compFit = applySkillFitBonus(entry.compFit ?? 0.5, r.value, enemyAbilities);
     });
 
-    top.sort((a, b) => {
-      const tierDiff = (a.tier ?? 0) - (b.tier ?? 0);
-      if (tierDiff !== 0) return tierDiff;
-      return pickRankScore(b, order) - pickRankScore(a, order);
-    });
+    top.sort((a, b) => pickRankScore(b, order) - pickRankScore(a, order));
+    applyTierTiebreak(top);
     picks.splice(0, top.length, ...top);
   } catch {
     // Data Dragon unreachable or shape changed — tag-based compFit stands.
@@ -520,10 +574,11 @@ function laningFitScore(stats: VersusStats): number {
  *     null for synergyPicks — there's no single opposing laner there) —
  *     blended into the real winRate goodness term.
  * Runs AFTER refineTopWithSkillFit so it has final say on ordering within
- * the shortlist; tier (if a pool is active) stays the dominant sort key,
- * same convention as every other refine pass here. Best-effort per
- * candidate (Promise.allSettled): a lol.ps failure for one candidate just
- * leaves its blend inputs at neutral rather than failing the whole pass. */
+ * the shortlist; sorts by the resulting blended score, then re-applies the
+ * champion-pool tier tiebreak (see applyTierTiebreak), same convention as
+ * every other refine pass here. Best-effort per candidate
+ * (Promise.allSettled): a lol.ps failure for one candidate just leaves its
+ * blend inputs at neutral rather than failing the whole pass. */
 async function refineTopWithPowerCurveAndLaning(
   picks: PickEntry[],
   position: Position,
@@ -568,11 +623,8 @@ async function refineTopWithPowerCurveAndLaning(
     }
   });
 
-  top.sort((a, b) => {
-    const tierDiff = (a.tier ?? 0) - (b.tier ?? 0);
-    if (tierDiff !== 0) return tierDiff;
-    return pickRankScore(b, order) - pickRankScore(a, order);
-  });
+  top.sort((a, b) => pickRankScore(b, order) - pickRankScore(a, order));
+  applyTierTiebreak(top);
   picks.splice(0, top.length, ...top);
 }
 
@@ -694,11 +746,8 @@ function applyBuildFitBonus(picks: PickEntry[], enemyChamps: DDragonChampion[], 
     if (bonus > 0) entry.compFit = Math.min(1, (entry.compFit ?? 0.5) + bonus);
   }
 
-  top.sort((a, b) => {
-    const tierDiff = (a.tier ?? 0) - (b.tier ?? 0);
-    if (tierDiff !== 0) return tierDiff;
-    return pickRankScore(b, order) - pickRankScore(a, order);
-  });
+  top.sort((a, b) => pickRankScore(b, order) - pickRankScore(a, order));
+  applyTierTiebreak(top);
   picks.splice(0, top.length, ...top);
 }
 

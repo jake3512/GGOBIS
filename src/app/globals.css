@@ -345,16 +345,23 @@ textarea {
   font-weight: 700;
 }
 
-.champ-select-slot--disabled {
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  min-height: 44px;
-  padding: 0.3rem 0.5rem;
-  border: 1px dashed var(--accent);
-  border-radius: 8px;
+/* 내 포지션에 해당하는 우리팀 슬롯 표시 — 더 이상 잠겨있지 않고(다른 슬롯과
+   동일하게 채울 수 있음) 그냥 "이게 내 픽 슬롯"이라는 정보만 알려줌. 채워진
+   상태(선택된 챔피언 색)와 헷갈리지 않게 accent 테두리만 살짝 주고 배경은
+   안 건드림 — .champ-select-slot--active(파란 배경 채움)와는 다른 강도. */
+.champ-select-slot--mine {
+  border-color: var(--accent);
+}
+
+.champ-select-mine-badge {
+  flex-shrink: 0;
+  padding: 1px 5px;
+  border-radius: 999px;
+  border: 1px solid var(--accent);
   color: var(--accent);
-  font-size: 0.8rem;
+  font-size: 0.62rem;
+  font-weight: 700;
+  white-space: nowrap;
 }
 
 /* Per-slot CC indicator dot — reflects the real championSkills.ts
@@ -819,16 +826,6 @@ textarea {
   padding: 0.6rem 0.8rem;
 }
 
-.slot--disabled {
-  display: inline-flex;
-  align-items: center;
-  min-height: 44px;
-  padding: 0.4rem 1rem;
-  border: 1px dashed var(--accent);
-  border-radius: 999px;
-  color: var(--accent);
-  font-size: 0.85rem;
-}
 
 .source-status {
   font-size: 0.8rem;

@@ -396,9 +396,6 @@ interface Slot {
   key: string;
   label: string;
   championId: number | null;
-  /** True for the one slot advice mode is recommending a pick for — not a
-   * fillable input. */
-  disabled?: boolean;
 }
 
 /** Advice mode shows a full 10-slot draft board (5 ally + 5 enemy
@@ -408,14 +405,20 @@ interface Slot {
  * whichever ally/enemy pairs are filled in also feed the "measured"
  * lane-by-lane + duo synergy comparison and the tag-based comp analysis
  * further down the results — see the hint text rendered alongside the
- * board for exactly which. */
-function adviceSlotsFor(myPosition: string): Slot[] {
+ * board for exactly which. My own position's ally slot ("내 픽") used to be
+ * locked (never fillable, reserved purely as "what am I being recommended
+ * a pick for") — it's a normal fillable slot like any other now, just
+ * tagged with a small badge (see renderChampSelectSlot) — filling it in
+ * lets you preview the full comp (조합 분석/조합 컨셉/CC/파워 커브) with your
+ * actual pick included, not just the other 9 slots. The recommendation
+ * lists still work independently of whether this slot is filled — they're
+ * keyed off the ENEMY laner slot, not this one. */
+function adviceSlotsFor(): Slot[] {
   return [
     ...POSITIONS.map((p) => ({
       key: `ally-${p.value}`,
       label: `우리팀 ${p.label}`,
       championId: null,
-      disabled: p.value === myPosition,
     })),
     ...POSITIONS.map((p) => ({
       key: `enemy-${p.value}`,
@@ -1118,25 +1121,21 @@ export default function Home() {
       setSlots(nextSlots);
       setActiveSlotKey(nextSlots[0].key);
     } else {
-      const nextSlots = adviceSlotsFor(position);
+      const nextSlots = adviceSlotsFor();
       setSlots(nextSlots);
       setActiveSlotKey(`enemy-${position}`);
     }
   }
 
   /** Position tabs are shared by counter mode and advice mode. In advice
-   * mode, changing position moves which ally slot is "my pick" (disabled,
-   * not fillable) — the slot keys themselves stay stable, so existing
-   * selections in every other slot are preserved. */
+   * mode, changing position just moves which ally slot counts as "내 픽" for
+   * labeling purposes and which enemy slot the recommendation is keyed off
+   * of — every slot's own value is left untouched (all 10 are equally
+   * fillable now, see adviceSlotsFor's doc comment), so switching position
+   * tabs back and forth never loses anything you've already filled in. */
   function changePosition(next: string) {
     setPosition(next);
     if (mode === "advice") {
-      setSlots((prev) =>
-        prev.map((s) => {
-          const isSelf = s.key === `ally-${next}`;
-          return { ...s, disabled: isSelf, championId: isSelf ? null : s.championId };
-        }),
-      );
       setActiveSlotKey(`enemy-${next}`);
       setAdviceResult(null);
     }
@@ -1146,9 +1145,7 @@ export default function Home() {
     setLastPickedChampionId(championId);
     setSlots((prev) => {
       const next = prev.map((s) => (s.key === activeSlotKey ? { ...s, championId } : s));
-      const nextEmpty = next.find(
-        (s) => s.key !== activeSlotKey && s.championId === null && !s.disabled,
-      );
+      const nextEmpty = next.find((s) => s.key !== activeSlotKey && s.championId === null);
       if (nextEmpty) setActiveSlotKey(nextEmpty.key);
       return next;
     });
@@ -1328,13 +1325,6 @@ export default function Home() {
   }, [mode, canRun, slots, position, championPool[position as Position], poolApplied, recommendCount]);
 
   function renderSlot(slot: Slot) {
-    if (slot.disabled) {
-      return (
-        <div key={slot.key} className="slot slot--disabled" title="추천 대상 자리">
-          <span>{slot.label} (내 픽)</span>
-        </div>
-      );
-    }
     const champ = slot.championId !== null ? championById.get(slot.championId) : null;
     const active = slot.key === activeSlotKey;
     return (
@@ -1372,14 +1362,13 @@ export default function Home() {
    * tag + icon + name in one row) instead of a horizontal pill row. */
   function renderChampSelectSlot(slot: Slot, side: "ally" | "enemy") {
     const shortLabel = POSITION_SHORT_LABEL[slot.key.replace(`${side}-`, "")] ?? "";
-    if (slot.disabled) {
-      return (
-        <div key={slot.key} className="champ-select-slot champ-select-slot--disabled" title="추천 대상 자리">
-          <span className="champ-select-role">{shortLabel}</span>
-          <span>내 픽</span>
-        </div>
-      );
-    }
+    // 내 포지션(위 포지션 탭에서 고른 값)에 해당하는 우리팀 슬롯 — 예전엔
+    // 이 슬롯만 항상 잠겨있어서("추천 대상 자리", 채울 수 없음) 정작 내가
+    // 여기 뭘 넣었을 때 조합이 어떻게 보이는지 확인할 방법이 없었음. 이제는
+    // 다른 슬롯과 똑같이 채울 수 있고, 이 배지로 "이게 내 포지션 슬롯"이라는
+    // 것만 표시함 — 픽 추천 순위 계산은 이 슬롯이 아니라 enemy 슬롯(맞
+    // 라이너) 기준이라 채워도 추천 자체는 그대로 계속 나옴.
+    const isMine = side === "ally" && slot.key === `ally-${position}`;
     const champ = slot.championId !== null ? championById.get(slot.championId) : null;
     const active = slot.key === activeSlotKey;
     // undefined = 아직 조회 안 됨/실패(회색 물음표) — 그 외엔 championSkills.ts/
@@ -1393,10 +1382,11 @@ export default function Home() {
       <button
         key={slot.key}
         type="button"
-        className={`champ-select-slot${active ? " champ-select-slot--active" : ""}${champ ? "" : " champ-select-slot--empty"}`}
+        className={`champ-select-slot${active ? " champ-select-slot--active" : ""}${champ ? "" : " champ-select-slot--empty"}${isMine ? " champ-select-slot--mine" : ""}`}
         onClick={() => (champ ? clearSlot(slot.key) : activateSlot(slot.key))}
       >
         <span className="champ-select-role">{shortLabel}</span>
+        {isMine && <span className="champ-select-mine-badge">내 픽</span>}
         {champ ? (
           <>
             <ChampionIcon src={champ.iconUrl} name={champ.name} />
