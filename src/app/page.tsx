@@ -30,6 +30,19 @@ interface SourceErrorInfo {
   message: string;
 }
 
+/** This app's own real-signal "핵심 태그" — the same hasHardCC/hasSoftCC/
+ * hasMobility/hasShieldOrHeal/hasLongRange booleans championSkills.ts derives
+ * from real (Korean) Data Dragon ability text via keyword matching. Only
+ * attached to the top few entries of each list (see *_CANDIDATE_LIMIT
+ * server-side) — a per-champion Data Dragon detail fetch, not free. */
+interface KeyTags {
+  hasHardCC: boolean;
+  hasSoftCC: boolean;
+  hasMobility: boolean;
+  hasShieldOrHeal: boolean;
+  hasLongRange: boolean;
+}
+
 interface CounterEntry {
   championId: number;
   name: string;
@@ -37,6 +50,8 @@ interface CounterEntry {
   winRate: number;
   games: number;
   bySource: SourceValue[];
+  keyTags?: KeyTags;
+  conceptFits?: CompConceptId[];
 }
 
 interface CounterResult {
@@ -81,6 +96,13 @@ interface PickEntry {
    * on counter-pick candidates (no single enemy laner to compare against
    * for bottom-duo synergy candidates). */
   laningStats?: VersusStats | null;
+  /** "핵심 태그" (see KeyTags above) — only on the top few entries. */
+  keyTags?: KeyTags;
+  /** Which of the 5 known comp concepts this candidate individually fits
+   * (게임 스타일) — app-curated, not measured data (see compConcepts.ts
+   * server-side and CONCEPT_PILOT_TIPS below for the same caveat elsewhere
+   * in this file). Only on the top few entries. */
+  conceptFits?: CompConceptId[];
 }
 
 /** "내 픽 추천" fallback for when the direct lane opponent isn't filled in
@@ -101,6 +123,8 @@ interface CompFitPickEntry {
   allySynergyOutOf: number;
   allySynergyAvgWinRate: number | null;
   tier?: 1 | 2 | 3;
+  keyTags?: KeyTags;
+  conceptFits?: CompConceptId[];
 }
 
 interface CombinedPickEntry {
@@ -653,6 +677,54 @@ function AllySynergyBadge({
     <span className="ally-synergy-badge">
       {label}
       {avgWinRate != null && ` (평균 ${(avgWinRate * 100).toFixed(1)}%)`}
+    </span>
+  );
+}
+
+/** Compact chip labels for KeyTags — order matches championSkills.ts's
+ * declaration order (hard CC first, most decisive signal). */
+const KEY_TAG_LABELS: { key: keyof KeyTags; label: string }[] = [
+  { key: "hasHardCC", label: "하드CC" },
+  { key: "hasSoftCC", label: "둔화" },
+  { key: "hasMobility", label: "기동성" },
+  { key: "hasShieldOrHeal", label: "보호막/회복" },
+  { key: "hasLongRange", label: "장거리" },
+];
+
+/** "핵심 태그" chips — this app's own classification of REAL Data Dragon
+ * ability text (see championSkills.ts), not a win rate. Only renders the
+ * tags that are actually true; nothing shown at all when keyTags wasn't
+ * attached (candidate outside the top-N Data Dragon fetch limit) or none of
+ * the five tags apply. */
+function KeyTagBadges({ tags }: { tags?: KeyTags }) {
+  if (!tags) return null;
+  const active = KEY_TAG_LABELS.filter((t) => tags[t.key]);
+  if (active.length === 0) return null;
+  return (
+    <span className="key-tag-row" title="이 챔피언의 실제 스킬 텍스트에서 이 앱이 분류한 핵심 태그입니다">
+      {active.map((t) => (
+        <span key={t.key} className="key-tag-chip">
+          {t.label}
+        </span>
+      ))}
+    </span>
+  );
+}
+
+/** "게임 스타일" chips — which of compConcepts.ts's 5 known comp-concept
+ * archetypes this ONE candidate individually fits (championConceptFit,
+ * server-side). Explicitly NOT measured data — same "app-curated strategic
+ * knowledge, not a win rate" caveat as CompConceptCard/CONCEPT_PILOT_TIPS
+ * elsewhere in this file, just per-champion instead of per-team. */
+function ConceptFitBadges({ fits }: { fits?: CompConceptId[] }) {
+  if (!fits || fits.length === 0) return null;
+  return (
+    <span className="concept-fit-row" title="실측 승률이 아니라 이 앱이 분류한 게임 스타일 성향입니다">
+      {fits.map((id) => (
+        <span key={id} className="concept-fit-chip">
+          {COMP_CONCEPT_LABELS[id]}
+        </span>
+      ))}
     </span>
   );
 }
@@ -1630,6 +1702,10 @@ export default function Home() {
                   <span className="recommend-name">{c.name}</span>
                   <WinRateBar rate={c.winRate} games={c.games} />
                 </div>
+                <div className="badge-row">
+                  <KeyTagBadges tags={c.keyTags} />
+                  <ConceptFitBadges fits={c.conceptFits} />
+                </div>
                 <Details label="소스별 상세">
                   <SourceBreakdown sources={c.bySource} />
                 </Details>
@@ -1728,6 +1804,8 @@ export default function Home() {
                           outOf={c.allySynergyOutOf}
                           avgWinRate={c.allySynergyAvgWinRate}
                         />
+                        <KeyTagBadges tags={c.keyTags} />
+                        <ConceptFitBadges fits={c.conceptFits} />
                       </div>
                       <Details label="세부정보">
                         <SourceBreakdown sources={c.bySource} />
@@ -1782,6 +1860,8 @@ export default function Home() {
                         outOf={c.allySynergyOutOf}
                         avgWinRate={c.allySynergyAvgWinRate}
                       />
+                      <KeyTagBadges tags={c.keyTags} />
+                      <ConceptFitBadges fits={c.conceptFits} />
                     </div>
                   </li>
                 ))}
@@ -1821,6 +1901,8 @@ export default function Home() {
                           outOf={c.allySynergyOutOf}
                           avgWinRate={c.allySynergyAvgWinRate}
                         />
+                        <KeyTagBadges tags={c.keyTags} />
+                        <ConceptFitBadges fits={c.conceptFits} />
                       </div>
                       <Details label="세부정보">
                         <SourceBreakdown sources={c.bySource} />

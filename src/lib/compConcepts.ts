@@ -69,6 +69,36 @@ function fitsSplitPush(c: DDragonChampion): boolean {
   return c.tags.includes("Fighter") && (c.info?.defense ?? 0) >= 5;
 }
 
+/** Which of the 5 known comp concepts a SINGLE champion individually fits —
+ * reuses the exact same tag/ability-based detectors analyzeCompConcepts
+ * already uses for whole-team aggregation, just evaluated for one champion
+ * on its own rather than counted across a filled roster. A champion can fit
+ * more than one (e.g. a tanky Fighter reads as both "engage" and
+ * "teamfight") — returned in COMP_CONCEPTS' declared order; the caller
+ * decides how many to actually show. Individually, "protect" only needs
+ * EITHER the carry role OR the peeler role (fitsProtectCarry(c) ||
+ * fitsProtectPeel(c, a)) — unlike analyzeCompConcepts' team-level
+ * `dominant` gate, which requires both roles present somewhere in the whole
+ * roster before calling a TEAM protect-focused; for one champion on its
+ * own, having either role already is what "fits protect" means.
+ *
+ * Exposed as a "게임 스타일"/individual win-condition-ish hint on
+ * candidate cards (pick recommendation, lane counter) — same "app-curated
+ * strategic knowledge, not measured data" caveat as the rest of this file
+ * (see the file header comment). */
+export function championConceptFit(
+  champ: DDragonChampion,
+  abilities: ChampionAbilities | undefined,
+): CompConceptId[] {
+  const fits: CompConceptId[] = [];
+  if (fitsEngage(champ, abilities)) fits.push("engage");
+  if (fitsPoke(champ, abilities)) fits.push("poke");
+  if (fitsProtectCarry(champ) || fitsProtectPeel(champ, abilities)) fits.push("protect");
+  if (fitsTeamfight(champ, abilities)) fits.push("teamfight");
+  if (fitsSplitPush(champ)) fits.push("splitPush");
+  return fits;
+}
+
 export interface CompConceptScore {
   id: CompConceptId;
   matchCount: number;

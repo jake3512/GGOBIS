@@ -51,6 +51,30 @@ export interface ChampionAbilities {
   hasLongRange: boolean;
 }
 
+/** Just the five boolean tags off ChampionAbilities, without the ability
+ * text/slug — the shape returned to the client as a "핵심 태그" summary on
+ * pick-recommendation/lane-counter candidate cards (see toKeyTags below).
+ * Kept as its own type rather than reusing ChampionAbilities directly so
+ * API responses don't leak full ability descriptions just to show five
+ * booleans. */
+export interface KeyTags {
+  hasHardCC: boolean;
+  hasSoftCC: boolean;
+  hasMobility: boolean;
+  hasShieldOrHeal: boolean;
+  hasLongRange: boolean;
+}
+
+export function toKeyTags(a: ChampionAbilities): KeyTags {
+  return {
+    hasHardCC: a.hasHardCC,
+    hasSoftCC: a.hasSoftCC,
+    hasMobility: a.hasMobility,
+    hasShieldOrHeal: a.hasShieldOrHeal,
+    hasLongRange: a.hasLongRange,
+  };
+}
+
 // Root Korean terms for each tag. Matched as plain substrings (not full
 // phrases) since Riot's exact phrasing varies per ability ("기절시킵니다" vs
 // "짧은 시간 동안 기절 상태로 만듭니다" vs "기절 효과") but all reliably contain

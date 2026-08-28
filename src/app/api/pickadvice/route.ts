@@ -21,8 +21,8 @@ import {
 import { getChampionBuild as getDeeplolChampionBuild } from "@/lib/sources/deeplol";
 import { toBuildResult, type BuildResult } from "@/lib/buildRefs";
 import { analyzeTeamComp, applySkillFitBonus, scoreEnemyCompFit } from "@/lib/teamComp";
-import { getChampionAbilitiesWithCache, type ChampionAbilities } from "@/lib/championSkills";
-import { analyzeCompConcepts, lookupConceptMatchup } from "@/lib/compConcepts";
+import { getChampionAbilitiesWithCache, toKeyTags, type ChampionAbilities, type KeyTags } from "@/lib/championSkills";
+import { analyzeCompConcepts, championConceptFit, lookupConceptMatchup, type CompConceptId } from "@/lib/compConcepts";
 
 // Only the top handful of each recommendation list gets a power-curve/build/
 // skill-kit lookup — the list itself can be 20-40 champions long, and
@@ -202,6 +202,20 @@ interface PickEntry {
    * same top-N-only limit as power curve/build above. See
    * refineTopWithPowerCurveAndLaning. */
   laningStats?: VersusStats | null;
+  /** This candidate's real Data Dragon ability tags (championSkills.ts) —
+   * the same signals already used to nudge compFit in refineTopWithSkillFit,
+   * now also surfaced directly so the UI can show "핵심 태그" chips (CC/
+   * 기동성/보호막·회복/사거리) instead of only using them invisibly for
+   * ranking. Same top-N-only limit as the rest of this file (one Data
+   * Dragon request per champion). */
+  keyTags?: KeyTags;
+  /** Which of compConcepts.ts's 5 known comp-concept archetypes this ONE
+   * candidate individually fits (championConceptFit) — shown as a "게임
+   * 스타일" hint (e.g. "포킹형", "한타형"). Explicitly NOT measured data,
+   * same caveat as the rest of compConcepts.ts — app-curated strategic
+   * categorization from real tag/ability signals, not a win rate. Same
+   * top-N-only limit. */
+  conceptFits?: CompConceptId[];
 }
 
 /** Parses a comma-separated list of champion IDs from a tier1/tier2/tier3
@@ -360,6 +374,12 @@ interface CompFitPickEntry {
   allySynergyOutOf: number;
   allySynergyAvgWinRate: number | null;
   tier?: 1 | 2 | 3;
+  /** Same "핵심 태그"/"게임 스타일" fields as PickEntry (see there for what
+   * each means and why they're safe to show) — attached to the top
+   * SKILL_FIT_CANDIDATE_LIMIT entries after sorting, same as counterPicks/
+   * synergyPicks. */
+  keyTags?: KeyTags;
+  conceptFits?: CompConceptId[];
 }
 
 /** Deliberately restricted to the user's own declared champion pool for this
@@ -370,12 +390,12 @@ interface CompFitPickEntry {
  * champions nobody plays in this position. Returns null (not an empty
  * array) when there's no pool to draw from, so the caller/frontend can tell
  * "nothing to show, register a pool" apart from "ranked an empty pool." */
-function computeCompFitPicks(
+async function computeCompFitPicks(
   champById: Map<number, DDragonChampion>,
   tierMap: Map<number, 1 | 2 | 3>,
   enemyChamps: DDragonChampion[],
   allySynergy: { scores: Map<number, { matchCount: number; avgWinRate: number | null }>; outOf: number },
-): CompFitPickEntry[] | null {
+): Promise<CompFitPickEntry[] | null> {
   if (tierMap.size === 0) return null;
   const entries: CompFitPickEntry[] = [];
   for (const [championId, tier] of tierMap) {
@@ -404,6 +424,37 @@ function computeCompFitPicks(
   const score = (e: CompFitPickEntry) => (PICK_ENEMY_FIT_WEIGHT * e.compFit + PICK_ALLY_SYNERGY_WEIGHT * e.allySynergyFit) / totalWeight;
   entries.sort((a, b) => score(b) - score(a));
   entries.sort((a, b) => (a.tier ?? 0) - (b.tier ?? 0));
+
+  // Same best-effort "핵심 태그"/"게임 스타일" attachment as counterPicks/
+  // synergyPicks (see annotateWithKeyTagsAndConceptFits) — done here inline
+  // rather than sharing that function directly since CompFitPickEntry isn't a
+  // PickEntry (no winRate/games/bySource to fake), but the fetch+attach logic
+  // is otherwise identical. Attached AFTER both sorts above so the top N
+  // fetched matches what's actually shown first once the caller slices to
+  // recommendCount.
+  const top = entries.slice(0, SKILL_FIT_CANDIDATE_LIMIT);
+  if (top.length > 0) {
+    try {
+      const version = await getLatestVersion();
+      const results = await Promise.allSettled(
+        top.map((e) => {
+          const champ = champById.get(e.championId);
+          if (!champ) return Promise.reject(new Error("unknown champion"));
+          return getChampionAbilitiesWithCache(champ.slug, version);
+        }),
+      );
+      top.forEach((entry, i) => {
+        const r = results[i];
+        if (r.status !== "fulfilled") return;
+        const champ = champById.get(entry.championId);
+        entry.keyTags = toKeyTags(r.value);
+        if (champ) entry.conceptFits = championConceptFit(champ, r.value);
+      });
+    } catch {
+      // Data Dragon unreachable — leave keyTags/conceptFits unset.
+    }
+  }
+
   return entries;
 }
 
@@ -517,6 +568,48 @@ async function refineTopWithSkillFit(
     picks.splice(0, top.length, ...top);
   } catch {
     // Data Dragon unreachable or shape changed — tag-based compFit stands.
+  }
+}
+
+/** Best-effort attaches this app's own real-signal "핵심 태그" (KeyTags) and
+ * app-curated "게임 스타일" comp-concept fit (championConceptFit) to the top N
+ * entries of `picks` — independent of refineTopWithSkillFit's enemy-comp-fit
+ * bonus (which needs at least one enemy champion filled to have anything to
+ * score against): keyTags/conceptFits describe the CANDIDATE alone, so unlike
+ * that pass, this one still runs with an empty enemyChamps (e.g. synergyPicks
+ * before any enemy slot is filled). Meant to be called LAST, after every
+ * ranking/reorder pass (rerankPicks/refineTopWithSkillFit/
+ * refineTopWithPowerCurveAndLaning/applyBuildFitBonus) — the top N it reads is
+ * exactly what the client ends up displaying. Reuses the same cached
+ * getChampionAbilitiesWithCache calls those earlier passes already make for
+ * the same champion within a request (per-process 1hr cache, keyed by
+ * slug+locale), so this doesn't add new Data Dragon load beyond what's already
+ * fetched for the shortlist. Purely additive/display-only fields — mutates the
+ * existing entry objects in place and never reorders `picks`. */
+async function annotateWithKeyTagsAndConceptFits(
+  picks: PickEntry[],
+  champById: Map<number, DDragonChampion>,
+): Promise<void> {
+  const top = picks.slice(0, SKILL_FIT_CANDIDATE_LIMIT);
+  if (top.length === 0) return;
+  try {
+    const version = await getLatestVersion();
+    const results = await Promise.allSettled(
+      top.map((p) => {
+        const champ = champById.get(p.championId);
+        if (!champ) return Promise.reject(new Error("unknown champion"));
+        return getChampionAbilitiesWithCache(champ.slug, version);
+      }),
+    );
+    top.forEach((entry, i) => {
+      const r = results[i];
+      if (r.status !== "fulfilled") return;
+      const champ = champById.get(entry.championId);
+      entry.keyTags = toKeyTags(r.value);
+      if (champ) entry.conceptFits = championConceptFit(champ, r.value);
+    });
+  } catch {
+    // Data Dragon unreachable — leave keyTags/conceptFits unset.
   }
 }
 
@@ -993,6 +1086,7 @@ export async function GET(req: Request) {
       // both round trips.
       await Promise.all([annotateWithBuild(counterPicks, position), annotateWithDeeplolBuild(counterPicks, position)]);
       applyBuildFitBonus(counterPicks, enemyChamps, "asc");
+      await annotateWithKeyTagsAndConceptFits(counterPicks, champById);
     } catch (err) {
       counterError = err instanceof Error ? err.message : "라인전 카운터 조회에 실패했습니다.";
     }
@@ -1006,7 +1100,7 @@ export async function GET(req: Request) {
   // 등록돼 있고 상대/우리팀 중 뭐라도 채워져 있을 때만 동작. ---
   const compFitPicks =
     !enemyLaneChampion && (enemyChamps.length > 0 || allyChamps.length > 0)
-      ? computeCompFitPicks(champById, tierMap, enemyChamps, allySynergy)?.slice(0, recommendCount) ?? null
+      ? (await computeCompFitPicks(champById, tierMap, enemyChamps, allySynergy))?.slice(0, recommendCount) ?? null
       : null;
 
   let synergyPicks: PickEntry[] | null = null;
@@ -1023,6 +1117,7 @@ export async function GET(req: Request) {
       await refineTopWithPowerCurveAndLaning(synergyPicks, position, teamPeak, null, "desc");
       await Promise.all([annotateWithBuild(synergyPicks, position), annotateWithDeeplolBuild(synergyPicks, position)]);
       applyBuildFitBonus(synergyPicks, enemyChamps, "desc");
+      await annotateWithKeyTagsAndConceptFits(synergyPicks, champById);
     } catch (err) {
       synergyError = err instanceof Error ? err.message : "시너지 조회에 실패했습니다.";
     }

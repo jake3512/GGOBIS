@@ -611,6 +611,48 @@ textarea {
   color: var(--neutral);
 }
 
+/* KeyTagBadges — grounded in real (if keyword-classified) Data Dragon
+   ability text, so it gets the accent tint (same family as real-data-leaning
+   badges like ally-synergy-badge) rather than comp-fit-badge's neutral gray,
+   even though it's still a heuristic classifier, not official Riot data. */
+.key-tag-row {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.key-tag-chip {
+  display: inline-block;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--accent);
+  background: rgba(91, 155, 255, 0.14);
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  padding: 0.1rem 0.5rem;
+}
+
+/* ConceptFitBadges — explicitly NOT measured data (see championConceptFit/
+   compConcepts.ts), so it deliberately avoids both the real-data accent tint
+   above and the win-rate good/bad colors — a muted violet reads as "style
+   categorization" without implying a stat. */
+.concept-fit-row {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.concept-fit-chip {
+  display: inline-block;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #b79dff;
+  background: rgba(148, 112, 255, 0.14);
+  border: 1px solid #8f6fe8;
+  border-radius: 999px;
+  padding: 0.1rem 0.5rem;
+}
+
 .champion-pool-editor {
   background: var(--surface);
   border: 1px solid var(--border);
