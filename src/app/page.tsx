@@ -7,7 +7,7 @@ import { WinRateBar } from "@/components/WinRateBar";
 import { SourceBreakdown } from "@/components/SourceBreakdown";
 import { BuildCard, BuildCardCompact, type BuildResult } from "@/components/BuildCard";
 import { Details } from "@/components/Details";
-import { POSITIONS } from "@/lib/positions";
+import { POSITIONS, type Position } from "@/lib/positions";
 
 type Mode = "counter" | "advice" | "build";
 
@@ -326,14 +326,41 @@ const CONCEPT_COUNTER_TIPS: Record<CompConceptId, string[]> = {
   ],
 };
 
-/** User-declared champion pool for 픽 추천, split by mastery tier (1 =
- * most proficient). Persisted to localStorage so it survives reloads —
- * there's no backend/DB in this app, so the browser is the only place it
- * can live. Empty pool (all three tiers empty) means "no restriction",
+/** One position's champion pool, split by mastery tier (1 = most
+ * proficient). */
+type TierBucket = Record<1 | 2 | 3, number[]>;
+const EMPTY_TIER_BUCKET: TierBucket = { 1: [], 2: [], 3: [] };
+
+/** User-declared champion pool for 픽 추천, one tier bucket PER POSITION —
+ * a champion registered while looking at "탑" only restricts/prioritizes 탑
+ * recommendations, not 정글/미드/etc, since the same champion pool used to
+ * apply everywhere regardless of which position tab was open (registering
+ * Lux for mid would also make her show up as a suggested top pick). Keyed
+ * by the same `position` state the rest of advice mode already uses for
+ * "내 포지션", so switching that tab naturally switches which pool you're
+ * looking at/editing — no separate UI surface needed. Persisted to
+ * localStorage so it survives reloads — there's no backend/DB in this app,
+ * so the browser is the only place it can live. A position's empty bucket
+ * (all three tiers empty) means "no restriction for this position",
  * matching the server's default behavior. */
-type ChampionPool = Record<1 | 2 | 3, number[]>;
-const EMPTY_POOL: ChampionPool = { 1: [], 2: [], 3: [] };
+type ChampionPool = Record<Position, TierBucket>;
+const EMPTY_POOL: ChampionPool = Object.fromEntries(
+  POSITIONS.map((p) => [p.value, EMPTY_TIER_BUCKET]),
+) as ChampionPool;
 const POOL_STORAGE_KEY = "semips-champion-pool";
+
+/** True when `v` looks like a valid TierBucket — used both to validate what
+ * comes back out of localStorage (arbitrary/corrupt JSON) and, as a side
+ * effect, to safely no-op on the OLD pre-per-position storage shape (a bare
+ * `{1: [...], 2: [...], 3: [...]}` with no position keys) rather than
+ * crashing or misinterpreting it — that old shape just fails this check for
+ * every position and falls back to EMPTY_TIER_BUCKET, a one-time silent
+ * reset instead of a broken pool. */
+function isValidTierBucket(v: unknown): v is TierBucket {
+  if (typeof v !== "object" || v === null) return false;
+  const b = v as Record<string, unknown>;
+  return ([1, 2, 3] as const).every((t) => Array.isArray(b[t]));
+}
 
 /** How many entries 픽 추천's recommendation lists (라인전 유리한 픽/시너지
  * 좋은 픽/둘 다 좋은 픽) show — sent as the `count` query param, matching
@@ -797,13 +824,17 @@ function ChampionPoolTier({
   );
 }
 
-/** 픽 추천 전용: 사용자가 실제로 플레이하는 챔피언만 1~3티어로 등록해두면
- * 서버가 그 안에서만, 그리고 티어 순서를 승률보다 우선해서 추천하도록
- * tier1/tier2/tier3 쿼리 파라미터로 넘긴다. 아무것도 등록하지 않으면
- * 지금까지처럼 전체 챔피언 대상 추천으로 동작한다(EMPTY_POOL). */
+/** 픽 추천 전용: 사용자가 실제로 플레이하는 챔피언만, 지금 보고 있는
+ * 포지션(`positionLabel`) 기준으로 1~3티어로 등록해두면 서버가 그 안에서만,
+ * 그리고 티어 순서를 승률보다 우선해서 추천하도록 tier1/tier2/tier3 쿼리
+ * 파라미터로 넘긴다. 아무것도 등록하지 않으면 지금까지처럼 전체 챔피언
+ * 대상 추천으로 동작한다(EMPTY_TIER_BUCKET). `pool`은 이미 호출부에서
+ * `championPool[position]`으로 뽑아온 "이 포지션만의" 티어 버킷 — 이
+ * 컴포넌트 자체는 포지션 개념을 모르고 그냥 하나의 버킷만 다룬다. */
 function ChampionPoolEditor({
   champions,
   championById,
+  positionLabel,
   pool,
   poolApplied,
   onTogglePoolApplied,
@@ -811,7 +842,8 @@ function ChampionPoolEditor({
 }: {
   champions: ChampionSummary[];
   championById: Map<number, ChampionSummary>;
-  pool: ChampionPool;
+  positionLabel: string;
+  pool: TierBucket;
   poolApplied: boolean;
   onTogglePoolApplied: (applied: boolean) => void;
   onToggleChampion: (tier: 1 | 2 | 3, championId: number) => void;
@@ -837,13 +869,14 @@ function ChampionPoolEditor({
       )}
       <details>
         <summary>
-          내 챔피언 풀 (숙련도 우선순위)
+          내 챔피언 풀 ({positionLabel}, 숙련도 우선순위)
           {total > 0 ? ` — ${total}명 설정됨${poolApplied ? "" : " (미적용)"}` : " — 설정 안 함 (전체 챔피언 대상)"}
         </summary>
         <p className="empty-hint">
           챔피언을 등록하면 아래 픽 추천이 이 안에서만 나오고, 1티어 → 2티어 → 3티어 순으로 우선 추천됩니다. 같은
           티어 안에서는 지금까지와 같은 승률 순위가 적용됩니다. 아무것도 등록하지 않으면 전체 챔피언을 대상으로
-          추천합니다.
+          추천합니다. <strong>포지션 탭을 바꾸면 그 포지션만의 풀을 따로 등록/조회합니다</strong> — 예를 들어 미드
+          탭에서 등록한 챔피언은 탑 추천엔 나오지 않습니다.
         </p>
         {([1, 2, 3] as const).map((tier) => (
           <ChampionPoolTier
@@ -959,15 +992,25 @@ export default function Home() {
     try {
       const raw = localStorage.getItem(POOL_STORAGE_KEY);
       if (raw) {
-        const parsed = JSON.parse(raw);
+        const parsed = JSON.parse(raw) as Record<string, unknown>;
+        const next: ChampionPool = { ...EMPTY_POOL };
+        for (const p of POSITIONS) {
+          const bucket = parsed?.[p.value];
+          if (isValidTierBucket(bucket)) {
+            next[p.value] = {
+              1: bucket[1].filter((id) => typeof id === "number"),
+              2: bucket[2].filter((id) => typeof id === "number"),
+              3: bucket[3].filter((id) => typeof id === "number"),
+            };
+          }
+          // else: missing/invalid for this position (including every
+          // position, for the old pre-per-position storage shape — see
+          // isValidTierBucket) — leave it at EMPTY_POOL's empty bucket.
+        }
         // Must run after mount (SSR has no localStorage); reading it any
         // earlier would make the server/client hydration render disagree.
         // eslint-disable-next-line react-hooks/set-state-in-effect
-        setChampionPool({
-          1: Array.isArray(parsed[1]) ? parsed[1] : [],
-          2: Array.isArray(parsed[2]) ? parsed[2] : [],
-          3: Array.isArray(parsed[3]) ? parsed[3] : [],
-        });
+        setChampionPool(next);
       }
     } catch {
       // corrupt or unavailable storage — keep the default empty pool
@@ -984,16 +1027,22 @@ export default function Home() {
     }
   }, [championPool, poolLoaded]);
 
-  function toggleChampionInPool(tier: 1 | 2 | 3, championId: number) {
+  /** Toggles championId in/out of the given tier, scoped to ONE position's
+   * bucket — every other position's bucket keeps the exact same object
+   * reference (see the ChampionPool doc comment above), so effects/renders
+   * depending on just `championPool[position]` don't re-fire when a
+   * different position's pool changes. */
+  function toggleChampionInPool(pos: Position, tier: 1 | 2 | 3, championId: number) {
     setChampionPool((prev) => {
-      const inThisTier = prev[tier].includes(championId);
-      const next: ChampionPool = {
-        1: prev[1].filter((id) => id !== championId),
-        2: prev[2].filter((id) => id !== championId),
-        3: prev[3].filter((id) => id !== championId),
+      const posPool = prev[pos];
+      const inThisTier = posPool[tier].includes(championId);
+      const nextPosPool: TierBucket = {
+        1: posPool[1].filter((id) => id !== championId),
+        2: posPool[2].filter((id) => id !== championId),
+        3: posPool[3].filter((id) => id !== championId),
       };
-      if (!inThisTier) next[tier] = [...next[tier], championId];
-      return next;
+      if (!inThisTier) nextPosPool[tier] = [...nextPosPool[tier], championId];
+      return { ...prev, [pos]: nextPosPool };
     });
   }
 
@@ -1177,9 +1226,13 @@ export default function Home() {
           if (slot.championId !== null) params.set(slot.key, String(slot.championId));
         }
         if (poolApplied) {
-          if (championPool[1].length > 0) params.set("tier1", championPool[1].join(","));
-          if (championPool[2].length > 0) params.set("tier2", championPool[2].join(","));
-          if (championPool[3].length > 0) params.set("tier3", championPool[3].join(","));
+          // 지금 보고 있는 포지션(position)의 풀만 보냄 — 다른 포지션에
+          // 등록해둔 챔피언은 이 요청에 영향을 주지 않음(ChampionPool 타입
+          // 선언부 주석 참고).
+          const posPool = championPool[position as Position];
+          if (posPool[1].length > 0) params.set("tier1", posPool[1].join(","));
+          if (posPool[2].length > 0) params.set("tier2", posPool[2].join(","));
+          if (posPool[3].length > 0) params.set("tier3", posPool[3].join(","));
         }
         const res = await fetch(`/api/pickadvice?${params.toString()}`);
         const data = await res.json();
@@ -1211,8 +1264,12 @@ export default function Home() {
    * 상태를 여기서 지우는 대신 렌더링 시점에만 숨겨서 이펙트 안에서
    * setState를 안 부르도록 함). 다른 3개 모드(카운터/듀오/빌드)는 여기
    * 대상이 아니라 지금처럼 버튼을 눌러야 조회됨 — 필요하면 알려주세요.
-   * poolApplied/recommendCount도 championPool과 같은 이유로 의존성에 포함 —
-   * 둘 다 바뀌면 서버로 보내는 쿼리 파라미터가 달라지므로 재조회가 필요함. */
+   * poolApplied/recommendCount도 championPool[position]과 같은 이유로
+   * 의존성에 포함 — 셋 다 바뀌면 서버로 보내는 쿼리 파라미터가 달라지므로
+   * 재조회가 필요함. championPool 전체가 아니라 championPool[position]만
+   * 의존성으로 둔 것은 의도적 — 지금 안 보고 있는 다른 포지션의 풀을
+   * 편집해도(toggleChampionInPool이 그 포지션의 객체만 바꾸므로) 이 값의
+   * 참조가 그대로라 불필요한 재조회가 안 일어남. */
   useEffect(() => {
     if (mode !== "advice" || !canRun) return;
     const timeout = setTimeout(() => {
@@ -1220,7 +1277,7 @@ export default function Home() {
     }, 500);
     return () => clearTimeout(timeout);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, canRun, slots, position, championPool, poolApplied, recommendCount]);
+  }, [mode, canRun, slots, position, championPool[position as Position], poolApplied, recommendCount]);
 
   function renderSlot(slot: Slot) {
     if (slot.disabled) {
@@ -1375,13 +1432,19 @@ export default function Home() {
       )}
 
       {mode === "advice" && (
+        // key={position}로 포지션 탭이 바뀌면 컴포넌트를 통째로 새로
+        // 마운트함 — 안 그러면 이전 포지션에서 펼쳐뒀던 티어 편집 패널
+        // (openTier, 컴포넌트 내부 상태)이 열린 채로 남아서 새 포지션의
+        // 챔피언 목록을 보여주는 상태로 이어져 헷갈릴 수 있음.
         <ChampionPoolEditor
+          key={position}
           champions={champions}
           championById={championById}
-          pool={championPool}
+          positionLabel={POSITIONS.find((p) => p.value === position)?.label ?? position}
+          pool={championPool[position as Position]}
           poolApplied={poolApplied}
           onTogglePoolApplied={setPoolApplied}
-          onToggleChampion={toggleChampionInPool}
+          onToggleChampion={(tier, championId) => toggleChampionInPool(position as Position, tier, championId)}
         />
       )}
 
