@@ -83,6 +83,26 @@ interface PickEntry {
   laningStats?: VersusStats | null;
 }
 
+/** "내 픽 추천" fallback for when the direct lane opponent isn't filled in
+ * yet — no real matchup win rate exists to show without one (counterPicks
+ * stays null instead), so this ranks candidates from the user's own
+ * champion pool for this position using only compFit(태그 기반 상대 조합
+ * 적합도)/allySynergy(실측 아군 시너지) — see computeCompFitPicks,
+ * src/app/api/pickadvice/route.ts. Deliberately has no winRate/games/
+ * bySource fields (unlike PickEntry) — there's no real per-candidate number
+ * here, and showing a fake one would look like real data. */
+interface CompFitPickEntry {
+  championId: number;
+  name: string;
+  iconUrl: string;
+  compFit: number;
+  allySynergyFit: number;
+  allySynergyMatchCount: number;
+  allySynergyOutOf: number;
+  allySynergyAvgWinRate: number | null;
+  tier?: 1 | 2 | 3;
+}
+
 interface CombinedPickEntry {
   championId: number;
   name: string;
@@ -243,6 +263,7 @@ interface AdviceResult {
   championPoolActive: boolean;
   counterPicks: PickEntry[] | null;
   counterError: string | null;
+  compFitPicks: CompFitPickEntry[] | null;
   synergyPicks: PickEntry[] | null;
   synergyError: string | null;
   combinedPicks: CombinedPickEntry[];
@@ -1710,6 +1731,58 @@ export default function Home() {
               </ol>
             </>
           )}
+
+          {/* 상대 라이너를 아직 안 채웠으면 실제 매치업 승률 자체가 없어서
+              바로 위 "라인전 유리한 픽"이 통째로 안 뜸(counterPicks가
+              서버에서 null) — 그렇다고 추천을 아예 안 보여주는 대신, 이미
+              채운 상대팀/우리팀 조합만으로 낼 수 있는 신호(태그 기반 상대
+              조합 적합도 + 실측 아군 시너지)로 내 챔피언 풀 안에서 추천을
+              시도함(compFitPicks, computeCompFitPicks 참고). 풀이 없거나
+              양 팀 다 아무것도 안 채웠으면 애초에 서버가 null을 주므로,
+              그 경우엔 "풀을 등록하면" 안내만 보여줌. */}
+          {!adviceResult.enemyLaneChampion && adviceResult.compFitPicks && adviceResult.compFitPicks.length > 0 && (
+            <>
+              <h3>{POSITIONS.find((p) => p.value === position)?.label} 조합 기반 추천</h3>
+              <Details label="설명">
+                <p className="empty-hint">
+                  상대 라이너가 아직 없어서 실제 라인전 승률 데이터는 없습니다. 대신 지금까지 채운 상대팀 조합에 태그
+                  기반으로 잘 맞고, 이미 채운 우리팀과 실측 시너지가 좋은 챔피언을 내 챔피언 풀 안에서 우선순위로
+                  보여드려요. 상대 라이너를 채우면 실제 승률 기반 추천으로 바뀝니다.
+                </p>
+              </Details>
+              <ol className="recommend-list">
+                {adviceResult.compFitPicks.map((c) => (
+                  <li key={c.championId} className="recommend-row recommend-row--stacked">
+                    <div className="recommend-row-main">
+                      <ChampionIcon src={c.iconUrl} name={c.name} />
+                      <span className="recommend-name">{c.name}</span>
+                      <TierBadge tier={c.tier} />
+                    </div>
+                    <div className="badge-row">
+                      <CompFitBadge compFit={c.compFit} />
+                      <AllySynergyBadge
+                        matchCount={c.allySynergyMatchCount}
+                        outOf={c.allySynergyOutOf}
+                        avgWinRate={c.allySynergyAvgWinRate}
+                      />
+                    </div>
+                  </li>
+                ))}
+              </ol>
+            </>
+          )}
+          {!adviceResult.enemyLaneChampion &&
+            (!adviceResult.compFitPicks || adviceResult.compFitPicks.length === 0) &&
+            slots.some((s) => s.championId !== null) &&
+            (championPool[position as Position][1].length +
+              championPool[position as Position][2].length +
+              championPool[position as Position][3].length) ===
+              0 && (
+              <p className="empty-hint">
+                상대 라이너가 아직 없어서 실제 승률 기반 추천은 어렵습니다. &ldquo;내 챔피언 풀&rdquo;에 이 포지션의
+                챔피언을 등록하면, 지금 채운 상대팀/우리팀 조합을 바탕으로 추천해드려요.
+              </p>
+            )}
 
           {adviceResult.allyAdcChampion && adviceResult.synergyPicks && (
             <>
