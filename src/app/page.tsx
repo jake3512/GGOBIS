@@ -792,11 +792,16 @@ const POOL_TIER_LABELS: Record<1 | 2 | 3, string> = {
   3: "3티어",
 };
 
+/** Short form of POOL_TIER_LABELS for the "이미 다른 티어에 있음" badge —
+ * "1티어 (가장 숙련)" would be too long to fit on a tiny grid tile badge. */
+const POOL_TIER_SHORT_LABELS: Record<1 | 2 | 3, string> = { 1: "1티어", 2: "2티어", 3: "3티어" };
+
 function ChampionPoolTier({
   tier,
   champions,
   championById,
   selectedIds,
+  elsewhereLabels,
   isOpen,
   onToggleOpen,
   onToggleChampion,
@@ -805,6 +810,9 @@ function ChampionPoolTier({
   champions: ChampionSummary[];
   championById: Map<number, ChampionSummary>;
   selectedIds: number[];
+  /** championId → "N티어" for champions already in a DIFFERENT tier of this
+   * same position's pool — see ChampionPicker's own doc comment. */
+  elsewhereLabels: Map<number, string>;
   isOpen: boolean;
   onToggleOpen: () => void;
   onToggleChampion: (championId: number) => void;
@@ -839,7 +847,13 @@ function ChampionPoolTier({
         })}
       </div>
       {isOpen && (
-        <ChampionPicker champions={champions} selectedIds={selectedIds} onToggle={onToggleChampion} maxSelect={Infinity} />
+        <ChampionPicker
+          champions={champions}
+          selectedIds={selectedIds}
+          onToggle={onToggleChampion}
+          maxSelect={Infinity}
+          elsewhereLabels={elsewhereLabels}
+        />
       )}
     </div>
   );
@@ -899,18 +913,31 @@ function ChampionPoolEditor({
           추천합니다. <strong>포지션 탭을 바꾸면 그 포지션만의 풀을 따로 등록/조회합니다</strong> — 예를 들어 미드
           탭에서 등록한 챔피언은 탑 추천엔 나오지 않습니다.
         </p>
-        {([1, 2, 3] as const).map((tier) => (
-          <ChampionPoolTier
-            key={tier}
-            tier={tier}
-            champions={champions}
-            championById={championById}
-            selectedIds={pool[tier]}
-            isOpen={openTier === tier}
-            onToggleOpen={() => setOpenTier((cur) => (cur === tier ? null : tier))}
-            onToggleChampion={(championId) => onToggleChampion(tier, championId)}
-          />
-        ))}
+        {([1, 2, 3] as const).map((tier) => {
+          // 이 티어가 아닌 다른 두 티어에 이미 들어있는 챔피언 → "N티어"
+          // 배지로 표시(ChampionPicker의 elsewhereLabels). toggleChampionInPool
+          // 이 한 챔피언을 항상 최대 한 티어에만 두도록 보장하므로(다른
+          // 티어에서 빼고 이 티어에 넣음), 한 챔피언이 여기서 두 번 이상
+          // 매치될 일은 없음.
+          const elsewhereLabels = new Map<number, string>();
+          for (const otherTier of [1, 2, 3] as const) {
+            if (otherTier === tier) continue;
+            for (const id of pool[otherTier]) elsewhereLabels.set(id, POOL_TIER_SHORT_LABELS[otherTier]);
+          }
+          return (
+            <ChampionPoolTier
+              key={tier}
+              tier={tier}
+              champions={champions}
+              championById={championById}
+              selectedIds={pool[tier]}
+              elsewhereLabels={elsewhereLabels}
+              isOpen={openTier === tier}
+              onToggleOpen={() => setOpenTier((cur) => (cur === tier ? null : tier))}
+              onToggleChampion={(championId) => onToggleChampion(tier, championId)}
+            />
+          );
+        })}
       </details>
     </div>
   );
