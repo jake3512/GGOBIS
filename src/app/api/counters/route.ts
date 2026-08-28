@@ -5,6 +5,7 @@ import { getAggregatedLaneCounters } from "@/lib/sources/aggregate";
 import { getChampionAbilitiesWithCache, toKeyTags, type KeyTags } from "@/lib/championSkills";
 import { championConceptFit, type CompConceptId } from "@/lib/compConcepts";
 import { getPowerCurve, getVersusStats, powerCurveVsFitScore, type VersusStats } from "@/lib/sources/lolps";
+import { sampleReliabilityTier } from "@/lib/sampleSize";
 
 const VALID_POSITIONS = new Set(POSITIONS.map((p) => p.value));
 const POSITION_LABEL = new Map(POSITIONS.map((p) => [p.value, p.label]));
@@ -189,7 +190,12 @@ export async function GET(req: Request) {
         };
       })
       .filter((c): c is CounterEntry => c !== null)
-      .sort((a, b) => a.winRate - b.winRate); // worst-for-us (best counters) first
+      // 표본(게임 수) 신뢰도 구간을 최우선으로, 구간 안에서만 승률로 정렬
+      // (worst-for-us = best counters first) — sampleReliabilityTier 참고.
+      .sort((a, b) => {
+        const tierDiff = sampleReliabilityTier(a.games) - sampleReliabilityTier(b.games);
+        return tierDiff !== 0 ? tierDiff : a.winRate - b.winRate;
+      });
     // Independent sources writing disjoint fields — run concurrently instead
     // of paying the sum of both round trips (same convention as pickadvice's
     // annotateWithBuild/annotateWithDeeplolBuild Promise.all).
