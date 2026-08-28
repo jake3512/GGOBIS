@@ -42,7 +42,7 @@ export const ADC_ARCHETYPES: Record<string, AdcArchetype> = {
   MissFortune: { attributes: ["critAttackSpeed"], flexibleBuild: false },
   Nilah: { attributes: ["critDamage"], flexibleBuild: false },
   Quinn: { attributes: ["critAttackSpeed"], flexibleBuild: false },
-  Samira: { attributes: ["critAttackSpeed"], flexibleBuild: false },
+  Samira: { attributes: ["critDamage"], flexibleBuild: false },
   Senna: { attributes: ["critAttackSpeed"], flexibleBuild: false },
   Sivir: { attributes: ["critAttackSpeed"], flexibleBuild: false },
   Smolder: { attributes: ["spellblade"], flexibleBuild: false },
