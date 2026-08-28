@@ -607,6 +607,20 @@ textarea {
   padding: 0.15rem 0.55rem;
 }
 
+/* Real lol.ps power-curve data compared head-to-head against a specific
+   opponent (not a tag heuristic like comp-fit-badge), so it gets the --good
+   tint too — same reasoning as ally-synergy-badge. */
+.power-curve-vs-badge {
+  display: inline-block;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--good);
+  background: rgba(69, 220, 154, 0.12);
+  border: 1px solid var(--good);
+  border-radius: 999px;
+  padding: 0.15rem 0.55rem;
+}
+
 /* Real measured synergy data (not a tag heuristic like comp-fit-badge), so
    it gets the --good tint to read as closer to an actual stat. */
 .ally-synergy-badge {
@@ -1192,6 +1206,24 @@ textarea {
   color: var(--foreground);
   font-size: 1.1rem;
   line-height: 1;
+  cursor: pointer;
+}
+
+/* Explicit "leave this slot empty" action — functionally the same outcome as
+   pressing ✕ without picking anything (both just leave the slot at null),
+   but labeled so clearing a pick reads as an intentional action instead of
+   an accidental side effect of canceling. */
+.champion-picker-blank {
+  flex-shrink: 0;
+  min-height: 44px;
+  padding: 0 0.75rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-alt);
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 600;
+  white-space: nowrap;
   cursor: pointer;
 }
 
