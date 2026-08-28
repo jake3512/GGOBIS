@@ -280,6 +280,76 @@ async function computeAllySynergyScores(
   return { scores, outOf: perAllyTopK.length };
 }
 
+/** "내 픽 추천" fallback for when the direct lane opponent isn't filled in
+ * yet — op.gg/u.gg/etc.'s counter pages are keyed on a specific opponent, so
+ * there's no real matchup win rate to show without one (counterPicks below
+ * stays null in that case). This ranks candidates using ONLY the two
+ * heuristic signals that don't need a specific opponent: tag-based fit
+ * against whatever enemy champs ARE filled in (scoreEnemyCompFit — needs
+ * just the bulk Data Dragon champion list already in memory, no extra
+ * requests) and real measured ally-synergy data against whatever allies ARE
+ * filled in (`allySynergy`, already computed once above for rerankPicks —
+ * reused as-is here, not refetched). No winRate/games/bySource fields at
+ * all (unlike PickEntry) — there's genuinely no real per-candidate number to
+ * show, and faking one (e.g. a neutral 0.5) would look like real data to the
+ * frontend's WinRateBar. */
+interface CompFitPickEntry {
+  championId: number;
+  name: string;
+  iconUrl: string;
+  compFit: number;
+  allySynergyFit: number;
+  allySynergyMatchCount: number;
+  allySynergyOutOf: number;
+  allySynergyAvgWinRate: number | null;
+  tier?: 1 | 2 | 3;
+}
+
+/** Deliberately restricted to the user's own declared champion pool for this
+ * position (tierMap) — without a pool there's no reliable "which champions
+ * are actually played in this lane" signal anywhere in this app (Data
+ * Dragon's `tags` are role archetypes like Fighter/Mage/Support, not lane
+ * assignments), so ranking the ENTIRE roster would surface plenty of
+ * champions nobody plays in this position. Returns null (not an empty
+ * array) when there's no pool to draw from, so the caller/frontend can tell
+ * "nothing to show, register a pool" apart from "ranked an empty pool." */
+function computeCompFitPicks(
+  champById: Map<number, DDragonChampion>,
+  tierMap: Map<number, 1 | 2 | 3>,
+  enemyChamps: DDragonChampion[],
+  allySynergy: { scores: Map<number, { matchCount: number; avgWinRate: number | null }>; outOf: number },
+): CompFitPickEntry[] | null {
+  if (tierMap.size === 0) return null;
+  const entries: CompFitPickEntry[] = [];
+  for (const [championId, tier] of tierMap) {
+    const champ = champById.get(championId);
+    if (!champ) continue;
+    const synergy = allySynergy.scores.get(championId);
+    entries.push({
+      championId,
+      name: champ.name,
+      iconUrl: champ.iconUrl,
+      compFit: scoreEnemyCompFit(champ, enemyChamps),
+      allySynergyFit: allySynergyFitScore(synergy?.matchCount ?? 0, allySynergy.outOf),
+      allySynergyMatchCount: synergy?.matchCount ?? 0,
+      allySynergyOutOf: allySynergy.outOf,
+      allySynergyAvgWinRate: synergy?.avgWinRate ?? null,
+      tier,
+    });
+  }
+  // Same "tier first, stable sort keeps the secondary order" trick as
+  // restrictToPool/combinedPicks — mastery tier always wins, and within a
+  // tier this combines the two heuristics using the same relative weight
+  // (PICK_ENEMY_FIT_WEIGHT : PICK_ALLY_SYNERGY_WEIGHT) rerankPicks gives
+  // them elsewhere, just renormalized since there's no real-winRate term
+  // here to anchor the split against.
+  const totalWeight = PICK_ENEMY_FIT_WEIGHT + PICK_ALLY_SYNERGY_WEIGHT;
+  const score = (e: CompFitPickEntry) => (PICK_ENEMY_FIT_WEIGHT * e.compFit + PICK_ALLY_SYNERGY_WEIGHT * e.allySynergyFit) / totalWeight;
+  entries.sort((a, b) => score(b) - score(a));
+  entries.sort((a, b) => (a.tier ?? 0) - (b.tier ?? 0));
+  return entries;
+}
+
 /** The single ranking formula every refine pass in this file uses to sort
  * (or re-sort) a pick list — factored out so rerankPicks, refineTopWithSkillFit,
  * refineTopWithPowerCurveAndLaning, and applyBuildFitBonus can never drift
@@ -879,6 +949,17 @@ export async function GET(req: Request) {
     }
   }
 
+  // --- counterPicks 대체(fallback): 상대 라이너를 아직 안 채웠으면 실제
+  // 매치업 승률 자체가 존재하지 않아 counterPicks가 위에서 null로 남는데,
+  // 그렇다고 "내 픽 추천"을 완전히 비워두는 대신 이미 채운 상대팀/우리팀
+  // 조합만으로 낼 수 있는 신호(태그 기반 상대 조합 적합도 + 실측 아군
+  // 시너지)로 추천을 시도함. computeCompFitPicks 참고 — 내 챔피언 풀이
+  // 등록돼 있고 상대/우리팀 중 뭐라도 채워져 있을 때만 동작. ---
+  const compFitPicks =
+    !enemyLaneChampion && (enemyChamps.length > 0 || allyChamps.length > 0)
+      ? computeCompFitPicks(champById, tierMap, enemyChamps, allySynergy)?.slice(0, recommendCount) ?? null
+      : null;
+
   let synergyPicks: PickEntry[] | null = null;
   let synergyError: string | null = null;
   if (position === "support" && supportAdcChampion) {
@@ -1114,6 +1195,7 @@ export async function GET(req: Request) {
     championPoolActive,
     counterPicks,
     counterError,
+    compFitPicks,
     synergyPicks,
     synergyError,
     combinedPicks,
