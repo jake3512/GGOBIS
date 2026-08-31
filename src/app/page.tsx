@@ -9,7 +9,7 @@ import { BuildCard, BuildCardCompact, type BuildResult } from "@/components/Buil
 import { Details } from "@/components/Details";
 import { POSITIONS, type Position } from "@/lib/positions";
 
-type Mode = "counter" | "advice" | "build";
+type Mode = "counter" | "advice" | "build" | "compcompare";
 
 interface ChampionBrief {
   id: number;
@@ -316,6 +316,44 @@ interface AdviceResult {
   teamPowerCurve: TeamPowerCurve;
 }
 
+/** "조합 비교" 탭 전용 — 포지션 없이 우리팀/상대팀 각 로스터(최대 5명)의
+ * 파워 커브/조합 분석/조합 컨셉을 담는다. 서버(`/api/compcompare`)가
+ * analyzeTeamComp/analyzeCompConcepts를 그대로 재사용해 계산한 값이라
+ * TeamCompAnalysis/CompConceptAnalysis 타입도 위 픽 추천 쪽과 동일. */
+interface RosterPowerCurveEntry extends ChampionBrief {
+  earlyWinRate: number | null;
+  midWinRate: number | null;
+  lateWinRate: number | null;
+}
+
+interface RosterPowerCurve {
+  perChampion: RosterPowerCurveEntry[];
+  teamEarlyWinRate: number | null;
+  teamMidWinRate: number | null;
+  teamLateWinRate: number | null;
+  sampledCount: number;
+}
+
+interface RosterCCEntry {
+  championId: number;
+  hasHardCC: boolean;
+  hasSoftCC: boolean;
+}
+
+interface RosterAnalysis {
+  champions: ChampionBrief[];
+  compHeuristic: TeamCompAnalysis | null;
+  compConcepts: CompConceptAnalysis | null;
+  powerCurve: RosterPowerCurve;
+  ccInfo: RosterCCEntry[];
+}
+
+interface CompCompareResult {
+  ally: RosterAnalysis;
+  enemy: RosterAnalysis;
+  conceptMatchup: ConceptMatchup | null;
+}
+
 const COMP_CONCEPT_LABELS: Record<CompConceptId, string> = {
   engage: "돌진/이니시",
   poke: "포킹",
@@ -465,6 +503,26 @@ function adviceSlotsFor(): Slot[] {
     ...POSITIONS.map((p) => ({
       key: `enemy-${p.value}`,
       label: `상대 ${p.label}`,
+      championId: null,
+    })),
+  ];
+}
+
+/** "조합 비교" 탭 전용 10슬롯 — 픽 추천의 adviceSlotsFor와 달리 포지션
+ * 구분이 전혀 없다(사용자 요청: "포지션을 구분하지 않고 챔피언만 빠르게
+ * 비교"). 그냥 우리팀/상대팀 각 5자리. 키 접두사(compally-/compenemy-)는
+ * advice 모드의 ally-/enemy- 접두사와 실제로 겹칠 일은 없지만(모드가
+ * 바뀌면 slots 배열 자체가 통째로 교체됨) 헷갈리지 않게 구분해뒀다. */
+function compCompareSlotsFor(): Slot[] {
+  return [
+    ...Array.from({ length: 5 }, (_, i) => ({
+      key: `compally-${i}`,
+      label: `우리팀 챔피언 ${i + 1}`,
+      championId: null,
+    })),
+    ...Array.from({ length: 5 }, (_, i) => ({
+      key: `compenemy-${i}`,
+      label: `상대팀 챔피언 ${i + 1}`,
       championId: null,
     })),
   ];
@@ -972,6 +1030,73 @@ function TeamPowerCurveCard({ curve }: { curve: TeamPowerCurve }) {
   );
 }
 
+/** "조합 비교" 탭의 파워 커브 카드 — TeamPowerCurveCard와 같은 성격(초반/
+ * 중반/후반 평균+피크 구간, 라이너별 상세)이지만 포지션 개념이 없어서 라인
+ * 불일치 캐비어트(laneNote)도 없다 — 각 챔피언 자신의 주 라인 커브를 그대로
+ * 보여줄 뿐. */
+function RosterPowerCurveCard({ title, curve }: { title: string; curve: RosterPowerCurve }) {
+  if (curve.sampledCount === 0) {
+    return <p className="empty-hint">{title}에 채워진 챔피언들의 lol.ps 파워 커브 데이터를 찾지 못했습니다.</p>;
+  }
+
+  const phases: { key: "early" | "mid" | "late"; rate: number | null }[] = [
+    { key: "early", rate: curve.teamEarlyWinRate },
+    { key: "mid", rate: curve.teamMidWinRate },
+    { key: "late", rate: curve.teamLateWinRate },
+  ];
+  const peak = phases.reduce<{ key: "early" | "mid" | "late"; rate: number } | null>((best, p) => {
+    if (p.rate === null) return best;
+    if (!best || p.rate > best.rate) return { key: p.key, rate: p.rate };
+    return best;
+  }, null);
+
+  return (
+    <div className="team-power-curve">
+      <h4>{title}</h4>
+      {peak && (
+        <p className="empty-hint">
+          가장 강한 구간: <strong>{PHASE_LABELS[peak.key]}</strong> ({(peak.rate * 100).toFixed(1)}%)
+        </p>
+      )}
+      <div className="team-power-curve-phases">
+        {phases.map((p) => (
+          <div
+            key={p.key}
+            className={`team-power-curve-phase${peak?.key === p.key ? " team-power-curve-phase--peak" : ""}`}
+          >
+            <span className="team-power-curve-phase-label">{PHASE_LABELS[p.key]}</span>
+            <span className="team-power-curve-phase-rate">
+              {p.rate !== null ? `${(p.rate * 100).toFixed(1)}%` : "데이터 없음"}
+            </span>
+          </div>
+        ))}
+      </div>
+      <Details label="챔피언별 상세">
+        <p className="empty-hint">{curve.sampledCount}명의 lol.ps 파워 커브(분당 승률)를 평균 낸 값입니다.</p>
+        <ol className="recommend-list">
+          {curve.perChampion.map((c) => {
+            const lean = powerCurveLean(c.earlyWinRate, c.lateWinRate);
+            return (
+              <li key={c.id} className="recommend-row recommend-row--stacked">
+                <div className="recommend-row-main">
+                  <ChampionIcon src={c.iconUrl} name={c.name} />
+                  <span className="recommend-name">{c.name}</span>
+                  {lean && <span className="power-curve-badge">{lean}</span>}
+                </div>
+                <p className="empty-hint">
+                  초반 {c.earlyWinRate !== null ? `${(c.earlyWinRate * 100).toFixed(1)}%` : "-"} · 중반{" "}
+                  {c.midWinRate !== null ? `${(c.midWinRate * 100).toFixed(1)}%` : "-"} · 후반{" "}
+                  {c.lateWinRate !== null ? `${(c.lateWinRate * 100).toFixed(1)}%` : "-"}
+                </p>
+              </li>
+            );
+          })}
+        </ol>
+      </Details>
+    </div>
+  );
+}
+
 const POOL_TIER_LABELS: Record<1 | 2 | 3, string> = {
   1: "1티어 (가장 숙련)",
   2: "2티어",
@@ -1180,6 +1305,7 @@ export default function Home() {
    * the results section silently missing (see runLookup's counter branch). */
   const [counterLookupFailed, setCounterLookupFailed] = useState(false);
   const [adviceResult, setAdviceResult] = useState<AdviceResult | null>(null);
+  const [compareResult, setCompareResult] = useState<CompCompareResult | null>(null);
   const [buildResult, setBuildResult] = useState<BuildResult | null>(null);
   /** DeepLoL's build for the same champion+position — fetched alongside
    * buildResult (lol.ps) as a second, separately-labeled card. The two are
@@ -1293,6 +1419,7 @@ export default function Home() {
     setCounterResult(null);
     setCounterLookupFailed(false);
     setAdviceResult(null);
+    setCompareResult(null);
     setLastPickedChampionId(null);
     setBuildResult(null);
     setBuildResultDeeplol(null);
@@ -1301,6 +1428,10 @@ export default function Home() {
     setPickerOpen(false);
     if (next === "counter" || next === "build") {
       const nextSlots: Slot[] = [{ key: "target", label: "기준 챔피언", championId: null }];
+      setSlots(nextSlots);
+      setActiveSlotKey(nextSlots[0].key);
+    } else if (next === "compcompare") {
+      const nextSlots = compCompareSlotsFor();
       setSlots(nextSlots);
       setActiveSlotKey(nextSlots[0].key);
     } else {
@@ -1324,16 +1455,23 @@ export default function Home() {
     }
   }
 
+  // "다음 빈 슬롯이 있는지"는 setSlots의 state 업데이터 함수 안이 아니라
+  // 여기서 클로저의 현재 slots 값으로 미리 판단한다 — setState 업데이터가
+  // 이 함수 안 나머지 코드보다 먼저(동기적으로) 실행된다는 보장이 없어서,
+  // 그 안에서 계산한 값을 곧바로 밖에서 읽으면 실제로는 매번 갱신 전 값을
+  // 보게 되는 버그가 날 수 있다.
   function assignActiveSlot(championId: number) {
     setLastPickedChampionId(championId);
-    setSlots((prev) => {
-      const next = prev.map((s) => (s.key === activeSlotKey ? { ...s, championId } : s));
-      const nextEmpty = next.find((s) => s.key !== activeSlotKey && s.championId === null);
-      if (nextEmpty) setActiveSlotKey(nextEmpty.key);
-      return next;
-    });
-    // Picking a champion closes the full-screen picker back down.
-    setPickerOpen(false);
+    const nextEmpty = slots.find((s) => s.key !== activeSlotKey && s.championId === null);
+    setSlots((prev) => prev.map((s) => (s.key === activeSlotKey ? { ...s, championId } : s)));
+    if (nextEmpty) setActiveSlotKey(nextEmpty.key);
+    // "조합 비교" 탭만 선택 창을 열어둔 채로 다음 빈 슬롯으로 바로 넘어감
+    // (실제 드래프트 타이머에 맞춰 여러 명을 빠르게 입력해야 한다는 요청으로
+    // 추가 — ChampionPicker의 quickInput 참고). 라인 카운터/빌드/픽 추천은
+    // 기존처럼 픽할 때마다 선택 창이 항상 닫힘.
+    if (mode !== "compcompare" || !nextEmpty) {
+      setPickerOpen(false);
+    }
   }
 
   /** Sets the active slot and opens the full-screen champion picker for it —
@@ -1462,6 +1600,23 @@ export default function Home() {
           deeplolResult.status === "fulfilled" && deeplolResult.value.ok ? deeplolResult.value.data : null,
         );
         setBuildLookupAttempted(true);
+      } else if (mode === "compcompare") {
+        const allyIds = slots
+          .filter((s) => s.key.startsWith("compally-"))
+          .map((s) => s.championId)
+          .filter((id): id is number => id !== null);
+        const enemyIds = slots
+          .filter((s) => s.key.startsWith("compenemy-"))
+          .map((s) => s.championId)
+          .filter((id): id is number => id !== null);
+        const params = new URLSearchParams();
+        if (allyIds.length > 0) params.set("ally", allyIds.join(","));
+        if (enemyIds.length > 0) params.set("enemy", enemyIds.join(","));
+        const res = await fetch(`/api/compcompare?${params.toString()}`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error ?? "조회에 실패했습니다.");
+        if (isStale()) return;
+        setCompareResult(data);
       } else {
         const params = new URLSearchParams({ position, count: String(recommendCount) });
         for (const slot of slots) {
@@ -1511,9 +1666,14 @@ export default function Home() {
    * 재조회가 필요함. championPool 전체가 아니라 championPool[position]만
    * 의존성으로 둔 것은 의도적 — 지금 안 보고 있는 다른 포지션의 풀을
    * 편집해도(toggleChampionInPool이 그 포지션의 객체만 바꾸므로) 이 값의
-   * 참조가 그대로라 불필요한 재조회가 안 일어남. */
+   * 참조가 그대로라 불필요한 재조회가 안 일어남.
+   *
+   * "조합 비교" 탭도 같은 자동조회+디바운스를 그대로 씀 — position/
+   * championPool[position]/poolApplied/recommendCount는 이 탭에서 안 바뀌는
+   * 값이라(그 UI 자체가 이 탭엔 없음) 그냥 두어도 불필요한 재조회를
+   * 일으키지 않는다. */
   useEffect(() => {
-    if (mode !== "advice" || !canRun) return;
+    if ((mode !== "advice" && mode !== "compcompare") || !canRun) return;
     const timeout = setTimeout(() => {
       runLookup();
     }, 500);
@@ -1597,6 +1757,36 @@ export default function Home() {
     );
   }
 
+  /** "조합 비교" 탭의 슬롯 — renderChampSelectSlot과 같은 시각 스타일
+   * (.champ-select-slot 재사용)이지만 포지션 역할 라벨/"내 픽" 배지가 없다
+   * (이 탭엔 포지션 개념 자체가 없음). CC 점은 adviceResult가 아니라
+   * compareResult의 해당 로스터 ccInfo에서 가져온다. */
+  function renderCompCompareSlot(slot: Slot, side: "ally" | "enemy") {
+    const champ = slot.championId !== null ? championById.get(slot.championId) : null;
+    const active = slot.key === activeSlotKey;
+    const roster = side === "ally" ? compareResult?.ally : compareResult?.enemy;
+    const ccEntry = champ ? roster?.ccInfo.find((c) => c.championId === champ.id) : undefined;
+    const ccDot = ccDotState(ccEntry);
+    return (
+      <button
+        key={slot.key}
+        type="button"
+        className={`champ-select-slot${active ? " champ-select-slot--active" : ""}${champ ? "" : " champ-select-slot--empty"}`}
+        onClick={() => (champ ? clearSlot(slot.key) : activateSlot(slot.key))}
+      >
+        {champ ? (
+          <>
+            <ChampionIcon src={champ.iconUrl} name={champ.name} />
+            <span>{champ.name}</span>
+            <span className={`champ-select-cc-dot champ-select-cc-dot--${ccDot.kind}`} title={ccDot.title} />
+          </>
+        ) : (
+          <span className="empty-hint">선택</span>
+        )}
+      </button>
+    );
+  }
+
   return (
     <main className="page">
       <header className="page-header">
@@ -1628,20 +1818,29 @@ export default function Home() {
         >
           빌드
         </button>
+        <button
+          type="button"
+          className={mode === "compcompare" ? "tab tab--active" : "tab"}
+          onClick={() => switchMode("compcompare")}
+        >
+          조합 비교
+        </button>
       </div>
 
-      <div className="position-tabs">
-        {POSITIONS.map((p) => (
-          <button
-            key={p.value}
-            type="button"
-            className={position === p.value ? "tab tab--active" : "tab"}
-            onClick={() => changePosition(p.value)}
-          >
-            {p.label}
-          </button>
-        ))}
-      </div>
+      {mode !== "compcompare" && (
+        <div className="position-tabs">
+          {POSITIONS.map((p) => (
+            <button
+              key={p.value}
+              type="button"
+              className={position === p.value ? "tab tab--active" : "tab"}
+              onClick={() => changePosition(p.value)}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+      )}
 
       {mode === "advice" && (
         <Details label="픽 추천 사용법">
@@ -1729,8 +1928,33 @@ export default function Home() {
         </div>
       )}
 
+      {/* "조합 비교" 탭 — 포지션 없이 우리팀/상대팀 각 5칸만 있는 더 단순한
+          보드. 위 픽 추천 보드와 같은 sticky 컨테이너(.champ-select-teams)를
+          그대로 재사용해서 스크롤해도 항상 보이는 것도 동일. */}
+      {mode === "compcompare" && (
+        <div className="champ-select-teams">
+          <div className="champ-select-teams-columns">
+            <div className="champ-select-team champ-select-team--ally">
+              <span className="draft-team-label">우리팀</span>
+              {slots.filter((s) => s.key.startsWith("compally-")).map((slot) => renderCompCompareSlot(slot, "ally"))}
+            </div>
+            <div className="champ-select-team champ-select-team--enemy">
+              <span className="draft-team-label">상대팀</span>
+              {slots.filter((s) => s.key.startsWith("compenemy-")).map((slot) => renderCompCompareSlot(slot, "enemy"))}
+            </div>
+          </div>
+          {compareResult && (compareResult.ally.ccInfo.length > 0 || compareResult.enemy.ccInfo.length > 0) && (
+            <p className="champ-select-cc-total">
+              CC 보유 챔피언 — 우리팀 {compareResult.ally.ccInfo.filter((c) => c.hasHardCC).length}/
+              {compareResult.ally.ccInfo.length}명 · 상대팀{" "}
+              {compareResult.enemy.ccInfo.filter((c) => c.hasHardCC).length}/{compareResult.enemy.ccInfo.length}명
+            </p>
+          )}
+        </div>
+      )}
+
       <section className="selected-bar">
-        {mode === "advice" ? (
+        {mode === "advice" || mode === "compcompare" ? (
           <div className="champ-select-portrait">
             {portraitChampion ? (
               <>
@@ -1762,7 +1986,7 @@ export default function Home() {
                 ? "빌드 조회"
                 : "지금 바로 새로고침"}
         </button>
-        {mode === "advice" && (
+        {(mode === "advice" || mode === "compcompare") && (
           <p className="empty-hint">챔피언을 넣거나 뺄 때마다 자동으로 다시 조회돼요. 버튼은 기다리지 않고 바로 새로고침하고 싶을 때만 누르세요.</p>
         )}
       </section>
@@ -1793,10 +2017,12 @@ export default function Home() {
             </button>
           </div>
           <ChampionPicker
+            key={activeSlotKey}
             champions={champions}
             selectedIds={pickerSelectedIds}
             onToggle={assignActiveSlot}
             maxSelect={champions.length || 1}
+            quickInput={mode === "compcompare"}
           />
         </div>
       )}
@@ -2171,6 +2397,65 @@ export default function Home() {
                   )}
                 </div>
                 <ConceptMatchupNote matchup={adviceResult.compConcepts.matchup} />
+              </Details>
+            </>
+          )}
+        </section>
+      )}
+
+      {mode === "compcompare" && canRun && compareResult && (
+        <section className="results">
+          <h2>조합 비교</h2>
+          <p className="empty-hint">
+            포지션 구분 없이 우리팀/상대팀 챔피언만으로 파워 커브·AP/AD 데미지 비중·챔피언 속성·조합 컨셉을 나란히
+            비교합니다. 라인 카운터/픽 추천처럼 실제 매치업 승률을 조회하는 기능이 아니라, 이미 이 앱의 다른
+            탭에서 쓰던 참고용 분석(파워 커브만 실측 스크래핑 데이터, 나머지는 Riot 공식 정적 데이터 기반)을
+            포지션 없이 빠르게 볼 수 있게 모아둔 화면입니다.
+          </p>
+
+          <h3>파워 커브 (초반/중반/후반)</h3>
+          <div className="comp-heuristic-grid">
+            <RosterPowerCurveCard title="우리팀" curve={compareResult.ally.powerCurve} />
+            <RosterPowerCurveCard title="상대팀" curve={compareResult.enemy.powerCurve} />
+          </div>
+
+          {(compareResult.ally.compHeuristic || compareResult.enemy.compHeuristic) && (
+            <>
+              <h3>챔피언 특성 기반 조합 분석 (AP/AD 비중 포함)</h3>
+              <Details label="조합 분석">
+                <p className="empty-hint">
+                  승률이 아니라 Riot 공식 챔피언 태그·능력치(공격형/마법형 비중)만 이용한 참고용 체크입니다. 원거리
+                  딜러/탱커/브루저 속성 세분화는 공식 데이터가 아니라 이 앱이 직접 정리한 참고용 분류입니다.
+                </p>
+                <div className="comp-heuristic-grid">
+                  {compareResult.ally.compHeuristic && (
+                    <CompCard title="우리팀" analysis={compareResult.ally.compHeuristic} championById={championById} />
+                  )}
+                  {compareResult.enemy.compHeuristic && (
+                    <CompCard title="상대팀" analysis={compareResult.enemy.compHeuristic} championById={championById} />
+                  )}
+                </div>
+              </Details>
+            </>
+          )}
+
+          {(compareResult.ally.compConcepts || compareResult.enemy.compConcepts) && (
+            <>
+              <h3>조합 컨셉 (돌진 · 포킹 · 쌍포 · 한타 · 스플릿)</h3>
+              <Details label="조합 컨셉">
+                <p className="empty-hint">
+                  실제 승률 데이터가 아니라, 채워진 챔피언들의 태그·스킬 구성만으로 어떤 컨셉에 가까운지 추정한
+                  참고용 체크입니다.
+                </p>
+                <div className="comp-heuristic-grid">
+                  {compareResult.ally.compConcepts && (
+                    <CompConceptCard title="우리팀" analysis={compareResult.ally.compConcepts} tipsVariant="pilot" />
+                  )}
+                  {compareResult.enemy.compConcepts && (
+                    <CompConceptCard title="상대팀" analysis={compareResult.enemy.compConcepts} tipsVariant="counter" />
+                  )}
+                </div>
+                <ConceptMatchupNote matchup={compareResult.conceptMatchup} />
               </Details>
             </>
           )}
