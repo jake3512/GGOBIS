@@ -1121,6 +1121,17 @@ const POOL_TIER_LABELS: Record<1 | 2 | 3, string> = {
  * "1티어 (가장 숙련)" would be too long to fit on a tiny grid tile badge. */
 const POOL_TIER_SHORT_LABELS: Record<1 | 2 | 3, string> = { 1: "1티어", 2: "2티어", 3: "3티어" };
 
+/** BuildCard's variantLabel for the i-th entry in a /api/build?variants=…
+ * response — index 0 is always the source's single most-played build, so
+ * this keeps the same "가장 인기 있는" wording BuildCard already defaults
+ * to for the single-variant case, and only differentiates 2nd/3rd+. Falls
+ * back to a generic ordinal for any index beyond what's named here (only
+ * possible if MAX_VARIANTS on the server is ever raised past this list). */
+const BUILD_VARIANT_LABELS = ["가장 인기 있는 빌드", "2번째로 인기 있는 빌드", "3번째로 인기 있는 빌드"];
+function buildVariantLabel(index: number): string {
+  return BUILD_VARIANT_LABELS[index] ?? `${index + 1}번째로 인기 있는 빌드`;
+}
+
 function ChampionPoolTier({
   tier,
   champions,
@@ -1320,19 +1331,25 @@ export default function Home() {
   const [counterLookupFailed, setCounterLookupFailed] = useState(false);
   const [adviceResult, setAdviceResult] = useState<AdviceResult | null>(null);
   const [compareResult, setCompareResult] = useState<CompCompareResult | null>(null);
-  const [buildResult, setBuildResult] = useState<BuildResult | null>(null);
-  /** DeepLoL's build for the same champion+position — fetched alongside
-   * buildResult (lol.ps) as a second, separately-labeled card. The two are
-   * mutually best-effort (fetched concurrently via Promise.allSettled in
-   * runLookup) — either one failing never blocks the other from showing. */
-  const [buildResultDeeplol, setBuildResultDeeplol] = useState<BuildResult | null>(null);
+  /** lol.ps's build(s) for this champion+position — always 0 or 1 entries,
+   * since lol.ps only ever tracks a single build per champion (no ranked
+   * variant list the way deeplol has). Kept as an array (not a bare
+   * BuildResult | null) so the render can map both sources the same way. */
+  const [buildResultsLolps, setBuildResultsLolps] = useState<BuildResult[]>([]);
+  /** DeepLoL's ranked build variants (up to 3) for the same champion+
+   * position — fetched alongside buildResultsLolps as separately-labeled
+   * cards. The two sources are mutually best-effort (fetched concurrently
+   * via Promise.allSettled in runLookup) — either one failing never blocks
+   * the other from showing. See /api/build's `variants` param and
+   * getChampionBuildVariants (src/lib/sources/deeplol.ts). */
+  const [buildResultsDeeplol, setBuildResultsDeeplol] = useState<BuildResult[]>([]);
   /** Whether a 빌드 tab lookup has actually completed at least once — lets
    * the render distinguish "haven't queried yet" (show nothing) from
    * "queried and both sources came back empty" (show a hint instead of a
    * silently blank page — see runLookup's build branch). */
   const [buildLookupAttempted, setBuildLookupAttempted] = useState(false);
   /** Build recommendation auto-fetched alongside 라인 카운터's own result, for
-   * the same champion+position — separate from buildResult (the dedicated
+   * the same champion+position — separate from buildResultsLolps (the dedicated
    * 빌드 tab's own fetch) so switching modes doesn't clobber either. */
   const [counterBuild, setCounterBuild] = useState<BuildResult | null>(null);
   const [loading, setLoading] = useState(false);
@@ -1435,8 +1452,8 @@ export default function Home() {
     setAdviceResult(null);
     setCompareResult(null);
     setLastPickedChampionId(null);
-    setBuildResult(null);
-    setBuildResultDeeplol(null);
+    setBuildResultsLolps([]);
+    setBuildResultsDeeplol([]);
     setBuildLookupAttempted(false);
     setCounterBuild(null);
     setPickerOpen(false);
@@ -1606,18 +1623,25 @@ export default function Home() {
         // annotateWithBuild/annotateWithDeeplolBuild를 이미 같은 방식(둘 다
         // best-effort, Promise.all로 동시 실행)으로 다루는 것과 같은 원칙.
         const championId = slots[0].championId;
-        const fetchBuild = (source: "lolps" | "deeplol") =>
-          fetch(`/api/build?championId=${championId}&position=${position}&source=${source}`).then((r) =>
-            r.json().then((d) => ({ ok: r.ok, data: d as BuildResult })),
+        // variants=3 asks for up to 3 ranked build variants per source (see
+        // /api/build's `variants` param) — lol.ps only ever has one, so its
+        // `builds` array comes back as 0 or 1 entries either way, but this
+        // keeps both fetches going through the same { builds: [...] }
+        // response shape instead of special-casing each source's parsing.
+        const fetchBuilds = (source: "lolps" | "deeplol") =>
+          fetch(`/api/build?championId=${championId}&position=${position}&source=${source}&variants=3`).then((r) =>
+            r.json().then((d) => ({ ok: r.ok, data: d as { builds: BuildResult[] } })),
           );
         const [lolpsResult, deeplolResult] = await Promise.allSettled([
-          fetchBuild("lolps"),
-          fetchBuild("deeplol"),
+          fetchBuilds("lolps"),
+          fetchBuilds("deeplol"),
         ]);
         if (isStale()) return;
-        setBuildResult(lolpsResult.status === "fulfilled" && lolpsResult.value.ok ? lolpsResult.value.data : null);
-        setBuildResultDeeplol(
-          deeplolResult.status === "fulfilled" && deeplolResult.value.ok ? deeplolResult.value.data : null,
+        setBuildResultsLolps(
+          lolpsResult.status === "fulfilled" && lolpsResult.value.ok ? lolpsResult.value.data.builds : [],
+        );
+        setBuildResultsDeeplol(
+          deeplolResult.status === "fulfilled" && deeplolResult.value.ok ? deeplolResult.value.data.builds : [],
         );
         setBuildLookupAttempted(true);
       } else if (mode === "compcompare") {
@@ -2112,27 +2136,39 @@ export default function Home() {
         </section>
       )}
 
-      {mode === "build" && (buildResult || buildResultDeeplol) && (
+      {mode === "build" && (buildResultsLolps.length > 0 || buildResultsDeeplol.length > 0) && (
         <section className="results">
           <h2>
-            {(buildResult ?? buildResultDeeplol)!.champion.name} (
-            {POSITIONS.find((p) => p.value === (buildResult ?? buildResultDeeplol)!.position)?.label}) 빌드
+            {(buildResultsLolps[0] ?? buildResultsDeeplol[0])!.champion.name} (
+            {POSITIONS.find((p) => p.value === (buildResultsLolps[0] ?? buildResultsDeeplol[0])!.position)?.label}) 빌드
           </h2>
-          {buildResult ? (
-            <BuildCard build={buildResult} sourceLabel="lol.ps" />
+          <p className="empty-hint">
+            소스 하나당 승률/픽률이 다른 여러 실제 빌드 종류를 보여줘요 — 서로 다른 소스나 변형끼리 승률을
+            합산하지 않습니다.
+          </p>
+          {buildResultsLolps.length > 0 ? (
+            buildResultsLolps.map((b, i) => (
+              <BuildCard key={`lolps-${i}`} build={b} sourceLabel="lol.ps" variantLabel={buildVariantLabel(i)} />
+            ))
           ) : (
             <p className="empty-hint">lol.ps 빌드 데이터를 가져오지 못했습니다.</p>
           )}
-          {buildResultDeeplol ? (
-            <BuildCard build={buildResultDeeplol} sourceLabel="DeepLoL" />
+          {buildResultsDeeplol.length > 0 ? (
+            buildResultsDeeplol.map((b, i) => (
+              <BuildCard key={`deeplol-${i}`} build={b} sourceLabel="DeepLoL" variantLabel={buildVariantLabel(i)} />
+            ))
           ) : (
             <p className="empty-hint">DeepLoL 빌드 데이터를 가져오지 못했습니다.</p>
           )}
         </section>
       )}
-      {mode === "build" && !loading && !buildResult && !buildResultDeeplol && buildLookupAttempted && (
-        <p className="empty-hint">lol.ps와 DeepLoL 모두 빌드 데이터를 가져오지 못했습니다. 잠시 후 다시 시도해보세요.</p>
-      )}
+      {mode === "build" &&
+        !loading &&
+        buildResultsLolps.length === 0 &&
+        buildResultsDeeplol.length === 0 &&
+        buildLookupAttempted && (
+          <p className="empty-hint">lol.ps와 DeepLoL 모두 빌드 데이터를 가져오지 못했습니다. 잠시 후 다시 시도해보세요.</p>
+        )}
 
       {mode === "advice" && canRun && adviceResult && (
         <section className="results">

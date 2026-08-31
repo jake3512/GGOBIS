@@ -207,24 +207,7 @@ async function fetchLaneCounters(
   };
 }
 
-/** This champion's build (items/runes/spells/skills) for `position`,
- * mapped onto lol.ps's ChampionBuild shape — see the field-mapping comment
- * at the top of this file. Unlike lol.ps, deeplol's build_by_lane is
- * genuinely keyed by lane, so — no "only shows the champion's own primary
- * lane" caveat here; a lane simply isn't returned if the champion doesn't
- * play there. */
-export async function getChampionBuild(
-  championId: number,
-  position: Position,
-): Promise<ChampionBuild> {
-  const body = await fetchBuildResponse(championId);
-  const laneName = POSITION_TO_LANE_NAME[position];
-  const lane = body.build_by_lane[laneName];
-  const variant = lane?.build_lst[0];
-  if (!variant) {
-    throw new Error(`DeepLoL: no ${laneName} lane build data for this champion.`);
-  }
-
+function mapBuildVariant(variant: DeeplolBuildVariant, position: Position): ChampionBuild {
   const rateOrNull = (rg: DeeplolRateGames): number | null => (rg.games > 0 ? rg.win_rate : null);
   const gamesOrNull = (rg: DeeplolRateGames): number | null => (rg.games > 0 ? rg.games : null);
 
@@ -261,6 +244,44 @@ export async function getChampionBuild(
     overallPickRate: variant.pick_rate,
     overallGames: variant.games,
   };
+}
+
+/** This champion's build (items/runes/spells/skills) for `position`,
+ * mapped onto lol.ps's ChampionBuild shape — see the field-mapping comment
+ * at the top of this file. Unlike lol.ps, deeplol's build_by_lane is
+ * genuinely keyed by lane, so — no "only shows the champion's own primary
+ * lane" caveat here; a lane simply isn't returned if the champion doesn't
+ * play there. Always the single most-played variant (build_lst[0]) — see
+ * getChampionBuildVariants below for the other variants deeplol tracks. */
+export async function getChampionBuild(
+  championId: number,
+  position: Position,
+): Promise<ChampionBuild> {
+  const [variant] = await getChampionBuildVariants(championId, position, 1);
+  return variant;
+}
+
+/** Same data as getChampionBuild, but returns up to `limit` of deeplol's
+ * own ranked build_lst entries instead of just the top one — e.g. a
+ * champion with a "표준" build and a situational full-tank or on-hit
+ * variant will have those as build_lst[1]/[2]. build_lst is already
+ * ordered by deeplol (most-played first, same order the single-variant
+ * getChampionBuild has always trusted for "the" build), so this is just
+ * that same list sliced wider instead of taken as build_lst[0] alone —
+ * added so the 빌드 tab can show more than one real build option per
+ * champion, not a new ranking of our own. */
+export async function getChampionBuildVariants(
+  championId: number,
+  position: Position,
+  limit = 3,
+): Promise<ChampionBuild[]> {
+  const body = await fetchBuildResponse(championId);
+  const laneName = POSITION_TO_LANE_NAME[position];
+  const lane = body.build_by_lane[laneName];
+  if (!lane || lane.build_lst.length === 0) {
+    throw new Error(`DeepLoL: no ${laneName} lane build data for this champion.`);
+  }
+  return lane.build_lst.slice(0, limit).map((variant) => mapBuildVariant(variant, position));
 }
 
 export const deeplolSource: StatSource = {
