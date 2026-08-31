@@ -348,10 +348,24 @@ interface RosterAnalysis {
   ccInfo: RosterCCEntry[];
 }
 
+/** 상대 5명 중 "내 포지션 기준 표본이 가장 많은"(=내 맞 라이너일 확률이
+ * 가장 높은) 상위 3명 각각에 대한 카운터 픽 추천 — "추천형식은 픽 추천과
+ * 같게" 요청에 맞춰 서버가 픽 추천의 PickEntry와 완전히 같은 필드 형식으로
+ * 내려주므로, 여기서도 그대로 PickEntry를 재사용해서 WinRateBar/
+ * CompFitBadge/SourceBreakdown 같은 기존 컴포넌트를 그대로 쓸 수 있다. */
+interface LikelyEnemyLaner {
+  champion: ChampionBrief;
+  /** 이 챔피언이 실제로 이 포지션에서 나온 것으로 보이는 표본 게임 수
+   * 합계 — "확률이 높다"고 판단한 근거 수치를 그대로 노출. */
+  totalGames: number;
+  counterPicks: PickEntry[];
+}
+
 interface CompCompareResult {
   ally: RosterAnalysis;
   enemy: RosterAnalysis;
   conceptMatchup: ConceptMatchup | null;
+  likelyEnemyLaners: LikelyEnemyLaner[];
 }
 
 const COMP_CONCEPT_LABELS: Record<CompConceptId, string> = {
@@ -1452,6 +1466,12 @@ export default function Home() {
     if (mode === "advice") {
       setActiveSlotKey(`enemy-${next}`);
       setAdviceResult(null);
+    } else if (mode === "compcompare") {
+      // "조합 비교" 탭의 포지션은 슬롯/활성 슬롯과는 무관 — likelyEnemyLaners가
+      // 이 값 기준으로 다시 계산돼야 하므로 이전 결과만 비움(아래 자동조회
+      // useEffect가 slots와 함께 position도 의존성으로 갖고 있어 바뀌면 다시
+      // 조회함).
+      setCompareResult(null);
     }
   }
 
@@ -1612,6 +1632,9 @@ export default function Home() {
         const params = new URLSearchParams();
         if (allyIds.length > 0) params.set("ally", allyIds.join(","));
         if (enemyIds.length > 0) params.set("enemy", enemyIds.join(","));
+        // "내 맞 라이너일 확률이 높은 3명" 계산에 필요 — 없으면 서버가
+        // likelyEnemyLaners를 그냥 빈 배열로 돌려줌(요청 실패는 아님).
+        params.set("position", position);
         const res = await fetch(`/api/compcompare?${params.toString()}`);
         const data = await res.json();
         if (!res.ok) throw new Error(data.error ?? "조회에 실패했습니다.");
@@ -1827,19 +1850,24 @@ export default function Home() {
         </button>
       </div>
 
-      {mode !== "compcompare" && (
-        <div className="position-tabs">
-          {POSITIONS.map((p) => (
-            <button
-              key={p.value}
-              type="button"
-              className={position === p.value ? "tab tab--active" : "tab"}
-              onClick={() => changePosition(p.value)}
-            >
-              {p.label}
-            </button>
-          ))}
-        </div>
+      <div className="position-tabs">
+        {POSITIONS.map((p) => (
+          <button
+            key={p.value}
+            type="button"
+            className={position === p.value ? "tab tab--active" : "tab"}
+            onClick={() => changePosition(p.value)}
+          >
+            {p.label}
+          </button>
+        ))}
+      </div>
+
+      {mode === "compcompare" && (
+        <p className="empty-hint">
+          위 포지션은 <strong>내가 픽할 포지션</strong>을 뜻해요 — 상대팀 5명 중 이 포지션 표본이 가장 많은
+          (=내 맞 라이너일 확률이 높은) 최대 3명을 추려서, 각각에 대한 카운터 픽 추천을 아래에 보여드려요.
+        </p>
       )}
 
       {mode === "advice" && (
@@ -2408,10 +2436,54 @@ export default function Home() {
           <h2>조합 비교</h2>
           <p className="empty-hint">
             포지션 구분 없이 우리팀/상대팀 챔피언만으로 파워 커브·AP/AD 데미지 비중·챔피언 속성·조합 컨셉을 나란히
-            비교합니다. 라인 카운터/픽 추천처럼 실제 매치업 승률을 조회하는 기능이 아니라, 이미 이 앱의 다른
-            탭에서 쓰던 참고용 분석(파워 커브만 실측 스크래핑 데이터, 나머지는 Riot 공식 정적 데이터 기반)을
-            포지션 없이 빠르게 볼 수 있게 모아둔 화면입니다.
+            비교합니다. 위 포지션 탭에서 내가 픽할 포지션을 고르면, 상대팀 5명 중 그 포지션 표본이 많은(=내 맞
+            라이너일 확률이 높은) 최대 3명 각각에 대한 실제 카운터 픽 추천도 함께 보여드려요 — 이 부분만 라인
+            카운터/픽 추천과 똑같이 실측 스크래핑 승률입니다. 나머지(파워 커브 제외)는 이미 이 앱의 다른 탭에서
+            쓰던 참고용 분석(Riot 공식 정적 데이터 기반)을 포지션 없이 빠르게 볼 수 있게 모아둔 것입니다.
           </p>
+
+          {compareResult.likelyEnemyLaners.length > 0 && (
+            <>
+              <p className="empty-hint">
+                상대팀 5명 중 <strong>{POSITIONS.find((p) => p.value === position)?.label}</strong> 표본이 많은
+                순으로 최대 3명을 추렸습니다 — lol.ps의 라인 점유율 필드는 신뢰할 수 없다고 이미 확인돼서(항상
+                0을 반환), 대신 실제 카운터 조회 표본 게임 수를 근거로 씁니다.
+              </p>
+              {compareResult.likelyEnemyLaners.map((laner) => (
+                <div key={laner.champion.id}>
+                  <h3>
+                    {laner.champion.name} 상대 라인전 유리한 픽{" "}
+                    <span className="empty-hint">(표본 {laner.totalGames.toLocaleString()}게임)</span>
+                  </h3>
+                  <ol className="recommend-list">
+                    {laner.counterPicks.map((c) => (
+                      <li key={c.championId} className="recommend-row recommend-row--stacked">
+                        <div className="recommend-row-main">
+                          <ChampionIcon src={c.iconUrl} name={c.name} />
+                          <span className="recommend-name">{c.name}</span>
+                          <TierBadge tier={c.tier} />
+                          <WinRateBar rate={c.winRate} games={c.games} />
+                        </div>
+                        <div className="badge-row">
+                          <PowerCurveBadge earlyWinRate={c.earlyWinRate} lateWinRate={c.lateWinRate} />
+                          <PowerCurveVsEnemyBadge fit={c.powerCurveVsEnemyFit} />
+                          <CompFitBadge compFit={c.compFit} />
+                          <KeyTagBadges tags={c.keyTags} />
+                          <ConceptFitBadges fits={c.conceptFits} />
+                        </div>
+                        <Details label="소스별 상세">
+                          <SourceBreakdown sources={c.bySource} />
+                        </Details>
+                      </li>
+                    ))}
+                    {laner.counterPicks.length === 0 && (
+                      <p className="empty-hint">카운터 데이터를 찾지 못했습니다.</p>
+                    )}
+                  </ol>
+                </div>
+              ))}
+            </>
+          )}
 
           <h3>파워 커브 (초반/중반/후반)</h3>
           <div className="comp-heuristic-grid">
