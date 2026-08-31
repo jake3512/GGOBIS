@@ -1324,27 +1324,16 @@ export default function Home() {
     }
   }
 
-  // 실제 드래프트 타이머에 맞춰 여러 슬롯을 연달아 채울 때(사용자 피드백:
-  // "픽 시간에 맞춰서 챔피언을 일일이 입력하는데 시간이 너무 오래 걸림")
-  // 픽 하나 고를 때마다 선택 화면이 닫혀서 매번 다시 열어야 했던 걸 고침 —
-  // "다음 빈 슬롯이 있는지"는 setSlots의 업데이터 함수 안이 아니라 여기서
-  // 클로저의 현재 slots 값으로 미리 판단한다(setState 업데이터는 이 이후
-  // 동기적으로 실행된다는 보장이 없어서, 그 안에서 계산한 값을 곧바로 밖에서
-  // 읽으면 아직 갱신 전의 값을 보게 되는 버그가 날 수 있음).
   function assignActiveSlot(championId: number) {
     setLastPickedChampionId(championId);
-    const nextEmpty = slots.find((s) => s.key !== activeSlotKey && s.championId === null);
-    setSlots((prev) => prev.map((s) => (s.key === activeSlotKey ? { ...s, championId } : s)));
-    if (nextEmpty) {
-      // 선택 화면은 열어둔 채로 다음 빈 슬롯으로만 넘어감(아래 ChampionPicker가
-      // activeSlotKey를 key로 써서 검색창이 새 슬롯마다 초기화됨) — 다시
-      // 탭해서 열 필요 없이 검색+Enter만 반복하면 됨.
-      setActiveSlotKey(nextEmpty.key);
-    } else {
-      // 더 채울 빈 슬롯이 없으면(단일 슬롯 모드인 라인 카운터/빌드는 항상 이
-      // 경우) 지금까지처럼 선택 화면을 닫음.
-      setPickerOpen(false);
-    }
+    setSlots((prev) => {
+      const next = prev.map((s) => (s.key === activeSlotKey ? { ...s, championId } : s));
+      const nextEmpty = next.find((s) => s.key !== activeSlotKey && s.championId === null);
+      if (nextEmpty) setActiveSlotKey(nextEmpty.key);
+      return next;
+    });
+    // Picking a champion closes the full-screen picker back down.
+    setPickerOpen(false);
   }
 
   /** Sets the active slot and opens the full-screen champion picker for it —
@@ -1804,7 +1793,6 @@ export default function Home() {
             </button>
           </div>
           <ChampionPicker
-            key={activeSlotKey}
             champions={champions}
             selectedIds={pickerSelectedIds}
             onToggle={assignActiveSlot}
