@@ -490,6 +490,50 @@ textarea {
   color: var(--muted);
 }
 
+.power-curve-sparkline {
+  width: 100%;
+  height: 56px;
+  display: block;
+  margin-bottom: 0.35rem;
+}
+
+.power-curve-sparkline-line {
+  stroke: var(--accent);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.power-curve-sparkline-neutral {
+  stroke: var(--border);
+  stroke-width: 1;
+  stroke-dasharray: 4 3;
+  vector-effect: non-scaling-stroke;
+}
+
+.power-curve-detail-table {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.4rem;
+}
+
+.power-curve-detail-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 2.6rem;
+  font-size: 0.65rem;
+}
+
+.power-curve-detail-minute {
+  color: var(--muted);
+}
+
+.power-curve-detail-rate {
+  color: var(--foreground);
+  font-variant-numeric: tabular-nums;
+}
+
 .team-power-curve {
   display: flex;
   flex-direction: column;

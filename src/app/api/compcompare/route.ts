@@ -35,6 +35,9 @@ interface RosterPowerCurveEntry extends ChampionBrief {
   earlyWinRate: number | null;
   midWinRate: number | null;
   lateWinRate: number | null;
+  /** Full per-minute win-rate line behind the three averages above — see
+   * PowerCurveWithLane.points. */
+  powerCurvePoints: { minute: number; winRate: number }[];
 }
 
 interface RosterPowerCurve {
@@ -99,6 +102,7 @@ async function computeRosterPowerCurve(champs: DDragonChampion[]): Promise<Roste
       earlyWinRate: r.value.earlyWinRate,
       midWinRate: r.value.midWinRate,
       lateWinRate: r.value.lateWinRate,
+      powerCurvePoints: r.value.points,
     });
   });
   const collect = (key: "earlyWinRate" | "midWinRate" | "lateWinRate") =>

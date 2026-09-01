@@ -8,6 +8,7 @@ import { SourceBreakdown } from "@/components/SourceBreakdown";
 import { BuildCard, BuildCardCompact, type BuildResult } from "@/components/BuildCard";
 import { Details } from "@/components/Details";
 import { POSITIONS, type Position } from "@/lib/positions";
+import { itemSetDiffCount } from "@/lib/buildDiff";
 
 type Mode = "counter" | "advice" | "build" | "compcompare";
 
@@ -28,6 +29,14 @@ interface SourceErrorInfo {
   sourceId: string;
   sourceLabel: string;
   message: string;
+}
+
+/** One point of lol.ps's per-minute win-rate line (see PowerCurveDetails
+ * below) — the raw data earlyWinRate/midWinRate/lateWinRate everywhere else
+ * in this file are just a 3-bucket average of. */
+interface PowerCurvePoint {
+  minute: number;
+  winRate: number;
 }
 
 /** This app's own real-signal "핵심 태그" — the same hasHardCC/hasSoftCC/
@@ -60,6 +69,9 @@ interface CounterEntry {
   earlyWinRate?: number | null;
   lateWinRate?: number | null;
   powerCurveLaneNote?: string | null;
+  /** Full per-minute win-rate line behind earlyWinRate/lateWinRate above —
+   * see PowerCurveDetails. */
+  powerCurvePoints?: { minute: number; winRate: number }[] | null;
   /** How much the looked-up champion's power curve favors them against THIS
    * counter — 0.5 neutral, up to 1.0. A high value means: even though this
    * champion is a real statistical counter, your side's early/late-game
@@ -89,6 +101,9 @@ interface PickEntry {
    * different lane than this candidate's recommended position — lol.ps only
    * ever tracks a champion's own primary lane. */
   powerCurveLaneNote?: string | null;
+  /** Full per-minute win-rate line behind earlyWinRate/lateWinRate above —
+   * see PowerCurveDetails. */
+  powerCurvePoints?: { minute: number; winRate: number }[] | null;
   build?: BuildResult | null;
   /** DeepLoL's build for the same champion+position, shown alongside `build`
    * rather than merged with it — same "라인 카운터"/"빌드" tab convention. */
@@ -274,6 +289,7 @@ interface LanerPowerCurve {
   earlyWinRate: number | null;
   midWinRate: number | null;
   lateWinRate: number | null;
+  powerCurvePoints: PowerCurvePoint[];
   laneNote: string | null;
 }
 
@@ -324,6 +340,7 @@ interface RosterPowerCurveEntry extends ChampionBrief {
   earlyWinRate: number | null;
   midWinRate: number | null;
   lateWinRate: number | null;
+  powerCurvePoints: PowerCurvePoint[];
 }
 
 interface RosterPowerCurve {
@@ -734,6 +751,77 @@ function PowerCurveBadge({ earlyWinRate, lateWinRate }: { earlyWinRate?: number 
   );
 }
 
+const POWER_CURVE_SPARKLINE_WIDTH = 280;
+const POWER_CURVE_SPARKLINE_HEIGHT = 56;
+
+/** Expandable per-minute detail behind PowerCurveBadge's 3-bucket summary —
+ * a small inline SVG sparkline (no charting library — this app has never
+ * pulled one in, and a 31-point line is simple enough to draw by hand) plus
+ * the exact per-minute win rates, both driven by the same raw
+ * PowerCurvePoint[] lol.ps's graphs.json returns (minute 3..33, ~31 points)
+ * that earlyWinRate/midWinRate/lateWinRate elsewhere in this file are just a
+ * 3-bucket average of — averaging into three buckets can hide a real shape
+ * (e.g. a champion strong specifically around minute 10 and again past
+ * minute 25, but weak in between, nets out to an unremarkable "mid"
+ * average). Renders nothing when there's no point data, same as
+ * PowerCurveBadge — most call sites pass the very same entry's points. */
+function PowerCurveDetails({ points }: { points?: PowerCurvePoint[] | null }) {
+  if (!points || points.length < 2) return null;
+
+  const winRates = points.map((p) => p.winRate);
+  // Padding the min/max with 0.5 (neutral) keeps a nearly-flat line from
+  // getting visually exaggerated into a dramatic zigzag by an auto-scaled
+  // axis with almost no real range.
+  const minRate = Math.min(...winRates, 0.5);
+  const maxRate = Math.max(...winRates, 0.5);
+  const range = Math.max(maxRate - minRate, 0.01);
+  const x = (i: number) => (i / (points.length - 1)) * POWER_CURVE_SPARKLINE_WIDTH;
+  const y = (rate: number) => POWER_CURVE_SPARKLINE_HEIGHT - ((rate - minRate) / range) * POWER_CURVE_SPARKLINE_HEIGHT;
+  const path = points
+    .map((p, i) => `${i === 0 ? "M" : "L"} ${x(i).toFixed(1)} ${y(p.winRate).toFixed(1)}`)
+    .join(" ");
+  const neutralY = y(0.5);
+
+  const best = points.reduce((a, b) => (b.winRate > a.winRate ? b : a));
+  const worst = points.reduce((a, b) => (b.winRate < a.winRate ? b : a));
+
+  return (
+    <Details label="분당 승률 상세">
+      <svg
+        className="power-curve-sparkline"
+        viewBox={`0 0 ${POWER_CURVE_SPARKLINE_WIDTH} ${POWER_CURVE_SPARKLINE_HEIGHT}`}
+        preserveAspectRatio="none"
+        role="img"
+        aria-label="분당 승률 그래프"
+      >
+        {neutralY >= 0 && neutralY <= POWER_CURVE_SPARKLINE_HEIGHT && (
+          <line
+            x1={0}
+            y1={neutralY}
+            x2={POWER_CURVE_SPARKLINE_WIDTH}
+            y2={neutralY}
+            className="power-curve-sparkline-neutral"
+          />
+        )}
+        <path d={path} className="power-curve-sparkline-line" fill="none" />
+      </svg>
+      <p className="empty-hint">
+        {points[0].minute}분 {(points[0].winRate * 100).toFixed(1)}% → {points[points.length - 1].minute}분{" "}
+        {(points[points.length - 1].winRate * 100).toFixed(1)}% · 최고 {best.minute}분 {(best.winRate * 100).toFixed(1)}
+        % · 최저 {worst.minute}분 {(worst.winRate * 100).toFixed(1)}%
+      </p>
+      <div className="power-curve-detail-table">
+        {points.map((p) => (
+          <span key={p.minute} className="power-curve-detail-cell">
+            <span className="power-curve-detail-minute">{p.minute}분</span>
+            <span className="power-curve-detail-rate">{(p.winRate * 100).toFixed(1)}%</span>
+          </span>
+        ))}
+      </div>
+    </Details>
+  );
+}
+
 /** Shown when the candidate's own power curve gives it a real early/late-game
  * edge over the SPECIFIC opponent being compared against (the enemy laner in
  * pick-advice, or the looked-up champion's own matchup in the lane-counter
@@ -1035,6 +1123,7 @@ function TeamPowerCurveCard({ curve }: { curve: TeamPowerCurve }) {
                   {l.lateWinRate !== null ? `${(l.lateWinRate * 100).toFixed(1)}%` : "-"}
                 </p>
                 {l.laneNote && <p className="build-lane-note">⚠ {l.laneNote}</p>}
+                <PowerCurveDetails points={l.powerCurvePoints} />
               </li>
             );
           })}
@@ -1102,6 +1191,7 @@ function RosterPowerCurveCard({ title, curve }: { title: string; curve: RosterPo
                   {c.midWinRate !== null ? `${(c.midWinRate * 100).toFixed(1)}%` : "-"} · 후반{" "}
                   {c.lateWinRate !== null ? `${(c.lateWinRate * 100).toFixed(1)}%` : "-"}
                 </p>
+                <PowerCurveDetails points={c.powerCurvePoints} />
               </li>
             );
           })}
@@ -2115,6 +2205,7 @@ export default function Home() {
                   <ConceptFitBadges fits={c.conceptFits} />
                 </div>
                 <LaningTipList stats={c.laningStats} />
+                <PowerCurveDetails points={c.powerCurvePoints} />
                 <Details label="소스별 상세">
                   <SourceBreakdown sources={c.bySource} />
                   {c.powerCurveLaneNote && <p className="build-lane-note">⚠ {c.powerCurveLaneNote}</p>}
@@ -2154,9 +2245,25 @@ export default function Home() {
             <p className="empty-hint">lol.ps 빌드 데이터를 가져오지 못했습니다.</p>
           )}
           {buildResultsDeeplol.length > 0 ? (
-            buildResultsDeeplol.map((b, i) => (
-              <BuildCard key={`deeplol-${i}`} build={b} sourceLabel="DeepLoL" variantLabel={buildVariantLabel(i)} />
-            ))
+            buildResultsDeeplol.map((b, i) => {
+              const diffCount =
+                i > 0
+                  ? itemSetDiffCount(
+                      b.coreItems.map((it) => it.id),
+                      buildResultsDeeplol[0].coreItems.map((it) => it.id),
+                    )
+                  : null;
+              return (
+                <BuildCard
+                  key={`deeplol-${i}`}
+                  build={b}
+                  sourceLabel="DeepLoL"
+                  variantLabel={
+                    diffCount !== null ? `${buildVariantLabel(i)} (핵심 아이템 ${diffCount}개 다름)` : buildVariantLabel(i)
+                  }
+                />
+              );
+            })
           ) : (
             <p className="empty-hint">DeepLoL 빌드 데이터를 가져오지 못했습니다.</p>
           )}
@@ -2232,6 +2339,7 @@ export default function Home() {
                         <ConceptFitBadges fits={c.conceptFits} />
                       </div>
                       <LaningTipList stats={c.laningStats} />
+                      <PowerCurveDetails points={c.powerCurvePoints} />
                       <Details label="세부정보">
                         <SourceBreakdown sources={c.bySource} />
                         {c.powerCurveLaneNote && <p className="build-lane-note">⚠ {c.powerCurveLaneNote}</p>}
@@ -2329,6 +2437,7 @@ export default function Home() {
                         <KeyTagBadges tags={c.keyTags} />
                         <ConceptFitBadges fits={c.conceptFits} />
                       </div>
+                      <PowerCurveDetails points={c.powerCurvePoints} />
                       <Details label="세부정보">
                         <SourceBreakdown sources={c.bySource} />
                         {c.powerCurveLaneNote && <p className="build-lane-note">⚠ {c.powerCurveLaneNote}</p>}
