@@ -9,8 +9,10 @@ import { BuildCard, BuildCardCompact, type BuildResult } from "@/components/Buil
 import { Details } from "@/components/Details";
 import { POSITIONS, type Position } from "@/lib/positions";
 import { itemSetDiffCount } from "@/lib/buildDiff";
+import { ItemPicker, type ItemSummary } from "@/components/ItemPicker";
+import { statLabel, formatStatValue } from "@/lib/itemStats";
 
-type Mode = "counter" | "advice" | "build" | "compcompare";
+type Mode = "counter" | "advice" | "build" | "compcompare" | "itembuild";
 
 interface ChampionBrief {
   id: number;
@@ -1395,9 +1397,24 @@ function SourceStatusNote({
   );
 }
 
+/** Real LoL inventory has 6 item slots (boots included) plus a separate
+ * trinket slot — this tab only models the 6 item slots since trinkets carry
+ * no meaningful stats/price to aggregate. */
+const ITEM_SLOT_COUNT = 6;
+
 export default function Home() {
   const [champions, setChampions] = useState<ChampionSummary[]>([]);
   const [champLoadError, setChampLoadError] = useState<string | null>(null);
+  /** "아이템 빌드" 탭 전용 데이터/상태 — 챔피언 슬롯(slots/activeSlotKey/
+   * pickerOpen) 머신과는 완전히 독립적으로 둔다. 챔피언 기반 4개 탭이 이미
+   * 그 상태를 픽 추천의 10슬롯/조합 비교의 5+5슬롯 등 서로 다른 방식으로
+   * 재사용하고 있어서, 성격이 전혀 다른(포지션도 팀도 없는 6슬롯 아이템
+   * 목록) 이 탭까지 같은 상태에 끼워 넣으면 그 로직들이 더 얽히기 쉽다. */
+  const [items, setItems] = useState<ItemSummary[]>([]);
+  const [itemLoadError, setItemLoadError] = useState<string | null>(null);
+  const [itemSlots, setItemSlots] = useState<(number | null)[]>(Array(ITEM_SLOT_COUNT).fill(null));
+  const [activeItemSlotIndex, setActiveItemSlotIndex] = useState<number | null>(null);
+  const [itemPickerOpen, setItemPickerOpen] = useState(false);
   const [mode, setMode] = useState<Mode>("counter");
   const [position, setPosition] = useState("top");
   const [slots, setSlots] = useState<Slot[]>([{ key: "target", label: "기준 챔피언", championId: null }]);
@@ -1464,6 +1481,13 @@ export default function Home() {
       .then((res) => res.json())
       .then((data) => setChampions(data.champions))
       .catch(() => setChampLoadError("챔피언 목록을 불러오지 못했습니다."));
+  }, []);
+
+  useEffect(() => {
+    fetch("/api/items")
+      .then((res) => res.json())
+      .then((data) => setItems(data.items))
+      .catch(() => setItemLoadError("아이템 목록을 불러오지 못했습니다."));
   }, []);
 
   // localStorage read must happen after mount (SSR has no window) — this
@@ -1547,6 +1571,9 @@ export default function Home() {
     setBuildLookupAttempted(false);
     setCounterBuild(null);
     setPickerOpen(false);
+    setItemSlots(Array(ITEM_SLOT_COUNT).fill(null));
+    setActiveItemSlotIndex(null);
+    setItemPickerOpen(false);
     if (next === "counter" || next === "build") {
       const nextSlots: Slot[] = [{ key: "target", label: "기준 챔피언", championId: null }];
       setSlots(nextSlots);
@@ -1555,6 +1582,8 @@ export default function Home() {
       const nextSlots = compCompareSlotsFor();
       setSlots(nextSlots);
       setActiveSlotKey(nextSlots[0].key);
+    } else if (next === "itembuild") {
+      // 이 탭은 챔피언 슬롯(slots/activeSlotKey)을 아예 안 씀 — 건드리지 않음.
     } else {
       const nextSlots = adviceSlotsFor();
       setSlots(nextSlots);
@@ -1632,6 +1661,58 @@ export default function Home() {
     setSlots((prev) => prev.map((s) => (s.key === activeSlotKey ? { ...s, championId: null } : s)));
     setPickerOpen(false);
   }
+
+  /** "아이템 빌드" 탭의 슬롯 조작 — 위 챔피언 슬롯 함수들과 같은 모양
+   * (activate로 열기, assign으로 채우고 닫기, blank로 비우고 닫기)이지만
+   * itemSlots(단순 6칸 배열, 포지션/팀 개념 없음)에 대해서만 동작한다. */
+  function activateItemSlot(index: number) {
+    setActiveItemSlotIndex(index);
+    setItemPickerOpen(true);
+  }
+
+  function clearItemSlot(index: number) {
+    setItemSlots((prev) => prev.map((id, i) => (i === index ? null : id)));
+    activateItemSlot(index);
+  }
+
+  function assignActiveItemSlot(itemId: number) {
+    if (activeItemSlotIndex === null) return;
+    const index = activeItemSlotIndex;
+    setItemSlots((prev) => prev.map((id, i) => (i === index ? itemId : id)));
+    setItemPickerOpen(false);
+  }
+
+  function blankActiveItemSlot() {
+    if (activeItemSlotIndex === null) return;
+    const index = activeItemSlotIndex;
+    setItemSlots((prev) => prev.map((id, i) => (i === index ? null : id)));
+    setItemPickerOpen(false);
+  }
+
+  const itemById = useMemo(() => new Map(items.map((it) => [it.id, it])), [items]);
+
+  const filledBuildItems = useMemo(
+    () => itemSlots.map((id) => (id !== null ? (itemById.get(id) ?? null) : null)).filter((it): it is ItemSummary => it !== null),
+    [itemSlots, itemById],
+  );
+
+  const itemBuildTotalCost = filledBuildItems.reduce((sum, it) => sum + it.cost.total, 0);
+
+  /** 채워진 아이템들의 스탯을 키별로 그대로 더한 합계 — 아이템마다 서로
+   * 다른 스탯 키를 가질 수 있어서 Map으로 모으고, 같은 키가 여러 아이템에
+   * 걸쳐 나오면(예: 방어구템 두 개 다 FlatArmorMod를 가짐) 그 값들을 그대로
+   * 더한다. 퍼센트 스탯(예: 공격 속도)도 마찬가지로 소수 그대로 더하고
+   * 표시할 때만 formatStatValue가 %로 바꾼다 — 게임 내 실제 공식(감소
+   * 체감 등)은 반영하지 않는 단순 합산이라는 점을 화면에도 명시한다. */
+  const itemBuildStatTotals = useMemo(() => {
+    const totals = new Map<string, number>();
+    for (const it of filledBuildItems) {
+      for (const [key, value] of Object.entries(it.stats)) {
+        totals.set(key, (totals.get(key) ?? 0) + value);
+      }
+    }
+    return totals;
+  }, [filledBuildItems]);
 
   // Every champion currently placed in any slot (not just the active one) —
   // shows a checkmark on its tile in the picker grid. Previously this only
@@ -1962,20 +2043,29 @@ export default function Home() {
         >
           조합 비교
         </button>
+        <button
+          type="button"
+          className={mode === "itembuild" ? "tab tab--active" : "tab"}
+          onClick={() => switchMode("itembuild")}
+        >
+          아이템 빌드
+        </button>
       </div>
 
-      <div className="position-tabs">
-        {POSITIONS.map((p) => (
-          <button
-            key={p.value}
-            type="button"
-            className={position === p.value ? "tab tab--active" : "tab"}
-            onClick={() => changePosition(p.value)}
-          >
-            {p.label}
-          </button>
-        ))}
-      </div>
+      {mode !== "itembuild" && (
+        <div className="position-tabs">
+          {POSITIONS.map((p) => (
+            <button
+              key={p.value}
+              type="button"
+              className={position === p.value ? "tab tab--active" : "tab"}
+              onClick={() => changePosition(p.value)}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+      )}
 
       {mode === "compcompare" && (
         <p className="empty-hint">
@@ -2095,43 +2185,45 @@ export default function Home() {
         </div>
       )}
 
-      <section className="selected-bar">
-        {mode === "advice" || mode === "compcompare" ? (
-          <div className="champ-select-portrait">
-            {portraitChampion ? (
-              <>
-                {/* eslint-disable-next-line @next/next/no-img-element -- external CDN splash art, no next/image domain config needed */}
-                <img
-                  src={championSplashUrl(portraitChampion.slug)}
-                  alt={portraitChampion.name}
-                  className="champ-select-portrait-img"
-                  referrerPolicy="no-referrer"
-                  onError={(e) => {
-                    e.currentTarget.style.display = "none";
-                  }}
-                />
-                <span className="champ-select-portrait-name">{portraitChampion.name}</span>
-              </>
-            ) : (
-              <span className="champ-select-portrait-empty">챔피언을 선택하면 여기 크게 보여요</span>
-            )}
-          </div>
-        ) : (
-          <div className="slot-row">{slots.map((slot) => renderSlot(slot))}</div>
-        )}
-        <button type="button" className="run-button" disabled={!canRun || loading} onClick={runLookup}>
-          {loading
-            ? "조회 중..."
-            : mode === "counter"
-              ? "카운터 조회"
-              : mode === "build"
-                ? "빌드 조회"
-                : "지금 바로 새로고침"}
-        </button>
-        {(mode === "advice" || mode === "compcompare") && (
-          <p className="empty-hint">챔피언을 넣거나 뺄 때마다 자동으로 다시 조회돼요. 버튼은 기다리지 않고 바로 새로고침하고 싶을 때만 누르세요.</p>
-        )}
-      </section>
+      {mode !== "itembuild" && (
+        <section className="selected-bar">
+          {mode === "advice" || mode === "compcompare" ? (
+            <div className="champ-select-portrait">
+              {portraitChampion ? (
+                <>
+                  {/* eslint-disable-next-line @next/next/no-img-element -- external CDN splash art, no next/image domain config needed */}
+                  <img
+                    src={championSplashUrl(portraitChampion.slug)}
+                    alt={portraitChampion.name}
+                    className="champ-select-portrait-img"
+                    referrerPolicy="no-referrer"
+                    onError={(e) => {
+                      e.currentTarget.style.display = "none";
+                    }}
+                  />
+                  <span className="champ-select-portrait-name">{portraitChampion.name}</span>
+                </>
+              ) : (
+                <span className="champ-select-portrait-empty">챔피언을 선택하면 여기 크게 보여요</span>
+              )}
+            </div>
+          ) : (
+            <div className="slot-row">{slots.map((slot) => renderSlot(slot))}</div>
+          )}
+          <button type="button" className="run-button" disabled={!canRun || loading} onClick={runLookup}>
+            {loading
+              ? "조회 중..."
+              : mode === "counter"
+                ? "카운터 조회"
+                : mode === "build"
+                  ? "빌드 조회"
+                  : "지금 바로 새로고침"}
+          </button>
+          {(mode === "advice" || mode === "compcompare") && (
+            <p className="empty-hint">챔피언을 넣거나 뺄 때마다 자동으로 다시 조회돼요. 버튼은 기다리지 않고 바로 새로고침하고 싶을 때만 누르세요.</p>
+          )}
+        </section>
+      )}
 
       {champLoadError && <p className="error-banner">{champLoadError}</p>}
 
@@ -2165,6 +2257,33 @@ export default function Home() {
             onToggle={assignActiveSlot}
             maxSelect={champions.length || 1}
             quickInput={mode === "compcompare"}
+          />
+        </div>
+      )}
+
+      {/* "아이템 빌드" 탭 전용 오버레이 — 위 챔피언 픽커와 같은 구조지만
+          완전히 별도 상태(itemPickerOpen/activeItemSlotIndex)로 열고 닫혀서
+          다른 4개 탭의 챔피언 픽커와 서로 간섭하지 않는다. */}
+      {itemPickerOpen && activeItemSlotIndex !== null && (
+        <div className="champion-picker-overlay" role="dialog" aria-modal="true">
+          <div className="champion-picker-overlay-header">
+            <span className="champion-picker-overlay-title">슬롯 {activeItemSlotIndex + 1} 아이템 선택</span>
+            <button type="button" className="champion-picker-blank" onClick={blankActiveItemSlot}>
+              빈 슬롯으로 두기
+            </button>
+            <button
+              type="button"
+              className="champion-picker-close"
+              onClick={() => setItemPickerOpen(false)}
+              aria-label="아이템 선택 닫기"
+            >
+              ✕
+            </button>
+          </div>
+          <ItemPicker
+            items={items}
+            selectedIds={itemSlots.filter((id): id is number => id !== null)}
+            onSelect={assignActiveItemSlot}
           />
         </div>
       )}
@@ -2276,6 +2395,92 @@ export default function Home() {
         buildLookupAttempted && (
           <p className="empty-hint">lol.ps와 DeepLoL 모두 빌드 데이터를 가져오지 못했습니다. 잠시 후 다시 시도해보세요.</p>
         )}
+
+      {mode === "itembuild" && (
+        <section className="results">
+          <h2>아이템 빌드</h2>
+          <p className="empty-hint">
+            6개 아이템 슬롯을 직접 채워서 조합의 총 가격과 스탯 합계를 확인하세요. 아이템 이름은 물론 위 스탯
+            카테고리로도 검색할 수 있습니다. 이름·가격·스탯·설명은 전부 Riot 공식 정적 데이터(Data Dragon
+            `item.json`)에서 그대로 가져온 값입니다.
+          </p>
+          {itemLoadError && <p className="empty-hint">{itemLoadError}</p>}
+
+          <div className="item-build-slots">
+            {itemSlots.map((itemId, i) => {
+              const item = itemId !== null ? (itemById.get(itemId) ?? null) : null;
+              return (
+                <button
+                  key={i}
+                  type="button"
+                  className={`item-build-slot${item ? "" : " item-build-slot--empty"}`}
+                  onClick={() => (item ? clearItemSlot(i) : activateItemSlot(i))}
+                >
+                  {item ? (
+                    <>
+                      <ChampionIcon src={item.iconUrl} name={item.name} className="item-tile-icon" />
+                      <span className="item-build-slot-name">{item.name}</span>
+                    </>
+                  ) : (
+                    <span>슬롯 {i + 1}</span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+
+          {filledBuildItems.length > 0 && (
+            <>
+              <h3>합계</h3>
+              <p className="empty-hint">
+                총 가격 <strong>{itemBuildTotalCost.toLocaleString()}골드</strong> ({filledBuildItems.length}개 아이템)
+              </p>
+              {itemBuildStatTotals.size > 0 && (
+                <div className="item-build-stat-summary">
+                  {[...itemBuildStatTotals.entries()].map(([key, value]) => (
+                    <span key={key} className="item-build-stat-chip">
+                      {statLabel(key)} {formatStatValue(key, value)}
+                    </span>
+                  ))}
+                </div>
+              )}
+              <p className="empty-hint">
+                스탯 합계는 아이템들의 수치를 그대로 더한 값입니다 — 방어력/마법 저항력의 실제 피해 감소 공식 등
+                게임 내 계산은 반영하지 않았습니다.
+              </p>
+
+              <h3>선택한 아이템</h3>
+              <ol className="recommend-list">
+                {filledBuildItems.map((item, i) => (
+                  <li key={`${item.id}-${i}`} className="recommend-row recommend-row--stacked">
+                    <div className="recommend-row-main">
+                      <ChampionIcon src={item.iconUrl} name={item.name} className="item-tile-icon" />
+                      <span className="recommend-name">{item.name}</span>
+                      <span className="item-tile-price">{item.cost.total.toLocaleString()}골드</span>
+                    </div>
+                    <Details label="상세 정보">
+                      {item.plainDescription && <p className="empty-hint">{item.plainDescription}</p>}
+                      {Object.keys(item.stats).length > 0 && (
+                        <div className="item-build-stat-summary">
+                          {Object.entries(item.stats).map(([key, value]) => (
+                            <span key={key} className="item-build-stat-chip">
+                              {statLabel(key)} {formatStatValue(key, value)}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                      {item.tags.length > 0 && <p className="empty-hint">태그: {item.tags.join(", ")}</p>}
+                      <p className="empty-hint">
+                        기본가 {item.cost.base.toLocaleString()}골드 · 판매가 {item.cost.sell.toLocaleString()}골드
+                      </p>
+                    </Details>
+                  </li>
+                ))}
+              </ol>
+            </>
+          )}
+        </section>
+      )}
 
       {mode === "advice" && canRun && adviceResult && (
         <section className="results">

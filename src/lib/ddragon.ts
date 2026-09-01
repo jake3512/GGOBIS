@@ -133,6 +133,13 @@ export async function getChampionsWithFallback(locale = "ko_KR"): Promise<DDrago
 // build feature just fails for that request, same as any other source
 // outage in this app.
 
+export interface DDragonItemCost {
+  base: number;
+  total: number;
+  sell: number;
+  purchasable: boolean;
+}
+
 export interface DDragonItem {
   id: number;
   name: string;
@@ -143,6 +150,30 @@ export interface DDragonItem {
    * build itemizes defensively against the enemy team's damage-type split
    * (see applyBuildFitBonus, src/app/api/pickadvice/route.ts). */
   tags: string[];
+  /** Straight from item.json's own `gold` block — official shop prices, not
+   * scraped from anywhere. */
+  cost: DDragonItemCost;
+  /** Official structured stat bonuses from item.json's `stats` block (e.g.
+   * FlatPhysicalDamageMod, PercentAttackSpeedMod) — raw Data Dragon key
+   * names, percent-based stats stored as fractions (0.25 = 25%) same as the
+   * source data itself. See src/lib/itemStats.ts for the Korean label
+   * mapping used to display/search these. KNOWN LIMITATION: this block only
+   * covers "legacy" numeric stat mods — modern stats like Ability Haste,
+   * Lethality, Omnivamp, and Heal & Shield Power are NOT included here at
+   * all by Data Dragon itself; they only appear in the free-text
+   * description below, so items whose main selling point is one of those
+   * won't show up under any stat-category filter built from this field. */
+  stats: Record<string, number>;
+  /** Riot's own short plain-text summary (item.json's `plaintext` field) —
+   * always safe plain text, unlike `description` (rich tooltip markup with
+   * custom tags like <mainText>/<stats>, meant for the in-game tooltip
+   * renderer, not a browser) which this app deliberately does not parse or
+   * render to avoid dealing with arbitrary embedded markup. */
+  plainDescription: string;
+  /** Whether this item is available on Summoner's Rift (map id "11" in
+   * item.json's `maps` block) — used to keep ARAM/URF/Arena-only items out
+   * of the item-build tab. */
+  availableOnSummonersRift: boolean;
 }
 
 let cachedItems: { value: Map<number, DDragonItem>; fetchedAt: number } | null = null;
@@ -157,7 +188,18 @@ export async function getItemsWithCache(locale = "ko_KR"): Promise<Map<number, D
   });
   if (!res.ok) throw new Error(`Data Dragon item.json request failed: ${res.status}`);
   const body = await res.json();
-  const data = body.data as Record<string, { name: string; image: { full: string }; tags?: string[] }>;
+  const data = body.data as Record<
+    string,
+    {
+      name: string;
+      image: { full: string };
+      tags?: string[];
+      gold?: { base: number; total: number; sell: number; purchasable: boolean };
+      stats?: Record<string, number>;
+      plaintext?: string;
+      maps?: Record<string, boolean>;
+    }
+  >;
   const map = new Map<number, DDragonItem>();
   for (const [id, item] of Object.entries(data)) {
     map.set(Number(id), {
@@ -165,6 +207,15 @@ export async function getItemsWithCache(locale = "ko_KR"): Promise<Map<number, D
       name: item.name,
       iconUrl: `${DDRAGON_BASE}/cdn/${v}/img/item/${item.image.full}`,
       tags: item.tags ?? [],
+      cost: {
+        base: item.gold?.base ?? 0,
+        total: item.gold?.total ?? 0,
+        sell: item.gold?.sell ?? 0,
+        purchasable: item.gold?.purchasable ?? false,
+      },
+      stats: item.stats ?? {},
+      plainDescription: item.plaintext ?? "",
+      availableOnSummonersRift: item.maps?.["11"] ?? false,
     });
   }
   cachedItems = { value: map, fetchedAt: Date.now() };
