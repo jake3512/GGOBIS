@@ -186,6 +186,14 @@ export interface DDragonItem {
    * 아이템"/조합 아이템 — B.F. Sword, Cloak of Agility, etc.), not a
    * finished item you'd put in a completed build. */
   isComponentItem: boolean;
+  /** True when item.json sets `requiredChampion` or `requiredAlly` — a
+   * variant only buyable by/with a specific champion (e.g. Kalista's Black
+   * Spear) or only while an Ornn ally is on your team. These frequently
+   * share their display `name` with an ordinary version of the same item,
+   * which is one source of apparent "duplicate" tiles in a general item
+   * list — excluded from the item-build tab for that reason as well as
+   * because most builds can't actually buy them. */
+  isRestrictedVariant: boolean;
 }
 
 let cachedItems: { value: Map<number, DDragonItem>; fetchedAt: number } | null = null;
@@ -212,6 +220,8 @@ export async function getItemsWithCache(locale = "ko_KR"): Promise<Map<number, D
       maps?: Record<string, boolean>;
       hideFromAll?: boolean;
       into?: string[];
+      requiredChampion?: string;
+      requiredAlly?: string;
     }
   >;
   const map = new Map<number, DDragonItem>();
@@ -232,6 +242,7 @@ export async function getItemsWithCache(locale = "ko_KR"): Promise<Map<number, D
       availableOnSummonersRift: item.maps?.["11"] ?? false,
       hideFromAll: item.hideFromAll ?? false,
       isComponentItem: (item.into?.length ?? 0) > 0,
+      isRestrictedVariant: Boolean(item.requiredChampion) || Boolean(item.requiredAlly),
     });
   }
   cachedItems = { value: map, fetchedAt: Date.now() };
