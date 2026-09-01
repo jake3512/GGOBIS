@@ -1388,3 +1388,89 @@ textarea {
   white-space: nowrap;
   max-width: none;
 }
+
+/* "아이템 빌드" 탭 — 6칸 슬롯 행은 .slot-row/.slot과 같은 모양(둥근 알약
+   버튼)을 그대로 따르고, 스탯 필터 칩 행/스탯 요약 칩은 기존 .tab 배지
+   스타일과 같은 톤을 새로 만들었다. */
+.item-build-slots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin-bottom: 0.75rem;
+}
+
+.item-build-slot {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.4rem 1rem 0.4rem 0.4rem;
+  color: var(--foreground);
+  cursor: pointer;
+  font-size: 0.85rem;
+  min-height: 44px;
+}
+
+.item-build-slot img {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
+
+/* Item icons are square-ish LoL shop art, not champion portraits — override
+   .champion-tile's circular 50% radius (meant for round champion icons)
+   back to the same rounded-square look build cards already use for items
+   (.build-icon-row img). Higher specificity than the plain ".champion-tile
+   img" element selector it's overriding, so no !important needed. Also
+   applied inside .recommend-row-main (no radius rule there to override, but
+   keeps every place an item icon appears in this tab visually consistent). */
+.champion-tile .item-tile-icon,
+.recommend-row-main .item-tile-icon {
+  border-radius: 6px;
+}
+
+.item-build-slot-name {
+  max-width: 8rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.item-build-slot--empty {
+  padding: 0.4rem 1rem;
+  color: var(--muted);
+  border-style: dashed;
+}
+
+.item-stat-filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-bottom: 0.6rem;
+}
+
+.item-tile-price {
+  font-size: 0.7rem;
+  color: var(--warn);
+  font-variant-numeric: tabular-nums;
+}
+
+.item-build-stat-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin: 0.4rem 0;
+}
+
+.item-build-stat-chip {
+  display: inline-block;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-alt);
+  font-size: 0.72rem;
+  color: var(--foreground);
+}
