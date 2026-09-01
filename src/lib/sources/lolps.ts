@@ -499,6 +499,16 @@ export interface PowerCurveWithLane extends PowerCurveSummary {
    * laneId at all. Compare against the position you actually wanted to know
    * whether this is a substituted off-lane curve. */
   actualPosition: Position | null;
+  /** The full per-minute win-rate line (minute 3..33, ~31 points) that
+   * earlyWinRate/midWinRate/lateWinRate above are just a 3-bucket average
+   * of — added for callers that want to show more than that 3-number
+   * summary (e.g. a per-minute sparkline/table), since averaging into three
+   * buckets can hide a real shape (e.g. a champion strong specifically
+   * around minute 10 and again past minute 25, but weak in between, still
+   * nets out to an unremarkable "mid" average). Same PowerCurvePoint[]
+   * fetchPowerCurve already computes internally — this was already being
+   * fetched, just never forwarded past this function before. */
+  points: PowerCurvePoint[];
 }
 
 /** One champion's power curve summary, regardless of which lane it actually
@@ -513,6 +523,7 @@ export async function getPowerCurve(championId: number): Promise<PowerCurveWithL
     midWinRate: curve.midWinRate,
     lateWinRate: curve.lateWinRate,
     actualPosition: laneIdToPosition(curve.laneId) ?? null,
+    points: curve.points,
   };
 }
 

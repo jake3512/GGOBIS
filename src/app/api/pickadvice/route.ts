@@ -178,6 +178,9 @@ interface PickEntry {
   earlyWinRate?: number | null;
   lateWinRate?: number | null;
   powerCurveLaneNote?: string | null;
+  /** Full per-minute win-rate line behind earlyWinRate/lateWinRate above —
+   * same top-N-only limit, see PowerCurveWithLane.points. */
+  powerCurvePoints?: { minute: number; winRate: number }[] | null;
   /** lol.ps build recommendation — same top-N-only, same-position-only
    * limits as the power curve above. */
   build?: BuildResult | null;
@@ -767,6 +770,7 @@ async function refineTopWithPowerCurveAndLaning(
       const curve = curveResult.value;
       entry.earlyWinRate = curve.earlyWinRate;
       entry.lateWinRate = curve.lateWinRate;
+      entry.powerCurvePoints = curve.points;
       entry.powerCurveLaneNote =
         curve.actualPosition && curve.actualPosition !== position
           ? `lol.ps는 ${entry.name}의 ${POSITION_LABEL.get(curve.actualPosition) ?? curve.actualPosition} 라인 데이터만 갖고 있어요 — 아래 수치는 실제로 그 라인 기준입니다.`
@@ -929,6 +933,9 @@ interface LanerPowerCurve {
   earlyWinRate: number | null;
   midWinRate: number | null;
   lateWinRate: number | null;
+  /** Full per-minute win-rate line behind the three averages above — see
+   * PowerCurveWithLane.points. */
+  powerCurvePoints: { minute: number; winRate: number }[];
   /** Set when this laner's numbers are actually lol.ps's data for a
    * DIFFERENT lane — same idea as BuildResult.laneNote. */
   laneNote: string | null;
@@ -1000,6 +1007,7 @@ async function computeTeamPowerCurve(
       earlyWinRate: curve.earlyWinRate,
       midWinRate: curve.midWinRate,
       lateWinRate: curve.lateWinRate,
+      powerCurvePoints: curve.points,
       laneNote,
     });
   });

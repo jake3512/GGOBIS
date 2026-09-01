@@ -51,6 +51,9 @@ interface CounterEntry {
   earlyWinRate?: number | null;
   lateWinRate?: number | null;
   powerCurveLaneNote?: string | null;
+  /** Full per-minute win-rate line behind earlyWinRate/lateWinRate above —
+   * same top-N-only limit, see PowerCurveWithLane.points. */
+  powerCurvePoints?: { minute: number; winRate: number }[] | null;
   /** How much the user's OWN looked-up champion's power curve favors them
    * against THIS counter's — 0.5 neutral, up to 1.0 (see powerCurveVsFitScore,
    * src/lib/sources/lolps.ts). A high value means: even though this
@@ -137,6 +140,7 @@ async function attachPowerCurve(
     const curve = r.value;
     entry.earlyWinRate = curve.earlyWinRate;
     entry.lateWinRate = curve.lateWinRate;
+    entry.powerCurvePoints = curve.points;
     entry.powerCurveLaneNote =
       curve.actualPosition && curve.actualPosition !== position
         ? `lol.ps는 ${entry.name}의 ${POSITION_LABEL.get(curve.actualPosition) ?? curve.actualPosition} 라인 데이터만 갖고 있어요 — 아래 수치는 실제로 그 라인 기준입니다.`

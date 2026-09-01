@@ -68,8 +68,15 @@ import type {
   SourceDuoResult,
   StatSource,
 } from "@/lib/sources/types";
+import { itemSetDiffCount } from "@/lib/buildDiff";
 
 const CACHE_TTL_MS = 10 * 60 * 1000;
+
+/** How many core items two build_lst variants must differ by to count as a
+ * genuinely different build in getChampionBuildVariants below, rather than
+ * a near-duplicate re-ordering — see itemSetDiffCount, src/lib/buildDiff.ts.
+ * Exactly the "아이템이 2개 이상 다른 빌드" the user asked for. */
+const MIN_CORE_ITEM_DIFF = 2;
 
 const POSITION_TO_LANE_NAME: Record<Position, string> = {
   top: "Top",
@@ -266,10 +273,19 @@ export async function getChampionBuild(
  * champion with a "표준" build and a situational full-tank or on-hit
  * variant will have those as build_lst[1]/[2]. build_lst is already
  * ordered by deeplol (most-played first, same order the single-variant
- * getChampionBuild has always trusted for "the" build), so this is just
- * that same list sliced wider instead of taken as build_lst[0] alone —
- * added so the 빌드 tab can show more than one real build option per
- * champion, not a new ranking of our own. */
+ * getChampionBuild has always trusted for "the" build).
+ *
+ * Rather than blindly taking the first `limit` entries, this scans the
+ * WHOLE build_lst (deeplol.gg often lists several near-duplicate entries in
+ * a row — same core items, one situational item swapped) and greedily keeps
+ * only variants whose core item set differs from every already-kept variant
+ * by at least MIN_CORE_ITEM_DIFF items ("아이템이 2개 이상 다른 빌드를
+ * 보여달라"는 요청) — build_lst[0] (the single most-played build) is always
+ * kept first unconditionally, then later entries are added only once they're
+ * genuinely a different build, not just a reshuffled one. Stops once `limit`
+ * distinct variants are found, or build_lst runs out — a champion whose
+ * build_lst has no genuinely distinct 2nd/3rd variant returns fewer than
+ * `limit` rather than padding with near-duplicates. */
 export async function getChampionBuildVariants(
   championId: number,
   position: Position,
@@ -281,7 +297,16 @@ export async function getChampionBuildVariants(
   if (!lane || lane.build_lst.length === 0) {
     throw new Error(`DeepLoL: no ${laneName} lane build data for this champion.`);
   }
-  return lane.build_lst.slice(0, limit).map((variant) => mapBuildVariant(variant, position));
+  const selected: ChampionBuild[] = [];
+  for (const variant of lane.build_lst) {
+    if (selected.length >= limit) break;
+    const build = mapBuildVariant(variant, position);
+    const isDistinct = selected.every(
+      (chosen) => itemSetDiffCount(build.coreItemIds, chosen.coreItemIds) >= MIN_CORE_ITEM_DIFF,
+    );
+    if (selected.length === 0 || isDistinct) selected.push(build);
+  }
+  return selected;
 }
 
 export const deeplolSource: StatSource = {
