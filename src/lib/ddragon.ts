@@ -174,6 +174,18 @@ export interface DDragonItem {
    * item.json's `maps` block) — used to keep ARAM/URF/Arena-only items out
    * of the item-build tab. */
   availableOnSummonersRift: boolean;
+  /** Item.json's own `hideFromAll` flag — Riot's official marker for
+   * entries that shouldn't appear in a general item list/browser (legacy
+   * items kept around only so old match data/tooltips still resolve,
+   * internal-only items, etc.). This is the documented Data Dragon signal
+   * for "삭제된 아이템" (removed/no-longer-real items) — `purchasable`
+   * alone doesn't catch all of these. */
+  hideFromAll: boolean;
+  /** True when item.json's `into` array is non-empty, i.e. this item is
+   * itself an ingredient that builds up into something bigger (a "하위
+   * 아이템"/조합 아이템 — B.F. Sword, Cloak of Agility, etc.), not a
+   * finished item you'd put in a completed build. */
+  isComponentItem: boolean;
 }
 
 let cachedItems: { value: Map<number, DDragonItem>; fetchedAt: number } | null = null;
@@ -198,6 +210,8 @@ export async function getItemsWithCache(locale = "ko_KR"): Promise<Map<number, D
       stats?: Record<string, number>;
       plaintext?: string;
       maps?: Record<string, boolean>;
+      hideFromAll?: boolean;
+      into?: string[];
     }
   >;
   const map = new Map<number, DDragonItem>();
@@ -216,6 +230,8 @@ export async function getItemsWithCache(locale = "ko_KR"): Promise<Map<number, D
       stats: item.stats ?? {},
       plainDescription: item.plaintext ?? "",
       availableOnSummonersRift: item.maps?.["11"] ?? false,
+      hideFromAll: item.hideFromAll ?? false,
+      isComponentItem: (item.into?.length ?? 0) > 0,
     });
   }
   cachedItems = { value: map, fetchedAt: Date.now() };
