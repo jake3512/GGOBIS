@@ -58,10 +58,22 @@ export function BuildCardCompact({ build, sourceLabel }: { build: BuildResult; s
 /** 소스 하나의 빌드 추천(아이템/룬/스펠/스킬 순서) — 라인 카운터/픽 추천/빌드
  * 탭에서 공통으로 쓰는 카드. 여러 소스와 블렌딩되는 값이 아니라
  * `sourceLabel` 하나의 값이라는 걸 항상 헤더에 명시한다. */
-export function BuildCard({ build, sourceLabel = "lol.ps" }: { build: BuildResult; sourceLabel?: string }) {
+export function BuildCard({
+  build,
+  sourceLabel = "lol.ps",
+  variantLabel = "가장 인기 있는 빌드",
+}: {
+  build: BuildResult;
+  sourceLabel?: string;
+  /** e.g. "2번째로 인기 있는 빌드" for a source's 2nd/3rd-ranked build_lst
+   * entry — see /api/build's `variants` param. Defaults to the original
+   * single-build wording so existing single-variant callers (라인 카운터
+   * 탭 등) render unchanged. */
+  variantLabel?: string;
+}) {
   return (
     <div className="build-card">
-      <p className="empty-hint">{sourceLabel} 기준 가장 인기 있는 빌드입니다 (다른 소스와 합산된 값이 아님).</p>
+      <p className="empty-hint">{sourceLabel} 기준 {variantLabel}입니다 (다른 소스와 합산된 값이 아님).</p>
       {build.laneNote && <p className="build-lane-note">⚠ {build.laneNote}</p>}
       {build.overallWinRate !== null && (
         <p className="empty-hint">
