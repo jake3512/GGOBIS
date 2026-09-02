@@ -18,8 +18,13 @@ import { LEGENDARY_ITEM_NAMES } from "@/lib/legendaryItems";
  *     (`LEGENDARY_ITEM_NAMES`, src/lib/legendaryItems.ts) instead of Data
  *     Dragon flags — the user pointed at namu.wiki's own curated "전설
  *     아이템" list as the accurate source of truth and had it transcribed
- *     in directly, so this only shows a legendary if its exact name is on
- *     that list. See that file for the transcription-accuracy caveat.
+ *     in directly. A name match is now the ONLY condition (no
+ *     purchasable/availableOnSummonersRift check on top) — "저 탭에 있는
+ *     아이템은 필수로 포함되게 해줘": being on that trusted list is
+ *     unconditionally sufficient, so a stale/wrong Data Dragon flag on one
+ *     of these 120 items (the same kind of mismatch that caused the
+ *     original "많이 빠져있다" report) can no longer hide it. See
+ *     src/lib/legendaryItems.ts for the transcription-accuracy caveat.
  *   - **Boots**: namu.wiki's list doesn't cover boots (a separate category),
  *     so these still go through the old flag-based filter
  *     (`purchasable && availableOnSummonersRift && !hideFromAll &&
@@ -27,19 +32,30 @@ import { LEGENDARY_ITEM_NAMES } from "@/lib/legendaryItems";
  *     having the duplicate/missing/removed problems the legendaries had.
  *   - Everything else (basics, epics/components, consumables, trinkets,
  *     wards, jungle items, ...) is intentionally left out — this tab models
- *     a *finished* 6-slot build (legendaries + boots), not the full shop. */
+ *     a *finished* 6-slot build (legendaries + boots), not the full shop.
+ *
+ * A name-based dedup pass runs last as a safety net — if Data Dragon still
+ * carries more than one id for the same allowlisted name (e.g. a legacy
+ * duplicate entry), only the first survives, so mandatory inclusion doesn't
+ * reopen the "중복된 아이템" problem the name-matching was also meant to fix. */
 export async function GET() {
   const items = await getItemsWithCache();
   const list = Array.from(items.values()).filter((it) => {
     if (it.tags.includes("Boots")) {
       return it.cost.purchasable && it.availableOnSummonersRift && !it.hideFromAll && !it.isComponentItem && !it.isRestrictedVariant;
     }
-    return it.cost.purchasable && it.availableOnSummonersRift && LEGENDARY_ITEM_NAMES.has(it.name);
+    return LEGENDARY_ITEM_NAMES.has(it.name);
   });
   list.sort((a, b) => a.name.localeCompare(b.name, "ko"));
+  const seenNames = new Set<string>();
+  const deduped = list.filter((it) => {
+    if (seenNames.has(it.name)) return false;
+    seenNames.add(it.name);
+    return true;
+  });
 
   return NextResponse.json({
-    items: list.map((it) => ({
+    items: deduped.map((it) => ({
       id: it.id,
       name: it.name,
       iconUrl: it.iconUrl,
