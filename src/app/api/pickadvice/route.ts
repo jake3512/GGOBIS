@@ -22,7 +22,14 @@ import {
 import { getChampionBuild as getDeeplolChampionBuild } from "@/lib/sources/deeplol";
 import { toBuildResult, type BuildResult } from "@/lib/buildRefs";
 import { analyzeTeamComp, applySkillFitBonus, scoreEnemyCompFit } from "@/lib/teamComp";
-import { getChampionAbilitiesWithCache, toKeyTags, type ChampionAbilities, type KeyTags } from "@/lib/championSkills";
+import {
+  getChampionAbilitiesWithCache,
+  toKeyTags,
+  toAbilityDetails,
+  type ChampionAbilities,
+  type KeyTags,
+  type AbilityDetail,
+} from "@/lib/championSkills";
 import { analyzeCompConcepts, championConceptFit, lookupConceptMatchup, type CompConceptId } from "@/lib/compConcepts";
 import { sampleReliabilityTier } from "@/lib/sampleSize";
 
@@ -227,13 +234,18 @@ interface PickEntry {
    * (blended into the real-winRate goodness term via LANING_STATS_BLEND,
    * same slot laningStats's gold-diff fit already used). */
   powerCurveVsEnemyFit?: number;
-  /** This candidate's real Data Dragon ability tags (championSkills.ts) —
-   * the same signals already used to nudge compFit in refineTopWithSkillFit,
-   * now also surfaced directly so the UI can show "핵심 태그" chips (CC/
-   * 기동성/보호막·회복/사거리) instead of only using them invisibly for
-   * ranking. Same top-N-only limit as the rest of this file (one Data
-   * Dragon request per champion). */
+  /** This candidate's real ability tags (championSkills.ts, base source
+   * Meraki Analytics) — the same signals already used to nudge compFit in
+   * refineTopWithSkillFit, now also surfaced directly so the UI can show
+   * "핵심 태그" chips (CC/기동성/보호막·회복/사거리) instead of only using
+   * them invisibly for ranking. Same top-N-only limit as the rest of this
+   * file (one external request per champion). */
   keyTags?: KeyTags;
+  /** Per-ability (P/Q/W/E/R) name + cooldown/cost/range, straight from the
+   * same Meraki fetch keyTags above already made for this candidate — no
+   * extra request. "상세 정보 제공을 늘려줘": shown as an expandable detail
+   * list alongside the keyTags chips. Same top-N-only limit. */
+  abilityDetails?: AbilityDetail[];
   /** Which of compConcepts.ts's 5 known comp-concept archetypes this ONE
    * candidate individually fits (championConceptFit) — shown as a "게임
    * 스타일" hint (e.g. "포킹형", "한타형"). Explicitly NOT measured data,
@@ -415,6 +427,7 @@ interface CompFitPickEntry {
    * SKILL_FIT_CANDIDATE_LIMIT entries after sorting, same as counterPicks/
    * synergyPicks. */
   keyTags?: KeyTags;
+  abilityDetails?: AbilityDetail[];
   conceptFits?: CompConceptId[];
 }
 
@@ -431,6 +444,7 @@ async function computeCompFitPicks(
   tierMap: Map<number, 1 | 2 | 3>,
   enemyChamps: DDragonChampion[],
   allySynergy: { scores: Map<number, { matchCount: number; avgWinRate: number | null }>; outOf: number },
+  position: Position,
 ): Promise<CompFitPickEntry[] | null> {
   if (tierMap.size === 0) return null;
   const entries: CompFitPickEntry[] = [];
@@ -472,18 +486,32 @@ async function computeCompFitPicks(
   if (top.length > 0) {
     try {
       const version = await getLatestVersion();
-      const results = await Promise.allSettled(
-        top.map((e) => {
-          const champ = champById.get(e.championId);
-          if (!champ) return Promise.reject(new Error("unknown champion"));
-          return getChampionAbilitiesWithCache(champ.slug, version);
-        }),
-      );
+      // "챔피언 별로 먼저 마스터하는 스킬은 주로 주요 스킬이야" — unlike
+      // counterPicks/synergyPicks (annotateWithKeyTagsAndConceptFits), this
+      // path has no prior annotateWithBuild pass to reuse, so lol.ps's build
+      // (just for its real skillMaxOrder[0]) is fetched fresh here, bounded
+      // to the same top-N candidates as the ability fetch below — same
+      // "one external request per source per candidate" convention as the
+      // rest of this file. Best-effort: a lol.ps miss just leaves the
+      // keyword-only isKeySkill signal for that entry.
+      const [abilityResults, buildResults] = await Promise.all([
+        Promise.allSettled(
+          top.map((e) => {
+            const champ = champById.get(e.championId);
+            if (!champ) return Promise.reject(new Error("unknown champion"));
+            return getChampionAbilitiesWithCache(champ.slug, version);
+          }),
+        ),
+        Promise.allSettled(top.map((e) => getChampionBuild(e.championId, position, { allowMismatch: true }))),
+      ]);
       top.forEach((entry, i) => {
-        const r = results[i];
+        const r = abilityResults[i];
         if (r.status !== "fulfilled") return;
         const champ = champById.get(entry.championId);
+        const buildResult = buildResults[i];
+        const firstMaxedKey = buildResult.status === "fulfilled" ? buildResult.value.skillMaxOrder[0] : undefined;
         entry.keyTags = toKeyTags(r.value);
+        entry.abilityDetails = toAbilityDetails(r.value, firstMaxedKey);
         if (champ) entry.conceptFits = championConceptFit(champ, r.value);
       });
     } catch {
@@ -652,10 +680,15 @@ async function annotateWithKeyTagsAndConceptFits(
       if (r.status !== "fulfilled") return;
       const champ = champById.get(entry.championId);
       entry.keyTags = toKeyTags(r.value);
+      // "챔피언 별로 먼저 마스터하는 스킬은 주로 주요 스킬이야" — this runs
+      // AFTER annotateWithBuild for both counterPicks and synergyPicks (see
+      // the GET handler below), so entry.build?.skillMaxOrder is real lol.ps
+      // data already fetched for this exact candidate, zero extra requests.
+      entry.abilityDetails = toAbilityDetails(r.value, entry.build?.skillMaxOrder[0]);
       if (champ) entry.conceptFits = championConceptFit(champ, r.value);
     });
   } catch {
-    // Data Dragon unreachable — leave keyTags/conceptFits unset.
+    // Meraki unreachable — leave keyTags/conceptFits/abilityDetails unset.
   }
 }
 
@@ -1183,7 +1216,8 @@ export async function GET(req: Request) {
   // 등록돼 있고 상대/우리팀 중 뭐라도 채워져 있을 때만 동작. ---
   const compFitPicks =
     !enemyLaneChampion && (enemyChamps.length > 0 || allyChamps.length > 0)
-      ? (await computeCompFitPicks(champById, tierMap, enemyChamps, allySynergy))?.slice(0, recommendCount) ?? null
+      ? (await computeCompFitPicks(champById, tierMap, enemyChamps, allySynergy, position))?.slice(0, recommendCount) ??
+        null
       : null;
 
   let synergyPicks: PickEntry[] | null = null;

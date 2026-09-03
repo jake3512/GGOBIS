@@ -1,38 +1,56 @@
-// Per-champion passive/skill data from Data Dragon's champion-detail
-// endpoint (`.../data/{locale}/champion/{slug}.json`) — the same official,
-// free, no-auth source already used for the champion list/items/runes.
-// Unlike those, this endpoint is one request PER champion, so it's fetched
-// on demand (like build recommendations) rather than all at once, and
-// cached per champion.
+// Per-champion passive/skill data — base source is Meraki Analytics'
+// champion resource feed (src/lib/sources/merakiChampions.ts,
+// https://cdn.merakianalytics.com/riot/lol/resources/latest/en-US/champions/),
+// switched over from Data Dragon's champion-detail endpoint per direct
+// request ("챔피언 스킬 데이터를 datadragon에서... 링크로 베이스를
+// 바꿔줘... 이 링크를 전적으로 신뢰하고"). Every exported name/type/
+// function here is unchanged from the Data Dragon version on purpose — this
+// module is consumed from pickadvice/counters/compcompare/teamComp.ts/
+// compConcepts.ts, and keeping the public shape identical meant none of
+// those call sites needed to change, only what happens inside
+// fetchChampionAbilities below.
 //
-// The ability *text* (name/description) is real official Riot data. The
-// `tags` derived from it are NOT official — Riot doesn't publish a
+// The ability *text* (name/description) is real data from that feed. The
+// `tags` derived from it are NOT official — no LoL data source publishes a
 // structured "this ability is a stun" taxonomy, so this module infers tags
-// by keyword-matching the Korean ability text against a small set of
-// well-established LoL terms (기절=stun, 속박=root, 돌진=dash, ...). It's a
-// heuristic classifier, not ground truth: a description that never uses one
-// of these words won't be tagged even if the ability effectively does that
-// thing, and rare phrasing can be missed. Kept deliberately small and
+// by keyword-matching the ability text against a small set of
+// well-established LoL terms (stun, root, dash, ...). It's a heuristic
+// classifier, not ground truth: a description that never uses one of these
+// words won't be tagged even if the ability effectively does that thing,
+// and rare phrasing can be missed. Kept deliberately small and
 // single-purpose (CC / mobility / shield-heal) rather than trying to
 // exhaustively categorize every ability, for the same reason teamComp.ts
 // stays restrained to what's actually knowable — see scoreEnemyCompFit's
 // use of this data for how much weight it's allowed next to real win rates.
+//
+// Terms are in ENGLISH now, not Korean — Meraki's feed (the link given) is
+// en-US, unlike Data Dragon's ko_KR champion text this module used before.
 
-const DDRAGON_BASE = "https://ddragon.leagueoflegends.com";
+import { getMerakiChampionWithCache, type MerakiAbility } from "@/lib/sources/merakiChampions";
 
 export type AbilityTag = "hardCC" | "slow" | "mobility" | "shield" | "heal";
 
 export interface AbilitySummary {
   key: "P" | "Q" | "W" | "E" | "R";
   name: string;
-  /** HTML-stripped description text, official Riot copy (Korean by default). */
+  /** Ability text (English, from Meraki) used for the keyword classifier —
+   * not shown verbatim in the UI (see AbilityDetails below for the
+   * client-facing shape), just the raw source for `tags`. */
   description: string;
   tags: AbilityTag[];
-  /** Max cast range across ranks, straight from Data Dragon's numeric
-   * `range` field (real data, not inferred) — 0/undefined for passives and
-   * self-cast spells. Used as the poke signal in compConcepts.ts: a
-   * champion whose kit has no long-range spell can't really "poke". */
+  /** Max cast range across ranks, from Meraki's numeric `range` field when
+   * it could be parsed (real data, not inferred) — undefined for passives,
+   * self-cast spells, or if the response's range shape didn't match any
+   * pattern this app knows how to parse (see extractNumericProgression,
+   * src/lib/sources/merakiChampions.ts). Used as the poke signal in
+   * compConcepts.ts: a champion whose kit has no long-range spell can't
+   * really "poke". */
   maxRange?: number;
+  /** Per-rank cooldown/cost, when parseable — new "상세 정보" fields
+   * (not used for tag classification, just surfaced to the client per
+   * "상세 정보 제공을 늘려줘"). */
+  cooldown?: number[];
+  cost?: number[];
 }
 
 export interface ChampionAbilities {
@@ -75,78 +93,115 @@ export function toKeyTags(a: ChampionAbilities): KeyTags {
   };
 }
 
-// Root Korean terms for each tag. Matched as plain substrings (not full
-// phrases) since Riot's exact phrasing varies per ability ("기절시킵니다" vs
-// "짧은 시간 동안 기절 상태로 만듭니다" vs "기절 효과") but all reliably contain
-// the bare term. False positives are possible (e.g. flavor text mentioning a
-// word in passing) but rare in practice for these specific game-terminology
-// words, and this only ever feeds a small, clamped nudge — see
-// scoreEnemyCompFit — not a claim of precision.
-const HARD_CC_TERMS = ["기절", "속박", "침묵", "매혹", "공포", "도발", "수면", "제압", "공중으로 띄워", "이동 불가"];
-const SLOW_TERMS = ["둔화"];
-const MOBILITY_TERMS = ["돌진", "도약", "순간 이동"];
-const SHIELD_TERMS = ["보호막"];
-const HEAL_TERMS = ["체력을 회복", "체력 회복", "체력을 재생", "생명력을 흡수"];
-
-// Riot's own numeric spell range (not a keyword heuristic) — 900 is a
-// common rough cutoff between "has to walk up" and "can hit from a real
-// distance" in LoL's own terms (basic attacks/melee range top out well
-// below this; most auto-attack-range-ish abilities sit under it too).
-const LONG_RANGE_THRESHOLD = 900;
-
-function stripHtml(s: string): string {
-  return s
-    .replace(/<br\s*\/?>/gi, " ")
-    .replace(/<[^>]+>/g, "")
-    .replace(/\{\{[^}]*\}\}/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
+/** Client-facing per-ability detail — name + cooldown/cost/range only (no
+ * raw description text, same "don't leak more than the UI needs" principle
+ * KeyTags already followed) — the "상세 정보 제공을 늘려줘" addition, only
+ * attached to the same bounded top-N candidates KeyTags already was. */
+export interface AbilityDetail {
+  key: AbilitySummary["key"];
+  name: string;
+  cooldown?: number[];
+  cost?: number[];
+  maxRange?: number;
+  /** "주요 스킬 여부를 판단해줘" — true from either of two independent
+   * signals (OR, not AND):
+   * (1) this ability's text matched at least one of the CC/기동성/보호막/
+   *     회복 keyword categories above (`tags.length > 0`), same heuristic
+   *     KeyTags/hasHardCC etc. already rely on, just applied per-ability
+   *     instead of aggregated across the whole kit. Caveat: a purely
+   *     numbers-based nuke spell with none of those keywords in its text
+   *     (e.g. "deals X magic damage" and nothing else) won't be flagged by
+   *     this signal alone even though it may well be the champion's core
+   *     damage tool.
+   * (2) real measured player behavior — "챔피언 별로 먼저 마스터하는 스킬은
+   *     주로 주요 스킬이야": when the caller has lol.ps's real
+   *     `ChampionBuild.skillMaxOrder` for this champion (see
+   *     `src/lib/sources/lolps.ts` — not fetched by this module itself, so
+   *     it's passed in as `firstMaxedKey` by whichever route already has
+   *     it), the skill players max FIRST (`skillMaxOrder[0]`) is flagged
+   *     key regardless of its text — this catches exactly the pure-damage
+   *     mage-poke case (1) misses, since real play data doesn't need the
+   *     ability to *say* it's important. `firstMaxedKey` is optional and
+   *     best-effort (lol.ps unreachable, or the caller doesn't have build
+   *     data for this candidate) — when absent, isKeySkill falls back to
+   *     signal (1) alone, same as before this was added. */
+  isKeySkill: boolean;
 }
 
+export function toAbilityDetails(a: ChampionAbilities, firstMaxedKey?: string): AbilityDetail[] {
+  return [a.passive, ...a.spells].map((s) => ({
+    key: s.key,
+    name: s.name,
+    cooldown: s.cooldown,
+    cost: s.cost,
+    maxRange: s.maxRange,
+    isKeySkill: s.tags.length > 0 || s.key === firstMaxedKey,
+  }));
+}
+
+// Root English terms for each tag — translated from this module's old
+// Korean term list when its base source switched from Data Dragon (ko_KR)
+// to Meraki Analytics (en-US only, see the file header). Matched as plain
+// substrings (not full phrases) since exact phrasing varies per ability
+// ("stuns them" vs "stunned for a short duration") but all reliably contain
+// the bare term. False positives are possible (e.g. flavor text mentioning
+// a word in passing) but rare in practice for these specific game-
+// terminology words, and this only ever feeds a small, clamped nudge — see
+// scoreEnemyCompFit — not a claim of precision.
+const HARD_CC_TERMS = [
+  "stun",
+  "root",
+  "snare",
+  "silence",
+  "charm",
+  "fear",
+  "taunt",
+  "sleep",
+  "suppress",
+  "knock up",
+  "knock back",
+  "unable to move",
+  "unable to act",
+];
+const SLOW_TERMS = ["slow"];
+const MOBILITY_TERMS = ["dash", "leap", "blink", "teleport"];
+const SHIELD_TERMS = ["shield"];
+const HEAL_TERMS = ["heal", "restores health", "restore health", "regenerate health", "life steal", "lifesteal"];
+
+// Same rough cutoff as before (Riot's own numeric spell range, not a
+// keyword heuristic) — 900 is a common rough cutoff between "has to walk
+// up" and "can hit from a real distance" in LoL's own terms.
+const LONG_RANGE_THRESHOLD = 900;
+
 function classify(text: string): AbilityTag[] {
+  const lower = text.toLowerCase();
   const tags: AbilityTag[] = [];
-  if (HARD_CC_TERMS.some((t) => text.includes(t))) tags.push("hardCC");
-  if (SLOW_TERMS.some((t) => text.includes(t))) tags.push("slow");
-  if (MOBILITY_TERMS.some((t) => text.includes(t))) tags.push("mobility");
-  if (SHIELD_TERMS.some((t) => text.includes(t))) tags.push("shield");
-  if (HEAL_TERMS.some((t) => text.includes(t))) tags.push("heal");
+  if (HARD_CC_TERMS.some((t) => lower.includes(t))) tags.push("hardCC");
+  if (SLOW_TERMS.some((t) => lower.includes(t))) tags.push("slow");
+  if (MOBILITY_TERMS.some((t) => lower.includes(t))) tags.push("mobility");
+  if (SHIELD_TERMS.some((t) => lower.includes(t))) tags.push("shield");
+  if (HEAL_TERMS.some((t) => lower.includes(t))) tags.push("heal");
   return tags;
 }
 
-function toAbilitySummary(
-  key: AbilitySummary["key"],
-  raw: { name: string; description?: string; tooltip?: string; range?: number[] },
-): AbilitySummary {
-  const text = stripHtml(`${raw.description ?? ""} ${raw.tooltip ?? ""}`);
-  const maxRange = Array.isArray(raw.range) && raw.range.length > 0 ? Math.max(...raw.range) : undefined;
+function toAbilitySummary(key: AbilitySummary["key"], raw: MerakiAbility): AbilitySummary {
+  const maxRange = raw.range && raw.range.length > 0 ? Math.max(...raw.range) : undefined;
   return {
     key,
     name: raw.name,
-    description: stripHtml(raw.description ?? ""),
-    tags: classify(text),
+    description: raw.text,
+    tags: classify(raw.text),
     maxRange,
+    cooldown: raw.cooldown,
+    cost: raw.cost,
   };
 }
 
-const cache = new Map<string, { value: ChampionAbilities; fetchedAt: number }>();
-const ABILITIES_TTL_MS = 60 * 60 * 1000; // 1 hour, matches the other ddragon caches
-
-async function fetchChampionAbilities(slug: string, locale: string, version: string): Promise<ChampionAbilities> {
-  const res = await fetch(`${DDRAGON_BASE}/cdn/${version}/data/${locale}/champion/${slug}.json`, {
-    next: { revalidate: 3600 },
-  });
-  if (!res.ok) {
-    throw new Error(`Data Dragon champion/${slug}.json request failed: ${res.status}`);
-  }
-  const body = await res.json();
-  const raw = body.data?.[slug];
-  if (!raw) throw new Error(`Data Dragon champion/${slug}.json had no data for "${slug}"`);
-
+async function fetchChampionAbilities(slug: string): Promise<ChampionAbilities> {
+  const raw = await getMerakiChampionWithCache(slug);
   const passive = toAbilitySummary("P", raw.passive);
   const spellKeys: AbilitySummary["key"][] = ["Q", "W", "E", "R"];
-  const spells = (raw.spells as { name: string; description?: string; tooltip?: string; range?: number[] }[]).map(
-    (s, i) => toAbilitySummary(spellKeys[i], s),
-  );
+  const spells = raw.spells.map((s, i) => toAbilitySummary(spellKeys[i], s));
   // Poke reads on the basic-ability arsenal (Q/W/E), not the ultimate —
   // most champions have at least one long-range R (global/near-global
   // ultimates), which would make hasLongRange meaningless if it counted.
@@ -164,21 +219,25 @@ async function fetchChampionAbilities(slug: string, locale: string, version: str
   };
 }
 
+const cache = new Map<string, { value: ChampionAbilities; fetchedAt: number }>();
+const ABILITIES_TTL_MS = 60 * 60 * 1000; // 1 hour, matches the other external-source caches
+
 /** Fetches (and caches, 1hr, per champion) a champion's passive+Q/W/E/R with
  * heuristic tags. Only fetches on demand — callers should limit this to a
  * bounded candidate list (see SKILL_FIT_CANDIDATE_LIMIT in the pick-advice
- * route), not every champion in a 20-40-long recommendation list. */
-export async function getChampionAbilitiesWithCache(
-  slug: string,
-  version: string,
-  locale = "ko_KR",
-): Promise<ChampionAbilities> {
-  const cacheKey = `${locale}:${slug}`;
-  const hit = cache.get(cacheKey);
+ * route), not every champion in a 20-40-long recommendation list.
+ *
+ * `_version` is vestigial — kept only so the many existing call sites
+ * across pickadvice/counters/compcompare didn't need to change when this
+ * switched from Data Dragon (which needed a patch version in its URL) to
+ * Meraki (whose "latest" URL needs none). Ignored internally now. */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for call-site compatibility, see doc comment above
+export async function getChampionAbilitiesWithCache(slug: string, _version?: string): Promise<ChampionAbilities> {
+  const hit = cache.get(slug);
   if (hit && Date.now() - hit.fetchedAt < ABILITIES_TTL_MS) {
     return hit.value;
   }
-  const value = await fetchChampionAbilities(slug, locale, version);
-  cache.set(cacheKey, { value, fetchedAt: Date.now() });
+  const value = await fetchChampionAbilities(slug);
+  cache.set(slug, { value, fetchedAt: Date.now() });
   return value;
 }

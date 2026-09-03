@@ -43,15 +43,31 @@ interface PowerCurvePoint {
 
 /** This app's own real-signal "핵심 태그" — the same hasHardCC/hasSoftCC/
  * hasMobility/hasShieldOrHeal/hasLongRange booleans championSkills.ts derives
- * from real (Korean) Data Dragon ability text via keyword matching. Only
- * attached to the top few entries of each list (see *_CANDIDATE_LIMIT
- * server-side) — a per-champion Data Dragon detail fetch, not free. */
+ * from real ability text (Meraki Analytics, English) via keyword matching.
+ * Only attached to the top few entries of each list (see *_CANDIDATE_LIMIT
+ * server-side) — a per-champion external detail fetch, not free. */
 interface KeyTags {
   hasHardCC: boolean;
   hasSoftCC: boolean;
   hasMobility: boolean;
   hasShieldOrHeal: boolean;
   hasLongRange: boolean;
+}
+
+/** Per-ability (P/Q/W/E/R) detail from the same Meraki fetch KeyTags above
+ * already made for this candidate — name + per-rank cooldown/cost, plus max
+ * cast range (see AbilityDetailList). Same top-N-only limit as keyTags. */
+interface AbilityDetail {
+  key: "P" | "Q" | "W" | "E" | "R";
+  name: string;
+  cooldown?: number[];
+  cost?: number[];
+  maxRange?: number;
+  /** 서버(toAbilityDetails, src/lib/championSkills.ts)에서 판단한 "주요
+   * 스킬 여부" — CC/기동성/보호막/회복 키워드에 걸린 스킬만 true. 순수
+   * 데미지 스킬은 걸리지 않을 수 있다는 같은 한계가 적용됨(서버 쪽 doc
+   * comment 참고). "주요 스킬여부를 판단해줘" 요청으로 추가. */
+  isKeySkill: boolean;
 }
 
 interface CounterEntry {
@@ -62,6 +78,7 @@ interface CounterEntry {
   games: number;
   bySource: SourceValue[];
   keyTags?: KeyTags;
+  abilityDetails?: AbilityDetail[];
   conceptFits?: CompConceptId[];
   /** lol.ps head-to-head laning-phase stats (this champion vs the counter) —
    * only on the top few entries. See LaningTipList/buildLaningTips for the
@@ -133,6 +150,9 @@ interface PickEntry {
   powerCurveVsEnemyFit?: number;
   /** "핵심 태그" (see KeyTags above) — only on the top few entries. */
   keyTags?: KeyTags;
+  /** 스킬 상세(P/Q/W/E/R 이름+쿨타임/코스트/사거리) — see AbilityDetail
+   * above. Same top-N-only limit. */
+  abilityDetails?: AbilityDetail[];
   /** Which of the 5 known comp concepts this candidate individually fits
    * (게임 스타일) — app-curated, not measured data (see compConcepts.ts
    * server-side and CONCEPT_PILOT_TIPS below for the same caveat elsewhere
@@ -159,6 +179,7 @@ interface CompFitPickEntry {
   allySynergyAvgWinRate: number | null;
   tier?: 1 | 2 | 3;
   keyTags?: KeyTags;
+  abilityDetails?: AbilityDetail[];
   conceptFits?: CompConceptId[];
 }
 
@@ -886,11 +907,11 @@ const KEY_TAG_LABELS: { key: keyof KeyTags; label: string }[] = [
   { key: "hasLongRange", label: "장거리" },
 ];
 
-/** "핵심 태그" chips — this app's own classification of REAL Data Dragon
- * ability text (see championSkills.ts), not a win rate. Only renders the
- * tags that are actually true; nothing shown at all when keyTags wasn't
- * attached (candidate outside the top-N Data Dragon fetch limit) or none of
- * the five tags apply. */
+/** "핵심 태그" chips — this app's own classification of REAL ability text
+ * (Meraki Analytics, see championSkills.ts), not a win rate. Only renders
+ * the tags that are actually true; nothing shown at all when keyTags wasn't
+ * attached (candidate outside the top-N fetch limit) or none of the five
+ * tags apply. */
 function KeyTagBadges({ tags }: { tags?: KeyTags }) {
   if (!tags) return null;
   const active = KEY_TAG_LABELS.filter((t) => tags[t.key]);
@@ -903,6 +924,48 @@ function KeyTagBadges({ tags }: { tags?: KeyTags }) {
         </span>
       ))}
     </span>
+  );
+}
+
+const ABILITY_KEY_LABELS: Record<AbilityDetail["key"], string> = { P: "패시브", Q: "Q", W: "W", E: "E", R: "R" };
+
+/** "상세 정보 제공을 늘려줘" — Meraki에서 가져온 스킬별 쿨타임/코스트/
+ * 사거리를 랭크별로 보여주는 접이식 목록. keyTags/conceptFits와 같은 top-N
+ * 한정 데이터라 abilityDetails가 아예 없으면(그 후보가 top-N 밖이거나
+ * Meraki 조회 자체가 실패) 아무것도 렌더링하지 않는다. 쿨타임/코스트가
+ * 파싱되지 않은 스킬(값 없음)은 그 항목만 조용히 생략 — "0"처럼 잘못된
+ * 값을 보여주는 대신 아예 안 보여주는 쪽을 택함. "주요 스킬여부를
+ * 판단해줘" 요청으로, CC/기동성/보호막/회복 키워드에 걸린 스킬(isKeySkill)
+ * 옆에 "주요" 배지를 붙인다 — 순수 데미지기만 있는 스킬은 이 휴리스틱상
+ * 안 걸릴 수 있다는 한계는 AbilityDetail의 doc comment 참고. */
+function AbilityDetailList({ abilities }: { abilities?: AbilityDetail[] }) {
+  if (!abilities || abilities.length === 0) return null;
+  return (
+    <Details label="스킬 상세">
+      <ul className="ability-detail-list">
+        {abilities.map((a) => (
+          <li key={a.key} className="ability-detail-row">
+            <span className="ability-detail-key">{ABILITY_KEY_LABELS[a.key]}</span>
+            <span className="ability-detail-name">
+              {a.name || "(이름 없음)"}
+              {a.isKeySkill && (
+                <span
+                  className="ability-detail-key-badge"
+                  title="CC/기동성/보호막/회복 등 라인전에 영향을 주는 텍스트가 있는 스킬"
+                >
+                  주요
+                </span>
+              )}
+            </span>
+            <span className="ability-detail-numbers">
+              {a.cooldown && a.cooldown.length > 0 && <>쿨타임 {a.cooldown.join("/")}초 </>}
+              {a.cost && a.cost.length > 0 && <>코스트 {a.cost.join("/")} </>}
+              {a.maxRange != null && <>사거리 {a.maxRange}</>}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </Details>
   );
 }
 
@@ -970,60 +1033,153 @@ function LaningStatsRow({ stats }: { stats: VersusStats }) {
 const CS_LEAD_THRESHOLD = 10;
 const SOLO_KILL_LEAD_THRESHOLD = 0.15;
 
+/** Same "no larger dataset to calibrate against" caveat as the two
+ * thresholds above, now applied to Meraki's per-ability cooldown/cost/range
+ * numbers (`AbilityDetail`, see 상단 정의) instead of lol.ps's CS/솔로킬
+ * counts — "쿨타임, 코스트, 사거리를 이용해서 라인전 팁을 재편성해줘".
+ * POKE_RANGE_THRESHOLD(500)은 원거리 견제형 스킬과 근접형 스킬을 대략
+ * 가르는 값(근접 챔피언 돌진기는 보통 200~350, 원거리 견제기는 500 이상),
+ * POKE_COOLDOWN_THRESHOLD(8초)는 1랭크 쿨타임이 그보다 짧으면 라인전 내내
+ * 반복해서 던질 수 있다고 본 값, POKE_LOW_COST_THRESHOLD(40)는 문장에
+ * "코스트도 낮아"를 덧붙이는 보조 조건(그 자체로 팁 등장 여부를 가르지
+ * 않음), PUNISH_COOLDOWN_THRESHOLD(16초)는 만랭 쿨타임이 그 이상이면 "한
+ * 번 쓰고 나면 한동안 못 쓴다"고 볼 만큼 긴 값으로 잡았다. 모두 초 단위/
+ * 게임 유닛 원값이지 퍼센트가 아니다. */
+const POKE_RANGE_THRESHOLD = 500;
+const POKE_COOLDOWN_THRESHOLD = 8;
+const POKE_LOW_COST_THRESHOLD = 40;
+const PUNISH_COOLDOWN_THRESHOLD = 16;
+
 interface LaningTip {
   text: string;
   tone: "good" | "bad";
 }
 
+/** 이 후보/카운터의 P~R 스킬 중 "자주 던질 수 있는 장거리 견제기"로 부를
+ * 만한 하나를 고른다 — 패시브(사거리/쿨타임 개념이 거의 없음)와 궁극기
+ * (라인전 초반엔 대부분 못 씀)는 제외하고, 남은 Q/W/E 중 `isKeySkill`(CC/
+ * 기동성/보호막/회복 텍스트가 있는 스킬 — "주요 스킬여부를 판단해줘")이면서
+ * 사거리가 POKE_RANGE_THRESHOLD를 넘고 1랭크 쿨타임이
+ * POKE_COOLDOWN_THRESHOLD 이하인 것만 후보로 삼아 그중 사거리가 가장 긴
+ * 것을 반환한다. 조건 중 하나라도 데이터가 없거나(파싱 실패) 기준을 못
+ * 넘으면 그 스킬은 아예 후보에서 빠진다 — 잘못된 추정으로 팁을 만드는
+ * 것보다 안전. `isKeySkill` 조건 때문에 CC/기동성/보호막/회복 키워드가
+ * 전혀 없는 순수 데미지형 견제 스킬(흔한 메이지 포킹 Q 등)은 사거리·
+ * 쿨타임이 맞아도 여기 안 걸릴 수 있다 — AbilityDetail의 doc comment와
+ * 같은 한계. */
+function findPokeThreat(abilities: AbilityDetail[]): AbilityDetail | null {
+  let best: AbilityDetail | null = null;
+  for (const a of abilities) {
+    if (a.key === "P" || a.key === "R") continue;
+    if (!a.isKeySkill) continue;
+    if (a.maxRange === undefined || a.maxRange < POKE_RANGE_THRESHOLD) continue;
+    if (!a.cooldown || a.cooldown.length === 0 || a.cooldown[0] > POKE_COOLDOWN_THRESHOLD) continue;
+    if (!best || a.maxRange > (best.maxRange ?? 0)) best = a;
+  }
+  return best;
+}
+
+/** 같은 abilities에서 이번엔 "한 번 쓰면 한동안 못 쓰는(=쓰고 나면
+ * 약해지는) 핵심 스킬"을 고른다 — 패시브/궁극기는 위와 같은 이유로
+ * 제외하고, `isKeySkill`인 Q/W/E 중 만랭 쿨타임(cooldown 배열의 마지막
+ * 값)이 PUNISH_COOLDOWN_THRESHOLD를 넘는 것 중 가장 긴 것을 반환한다. */
+function findPunishWindow(abilities: AbilityDetail[]): AbilityDetail | null {
+  let best: AbilityDetail | null = null;
+  for (const a of abilities) {
+    if (a.key === "P" || a.key === "R") continue;
+    if (!a.isKeySkill) continue;
+    if (!a.cooldown || a.cooldown.length === 0) continue;
+    const maxRankCooldown = a.cooldown[a.cooldown.length - 1];
+    if (maxRankCooldown < PUNISH_COOLDOWN_THRESHOLD) continue;
+    const bestMaxRankCooldown = best?.cooldown ? best.cooldown[best.cooldown.length - 1] : -1;
+    if (!best || maxRankCooldown > bestMaxRankCooldown) best = a;
+  }
+  return best;
+}
+
 /** Turns lol.ps's real 15분 CS/솔로킬 head-to-head numbers (`VersusStats`,
- * already fetched for LaningStatsRow above) into short actionable Korean
- * tips — computed purely client-side from numbers the server already ships,
- * same pattern as `powerCurveLean`/`ccDotState` turning other raw real
- * numbers into display labels elsewhere in this app, rather than adding a
- * server-side text-generation step. Returns at most two tips (CS-based,
- * solo-kill-based); returns none when neither gap clears its threshold —
- * same "no badge is itself a (neutral) result" convention as CompFitBadge. */
-function buildLaningTips(stats: VersusStats): LaningTip[] {
+ * already fetched for LaningStatsRow above) *and* Meraki's per-ability
+ * cooldown/코스트/사거리 numbers (`AbilityDetail`, already fetched for
+ * AbilityDetailList above) into short actionable Korean tips — computed
+ * purely client-side from numbers the server already ships, same pattern as
+ * `powerCurveLean`/`ccDotState` turning other raw real numbers into display
+ * labels elsewhere in this app, rather than adding a server-side
+ * text-generation step. `stats`/`abilityDetails`는 서로 독립적이라 한쪽이
+ * 없어도 다른 쪽 팁은 그대로 뜬다. Returns at most four tips (CS/솔로킬
+ * 기반 최대 2개 + 스킬 기반 최대 2개); returns none when no signal clears
+ * its threshold — same "no badge is itself a (neutral) result" convention
+ * as CompFitBadge. */
+function buildLaningTips(stats: VersusStats | null | undefined, abilityDetails?: AbilityDetail[]): LaningTip[] {
   const tips: LaningTip[] = [];
-  const csDiff = stats.ally.csAt15 - stats.enemy.csAt15;
-  if (csDiff >= CS_LEAD_THRESHOLD) {
-    tips.push({
-      tone: "good",
-      text: `15분 CS가 평균 ${csDiff.toFixed(1)}개 앞서는 매치업이에요 — 우위를 살려 라인을 밀고 상대를 압박해보세요.`,
-    });
-  } else if (csDiff <= -CS_LEAD_THRESHOLD) {
-    tips.push({
-      tone: "bad",
-      text: `15분 CS가 평균 ${Math.abs(csDiff).toFixed(1)}개 밀리는 매치업이에요 — 무리한 교전보다 안전하게 CS 챙기기에 집중하세요.`,
-    });
+
+  if (stats) {
+    const csDiff = stats.ally.csAt15 - stats.enemy.csAt15;
+    if (csDiff >= CS_LEAD_THRESHOLD) {
+      tips.push({
+        tone: "good",
+        text: `15분 CS가 평균 ${csDiff.toFixed(1)}개 앞서는 매치업이에요 — 우위를 살려 라인을 밀고 상대를 압박해보세요.`,
+      });
+    } else if (csDiff <= -CS_LEAD_THRESHOLD) {
+      tips.push({
+        tone: "bad",
+        text: `15분 CS가 평균 ${Math.abs(csDiff).toFixed(1)}개 밀리는 매치업이에요 — 무리한 교전보다 안전하게 CS 챙기기에 집중하세요.`,
+      });
+    }
+
+    const soloDiff = stats.ally.soloKillBefore15 - stats.enemy.soloKillBefore15;
+    if (soloDiff >= SOLO_KILL_LEAD_THRESHOLD) {
+      tips.push({
+        tone: "good",
+        text: `이 매치업에서 우리가 솔로킬을 낸 경우가 상대보다 많았어요 — 상대가 무리하게 들어올 때 각을 노려보세요.`,
+      });
+    } else if (soloDiff <= -SOLO_KILL_LEAD_THRESHOLD) {
+      tips.push({
+        tone: "bad",
+        text: `이 매치업에서 상대가 솔로킬을 낸 경우가 더 많았어요 — 혼자 스킬 맞을 상황을 만들지 않도록 주의하세요.`,
+      });
+    }
   }
 
-  const soloDiff = stats.ally.soloKillBefore15 - stats.enemy.soloKillBefore15;
-  if (soloDiff >= SOLO_KILL_LEAD_THRESHOLD) {
-    tips.push({
-      tone: "good",
-      text: `이 매치업에서 우리가 솔로킬을 낸 경우가 상대보다 많았어요 — 상대가 무리하게 들어올 때 각을 노려보세요.`,
-    });
-  } else if (soloDiff <= -SOLO_KILL_LEAD_THRESHOLD) {
-    tips.push({
-      tone: "bad",
-      text: `이 매치업에서 상대가 솔로킬을 낸 경우가 더 많았어요 — 혼자 스킬 맞을 상황을 만들지 않도록 주의하세요.`,
-    });
+  if (abilityDetails && abilityDetails.length > 0) {
+    const pokeThreat = findPokeThreat(abilityDetails);
+    if (pokeThreat && pokeThreat.cooldown && pokeThreat.maxRange !== undefined) {
+      const lowCost = pokeThreat.cost !== undefined && pokeThreat.cost[0] <= POKE_LOW_COST_THRESHOLD;
+      tips.push({
+        tone: "bad",
+        text: `상대 ${pokeThreat.name}(${pokeThreat.key}) 사거리가 ${pokeThreat.maxRange}로 길고 재사용 대기시간도 ${pokeThreat.cooldown[0]}초로 짧아${lowCost ? " 코스트도 낮아" : ""} 견제가 잦을 수 있어요 — 미니언 정리할 때 스킬 사거리 밖에서 대기하세요.`,
+      });
+    }
+
+    const punishWindow = findPunishWindow(abilityDetails);
+    if (punishWindow && punishWindow.cooldown) {
+      const maxRankCooldown = punishWindow.cooldown[punishWindow.cooldown.length - 1];
+      tips.push({
+        tone: "good",
+        text: `상대 ${punishWindow.name}(${punishWindow.key}) 재사용 대기시간이 만랭 기준 ${maxRankCooldown}초로 길어요 — 한 번 쓰고 나면 그 직후 공격적으로 교전을 걸어보세요.`,
+      });
+    }
   }
 
   return tips;
 }
 
-/** Renders buildLaningTips' output — nothing at all when `stats` is
- * missing (candidate outside LANING_STATS_CANDIDATE_LIMIT server-side, or
- * lol.ps had no games for this exact matchup+lane) or when neither gap
- * clears its threshold, so this never leaves a bare empty block. Shown
- * outside the collapsed "세부정보" Details (unlike LaningStatsRow's raw
- * numbers) since these are meant to be an immediately visible suggestion,
- * not a stat you have to expand to see. */
-function LaningTipList({ stats }: { stats?: VersusStats | null }) {
-  if (!stats) return null;
-  const tips = buildLaningTips(stats);
+/** Renders buildLaningTips' output — nothing at all when both `stats`와
+ * `abilityDetails`가 없거나(candidate outside the relevant
+ * *_CANDIDATE_LIMIT server-side, lol.ps had no games for this exact
+ * matchup+lane, or the Meraki fetch failed) 어느 신호도 기준을 못 넘으면,
+ * 빈 블록을 남기지 않는다. `stats`/`abilityDetails`는 서로 독립적 —
+ * 한쪽만 있어도 그쪽 팁은 뜬다. Shown outside the collapsed
+ * "세부정보"/"소스별 상세" Details (unlike LaningStatsRow/AbilityDetailList의
+ * raw numbers) since these are meant to be an immediately visible
+ * suggestion, not a stat you have to expand to see. */
+function LaningTipList({
+  stats,
+  abilityDetails,
+}: {
+  stats?: VersusStats | null;
+  abilityDetails?: AbilityDetail[];
+}) {
+  const tips = buildLaningTips(stats, abilityDetails);
   if (tips.length === 0) return null;
   return (
     <ul className="laning-tip-list">
@@ -1485,8 +1641,18 @@ export default function Home() {
 
   useEffect(() => {
     fetch("/api/items")
-      .then((res) => res.json())
-      .then((data) => setItems(data.items))
+      .then((res) => res.json().then((data) => ({ ok: res.ok, data })))
+      .then(({ ok, data }) => {
+        // /api/items now has no fallback source (Community Dragon only —
+        // "모든 데이터를 제시한 링크에서만 가져와줘") and returns a 502
+        // with { error } on total failure instead of an empty catalog, so
+        // this has to check res.ok rather than always trusting data.items.
+        if (ok) {
+          setItems(data.items);
+        } else {
+          setItemLoadError(typeof data.error === "string" ? data.error : "아이템 목록을 불러오지 못했습니다.");
+        }
+      })
       .catch(() => setItemLoadError("아이템 목록을 불러오지 못했습니다."));
   }, []);
 
@@ -2323,8 +2489,9 @@ export default function Home() {
                   <KeyTagBadges tags={c.keyTags} />
                   <ConceptFitBadges fits={c.conceptFits} />
                 </div>
-                <LaningTipList stats={c.laningStats} />
+                <LaningTipList stats={c.laningStats} abilityDetails={c.abilityDetails} />
                 <PowerCurveDetails points={c.powerCurvePoints} />
+                <AbilityDetailList abilities={c.abilityDetails} />
                 <Details label="소스별 상세">
                   <SourceBreakdown sources={c.bySource} />
                   {c.powerCurveLaneNote && <p className="build-lane-note">⚠ {c.powerCurveLaneNote}</p>}
@@ -2543,8 +2710,9 @@ export default function Home() {
                         <KeyTagBadges tags={c.keyTags} />
                         <ConceptFitBadges fits={c.conceptFits} />
                       </div>
-                      <LaningTipList stats={c.laningStats} />
+                      <LaningTipList stats={c.laningStats} abilityDetails={c.abilityDetails} />
                       <PowerCurveDetails points={c.powerCurvePoints} />
+                      <AbilityDetailList abilities={c.abilityDetails} />
                       <Details label="세부정보">
                         <SourceBreakdown sources={c.bySource} />
                         {c.powerCurveLaneNote && <p className="build-lane-note">⚠ {c.powerCurveLaneNote}</p>}
@@ -2601,6 +2769,7 @@ export default function Home() {
                       <KeyTagBadges tags={c.keyTags} />
                       <ConceptFitBadges fits={c.conceptFits} />
                     </div>
+                    <AbilityDetailList abilities={c.abilityDetails} />
                   </li>
                 ))}
               </ol>
@@ -2643,6 +2812,7 @@ export default function Home() {
                         <ConceptFitBadges fits={c.conceptFits} />
                       </div>
                       <PowerCurveDetails points={c.powerCurvePoints} />
+                      <AbilityDetailList abilities={c.abilityDetails} />
                       <Details label="세부정보">
                         <SourceBreakdown sources={c.bySource} />
                         {c.powerCurveLaneNote && <p className="build-lane-note">⚠ {c.powerCurveLaneNote}</p>}
@@ -2793,7 +2963,13 @@ export default function Home() {
           </p>
 
           {compareResult.likelyEnemyLaners.length > 0 && (
-            <>
+            // "조합비교 탭에서 픽 추천을 숨길 수 있게 해줘" — 이 블록(최대
+            // 3명 각각의 카운터 픽 목록)이 파워 커브/조합 분석보다 먼저,
+            // 화면 공간을 가장 많이 차지해서 다른 탭의 세부정보/소스별
+            // 상세와 같은 <Details> 접이식으로 감쌌다. 기본은 닫힘(이
+            // 앱의 모든 <Details>와 동일한 규칙) — 필요할 때만 펼쳐서
+            // 보고, 안 볼 때는 "픽 추천 보기" 한 줄로 접어둘 수 있다.
+            <Details label="픽 추천">
               <p className="empty-hint">
                 상대팀 5명 중 <strong>{POSITIONS.find((p) => p.value === position)?.label}</strong> 표본이 많은
                 순으로 최대 3명을 추렸습니다 — lol.ps의 라인 점유율 필드는 신뢰할 수 없다고 이미 확인돼서(항상
@@ -2832,7 +3008,7 @@ export default function Home() {
                   </ol>
                 </div>
               ))}
-            </>
+            </Details>
           )}
 
           <h3>파워 커브 (초반/중반/후반)</h3>

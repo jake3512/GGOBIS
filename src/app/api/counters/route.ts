@@ -2,9 +2,15 @@ import { NextResponse } from "next/server";
 import { getChampionsWithFallback, getLatestVersion, type DDragonChampion } from "@/lib/ddragon";
 import { POSITIONS, type Position } from "@/lib/positions";
 import { getAggregatedLaneCounters } from "@/lib/sources/aggregate";
-import { getChampionAbilitiesWithCache, toKeyTags, type KeyTags } from "@/lib/championSkills";
+import {
+  getChampionAbilitiesWithCache,
+  toKeyTags,
+  toAbilityDetails,
+  type KeyTags,
+  type AbilityDetail,
+} from "@/lib/championSkills";
 import { championConceptFit, type CompConceptId } from "@/lib/compConcepts";
-import { getPowerCurve, getVersusStats, powerCurveVsFitScore, type VersusStats } from "@/lib/sources/lolps";
+import { getChampionBuild, getPowerCurve, getVersusStats, powerCurveVsFitScore, type VersusStats } from "@/lib/sources/lolps";
 import { sampleReliabilityTier } from "@/lib/sampleSize";
 
 const VALID_POSITIONS = new Set(POSITIONS.map((p) => p.value));
@@ -35,6 +41,10 @@ interface CounterEntry {
   games: number;
   bySource: { sourceId: string; sourceLabel: string; winRate: number; games: number }[];
   keyTags?: KeyTags;
+  /** Per-ability (P/Q/W/E/R) name + cooldown/cost/range for this counter —
+   * same top-N-only limit as keyTags, no extra request (reuses the same
+   * Meraki fetch). "상세 정보 제공을 늘려줘". */
+  abilityDetails?: AbilityDetail[];
   conceptFits?: CompConceptId[];
   /** lol.ps head-to-head laning-phase stats (this champion vs the counter) —
    * only on the top few entries (see LANING_STATS_CANDIDATE_LIMIT). The
@@ -65,31 +75,51 @@ interface CounterEntry {
 /** Best-effort attaches "핵심 태그"/"게임 스타일" to the top N counters (sorted
  * best-counter-first) — same pattern and same caveats as pickadvice's
  * annotateWithKeyTagsAndConceptFits; this route just didn't have any Data
- * Dragon detail-fetch pass before this feature, so it's added fresh here. */
+ * Dragon detail-fetch pass before this feature, so it's added fresh here.
+ *
+ * Also best-effort fetches lol.ps's build for each of the same top-N
+ * candidates just for its real `skillMaxOrder[0]` — "챔피언 별로 먼저
+ * 마스터하는 스킬은 주로 주요 스킬이야" — and feeds it into `toAbilityDetails`
+ * so isKeySkill isn't limited to the keyword classifier here (unlike
+ * pickadvice's counterPicks/synergyPicks, this route has no earlier
+ * annotateWithBuild pass to reuse, but `attachLaningStats`/`attachPowerCurve`
+ * below already fetch this same lol.ps champion page for the same
+ * candidates within this request, so the underlying HTML is very likely
+ * already cache-warm by the time this runs — see fetchChampPageHtml's
+ * CACHE_TTL_MS in lolps.ts). Uses `allowMismatch: true` since only the
+ * skill-max order is read, not the full build, so an off-primary-lane match
+ * is still useful signal here. */
 async function attachKeyTagsAndConceptFits(
   entries: CounterEntry[],
   champById: Map<number, DDragonChampion>,
+  position: Position,
 ): Promise<void> {
   const top = entries.slice(0, KEY_TAGS_CANDIDATE_LIMIT);
   if (top.length === 0) return;
   try {
     const version = await getLatestVersion();
-    const results = await Promise.allSettled(
-      top.map((e) => {
-        const champ = champById.get(e.championId);
-        if (!champ) return Promise.reject(new Error("unknown champion"));
-        return getChampionAbilitiesWithCache(champ.slug, version);
-      }),
-    );
+    const [abilityResults, buildResults] = await Promise.all([
+      Promise.allSettled(
+        top.map((e) => {
+          const champ = champById.get(e.championId);
+          if (!champ) return Promise.reject(new Error("unknown champion"));
+          return getChampionAbilitiesWithCache(champ.slug, version);
+        }),
+      ),
+      Promise.allSettled(top.map((e) => getChampionBuild(e.championId, position, { allowMismatch: true }))),
+    ]);
     top.forEach((entry, i) => {
-      const r = results[i];
+      const r = abilityResults[i];
       if (r.status !== "fulfilled") return;
       const champ = champById.get(entry.championId);
+      const buildResult = buildResults[i];
+      const firstMaxedKey = buildResult.status === "fulfilled" ? buildResult.value.skillMaxOrder[0] : undefined;
       entry.keyTags = toKeyTags(r.value);
+      entry.abilityDetails = toAbilityDetails(r.value, firstMaxedKey);
       if (champ) entry.conceptFits = championConceptFit(champ, r.value);
     });
   } catch {
-    // Data Dragon unreachable — leave keyTags/conceptFits unset.
+    // Meraki unreachable — leave keyTags/conceptFits/abilityDetails unset.
   }
 }
 
@@ -204,7 +234,7 @@ export async function GET(req: Request) {
     // of paying the sum of both round trips (same convention as pickadvice's
     // annotateWithBuild/annotateWithDeeplolBuild Promise.all).
     await Promise.all([
-      attachKeyTagsAndConceptFits(counters, champById),
+      attachKeyTagsAndConceptFits(counters, champById, position),
       attachLaningStats(counters, championId, position),
       attachPowerCurve(counters, championId, position),
     ]);
