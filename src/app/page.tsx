@@ -1485,8 +1485,18 @@ export default function Home() {
 
   useEffect(() => {
     fetch("/api/items")
-      .then((res) => res.json())
-      .then((data) => setItems(data.items))
+      .then((res) => res.json().then((data) => ({ ok: res.ok, data })))
+      .then(({ ok, data }) => {
+        // /api/items now has no fallback source (Community Dragon only —
+        // "모든 데이터를 제시한 링크에서만 가져와줘") and returns a 502
+        // with { error } on total failure instead of an empty catalog, so
+        // this has to check res.ok rather than always trusting data.items.
+        if (ok) {
+          setItems(data.items);
+        } else {
+          setItemLoadError(typeof data.error === "string" ? data.error : "아이템 목록을 불러오지 못했습니다.");
+        }
+      })
       .catch(() => setItemLoadError("아이템 목록을 불러오지 못했습니다."));
   }, []);
 

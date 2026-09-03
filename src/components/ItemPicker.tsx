@@ -10,9 +10,9 @@ export interface ItemSummary {
   iconUrl: string;
   tags: string[];
   cost: { base: number; total: number; sell: number };
-  /** Raw Data Dragon stat keys — see DDragonItem.stats, src/lib/ddragon.ts
-   * for the known-limitation caveat (modern stats like Ability Haste aren't
-   * in here at all). */
+  /** Stat keys normalized onto Data Dragon's old "Flat*Mod"/"Percent*Mod"
+   * style — see src/lib/sources/communityDragonItems.ts's CD_STAT_KEY_MAP,
+   * the actual (Community Dragon-only) source of this data now. */
   stats: Record<string, number>;
   plainDescription: string;
 }

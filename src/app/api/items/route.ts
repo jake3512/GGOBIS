@@ -1,75 +1,61 @@
 import { NextResponse } from "next/server";
-import { getItemsWithCache } from "@/lib/ddragon";
-import { LEGENDARY_ITEM_NAMES } from "@/lib/legendaryItems";
 import { getCommunityDragonItems } from "@/lib/sources/communityDragonItems";
 
 /** Full item catalog for the "아이템 빌드" tab — filtered server-side to
- * items you can actually buy on Summoner's Rift, same "don't make the
- * client re-derive a server-only judgment call" convention as
+ * finished items you can actually buy on Summoner's Rift, same "don't make
+ * the client re-derive a server-only judgment call" convention as
  * /api/champions returning the already-resolved champion list.
  *
- * Two things per item, both preferring Community Dragon
- * (`getCommunityDragonItems`, src/lib/sources/communityDragonItems.ts —
- * the user pointed at this feed directly, first for inclusion and then for
- * "이름 가격 스탯도 제시한 링크에서 따와줘") over Data Dragon
- * (`getItemsWithCache`, src/lib/ddragon.ts) when it has data for that id,
- * after Data Dragon's own signals kept mismatching the real deployed shop
- * ("중복된 아이템도 있고 대부분의 아이템이 빠져있고 삭제된 아이템도 많이
- * 있어"):
+ * Every field (name, icon, tags, cost, stats, description) and the
+ * inclusion decision itself come ONLY from Community Dragon's items.json
+ * (`getCommunityDragonItems`, src/lib/sources/communityDragonItems.ts) —
+ * "아이템 빌드에서는 datadragon의 데이터를 쓰지 말아줘 모든 데이터를
+ * 제시한 링크에서만 가져와줘". Data Dragon (src/lib/ddragon.ts) is not
+ * consulted anywhere in this route anymore; it's still used elsewhere in
+ * the app (the champion "빌드" tab, pick-advice's build cards) for an
+ * unrelated feature, but this tab no longer falls back to it — this
+ * followed a few earlier rounds where a Data-Dragon-flags/namu.wiki-name-
+ * allowlist fallback was kept as a safety net, which the user then asked
+ * to remove entirely in favor of a single, exclusive source.
  *
- *   1. **Whether to include it** — Community Dragon: `inStore &&
- *      isFinalTier && !isRestrictedVariant`. Falls back, only when
- *      Community Dragon has no entry for that id (its fetch failed
- *      outright, or that particular item isn't in its response), to the
- *      previous approach: the namu.wiki-sourced name allowlist
- *      (`LEGENDARY_ITEM_NAMES`) for legendaries — "저 탭에 있는 아이템은
- *      필수로 포함되게 해줘", name match alone is enough — and the old
- *      Data Dragon flag combo for boots. Anything else (basics,
- *      components, consumables, trinkets, wards, jungle items, ...) stays
- *      excluded either way — this tab models a *finished* 6-slot build,
- *      not the full shop.
- *   2. **Name / total price / stats** — Community Dragon's `name`/
- *      `priceTotal`/`stats` when present and non-empty, per-field; any
- *      field Community Dragon didn't have (or came back empty/zero for)
- *      falls back to Data Dragon's own value for that same field. Icon URL,
- *      tags, base/sell price, and the plain-text description always come
- *      from Data Dragon regardless — Community Dragon's feed doesn't cover
- *      those.
+ * Inclusion rule: `inStore && isFinalTier && !isRestrictedVariant` — same
+ * three checks as before, just no longer paired with any fallback. An item
+ * this feed doesn't mark as in-store/final-tier/unrestricted (or that it
+ * simply doesn't have at all) is excluded, full stop.
  *
- * A name-based dedup pass runs last regardless of which source's data an
- * item ended up with, in case two ids still collide on the same name. */
+ * A total fetch failure (Community Dragon unreachable, or an unexpected
+ * response shape) surfaces as a 502 here rather than silently returning an
+ * empty catalog — with no fallback left, there's no other way to tell
+ * "genuinely no items" apart from "the source is down". */
 export async function GET() {
-  const [items, cdItems] = await Promise.all([getItemsWithCache(), getCommunityDragonItems()]);
+  try {
+    const cdItems = await getCommunityDragonItems();
+    const list = Array.from(cdItems.values()).filter(
+      (it) => it.inStore && it.isFinalTier && !it.isRestrictedVariant,
+    );
+    list.sort((a, b) => a.name.localeCompare(b.name, "ko"));
+    const seenNames = new Set<string>();
+    const deduped = list.filter((it) => {
+      if (seenNames.has(it.name)) return false;
+      seenNames.add(it.name);
+      return true;
+    });
 
-  const included = Array.from(items.values()).filter((it) => {
-    const cd = cdItems.get(it.id);
-    if (cd) return cd.inStore && cd.isFinalTier && !cd.isRestrictedVariant;
-    if (it.tags.includes("Boots")) {
-      return it.cost.purchasable && it.availableOnSummonersRift && !it.hideFromAll && !it.isComponentItem && !it.isRestrictedVariant;
-    }
-    return LEGENDARY_ITEM_NAMES.has(it.name);
-  });
-
-  const merged = included.map((it) => {
-    const cd = cdItems.get(it.id);
-    return {
-      id: it.id,
-      name: cd?.name || it.name,
-      iconUrl: it.iconUrl,
-      tags: it.tags,
-      cost: { base: it.cost.base, total: cd?.priceTotal || it.cost.total, sell: it.cost.sell },
-      stats: cd && Object.keys(cd.stats).length > 0 ? cd.stats : it.stats,
-      plainDescription: it.plainDescription,
-    };
-  });
-
-  merged.sort((a, b) => a.name.localeCompare(b.name, "ko"));
-  const seenNames = new Set<string>();
-  const deduped = merged.filter((it) => {
-    if (seenNames.has(it.name)) return false;
-    seenNames.add(it.name);
-    return true;
-  });
-
-  return NextResponse.json({ items: deduped });
+    return NextResponse.json({
+      items: deduped.map((it) => ({
+        id: it.id,
+        name: it.name,
+        iconUrl: it.iconUrl,
+        tags: it.tags,
+        cost: it.cost,
+        stats: it.stats,
+        plainDescription: it.plainDescription,
+      })),
+    });
+  } catch (err) {
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : "아이템 목록을 가져오지 못했습니다." },
+      { status: 502 },
+    );
+  }
 }

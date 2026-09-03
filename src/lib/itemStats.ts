@@ -1,14 +1,15 @@
-// Korean labels + percent-vs-flat formatting for item stat keys. Originally
-// covered only Data Dragon item.json's `stats` block (DDragonItem.stats,
-// src/lib/ddragon.ts), whose keys are the "Flat*Mod"/"Percent*Mod" style
-// still used below. Since /api/items now prefers Community Dragon's own
-// (richer) `stats` block per item when available — normalized onto this
-// same key style by communityDragonItems.ts's CD_STAT_KEY_MAP — this table
-// now also covers stats Data Dragon never exposed at all (Ability Haste,
-// Lethality, Omnivamp, Physical/Spell Vamp, Tenacity, Heal & Shield Power,
-// Armor/Magic Penetration, Cooldown Reduction). Used both for the
-// item-build tab's per-item stat readout and its "스탯 종류별로 검색"
-// category filter chips.
+// Korean labels + percent-vs-flat formatting for item stat keys. The key
+// style ("Flat*Mod"/"Percent*Mod") originally came from Data Dragon
+// item.json's `stats` block, but /api/items no longer uses Data Dragon at
+// all — every item-build tab value now comes from Community Dragon's own
+// `stats` block (src/lib/sources/communityDragonItems.ts's
+// `getCommunityDragonItems`), normalized onto this same key style by that
+// file's CD_STAT_KEY_MAP so this table didn't need to change shape. Community
+// Dragon's stats cover several concepts Data Dragon's version never exposed
+// at all (Ability Haste, Lethality, Omnivamp, Physical/Spell Vamp, Tenacity,
+// Heal & Shield Power, Armor/Magic Penetration, Cooldown Reduction). Used
+// both for the item-build tab's per-item stat readout and its "스탯
+// 종류별로 검색" category filter chips.
 //
 // The new entries' exact key spelling/percent-vs-flat shape mirrors
 // src/lib/sources/communityDragonItems.ts's CD_STAT_KEY_MAP and carries the
