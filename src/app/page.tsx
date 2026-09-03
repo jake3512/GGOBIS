@@ -2963,7 +2963,13 @@ export default function Home() {
           </p>
 
           {compareResult.likelyEnemyLaners.length > 0 && (
-            <>
+            // "조합비교 탭에서 픽 추천을 숨길 수 있게 해줘" — 이 블록(최대
+            // 3명 각각의 카운터 픽 목록)이 파워 커브/조합 분석보다 먼저,
+            // 화면 공간을 가장 많이 차지해서 다른 탭의 세부정보/소스별
+            // 상세와 같은 <Details> 접이식으로 감쌌다. 기본은 닫힘(이
+            // 앱의 모든 <Details>와 동일한 규칙) — 필요할 때만 펼쳐서
+            // 보고, 안 볼 때는 "픽 추천 보기" 한 줄로 접어둘 수 있다.
+            <Details label="픽 추천">
               <p className="empty-hint">
                 상대팀 5명 중 <strong>{POSITIONS.find((p) => p.value === position)?.label}</strong> 표본이 많은
                 순으로 최대 3명을 추렸습니다 — lol.ps의 라인 점유율 필드는 신뢰할 수 없다고 이미 확인돼서(항상
@@ -3002,7 +3008,7 @@ export default function Home() {
                   </ol>
                 </div>
               ))}
-            </>
+            </Details>
           )}
 
           <h3>파워 커브 (초반/중반/후반)</h3>
