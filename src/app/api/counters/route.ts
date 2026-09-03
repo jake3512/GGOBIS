@@ -2,7 +2,13 @@ import { NextResponse } from "next/server";
 import { getChampionsWithFallback, getLatestVersion, type DDragonChampion } from "@/lib/ddragon";
 import { POSITIONS, type Position } from "@/lib/positions";
 import { getAggregatedLaneCounters } from "@/lib/sources/aggregate";
-import { getChampionAbilitiesWithCache, toKeyTags, type KeyTags } from "@/lib/championSkills";
+import {
+  getChampionAbilitiesWithCache,
+  toKeyTags,
+  toAbilityDetails,
+  type KeyTags,
+  type AbilityDetail,
+} from "@/lib/championSkills";
 import { championConceptFit, type CompConceptId } from "@/lib/compConcepts";
 import { getPowerCurve, getVersusStats, powerCurveVsFitScore, type VersusStats } from "@/lib/sources/lolps";
 import { sampleReliabilityTier } from "@/lib/sampleSize";
@@ -35,6 +41,10 @@ interface CounterEntry {
   games: number;
   bySource: { sourceId: string; sourceLabel: string; winRate: number; games: number }[];
   keyTags?: KeyTags;
+  /** Per-ability (P/Q/W/E/R) name + cooldown/cost/range for this counter —
+   * same top-N-only limit as keyTags, no extra request (reuses the same
+   * Meraki fetch). "상세 정보 제공을 늘려줘". */
+  abilityDetails?: AbilityDetail[];
   conceptFits?: CompConceptId[];
   /** lol.ps head-to-head laning-phase stats (this champion vs the counter) —
    * only on the top few entries (see LANING_STATS_CANDIDATE_LIMIT). The
@@ -86,10 +96,11 @@ async function attachKeyTagsAndConceptFits(
       if (r.status !== "fulfilled") return;
       const champ = champById.get(entry.championId);
       entry.keyTags = toKeyTags(r.value);
+      entry.abilityDetails = toAbilityDetails(r.value);
       if (champ) entry.conceptFits = championConceptFit(champ, r.value);
     });
   } catch {
-    // Data Dragon unreachable — leave keyTags/conceptFits unset.
+    // Meraki unreachable — leave keyTags/conceptFits/abilityDetails unset.
   }
 }
 

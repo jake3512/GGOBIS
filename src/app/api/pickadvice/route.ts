@@ -22,7 +22,14 @@ import {
 import { getChampionBuild as getDeeplolChampionBuild } from "@/lib/sources/deeplol";
 import { toBuildResult, type BuildResult } from "@/lib/buildRefs";
 import { analyzeTeamComp, applySkillFitBonus, scoreEnemyCompFit } from "@/lib/teamComp";
-import { getChampionAbilitiesWithCache, toKeyTags, type ChampionAbilities, type KeyTags } from "@/lib/championSkills";
+import {
+  getChampionAbilitiesWithCache,
+  toKeyTags,
+  toAbilityDetails,
+  type ChampionAbilities,
+  type KeyTags,
+  type AbilityDetail,
+} from "@/lib/championSkills";
 import { analyzeCompConcepts, championConceptFit, lookupConceptMatchup, type CompConceptId } from "@/lib/compConcepts";
 import { sampleReliabilityTier } from "@/lib/sampleSize";
 
@@ -227,13 +234,18 @@ interface PickEntry {
    * (blended into the real-winRate goodness term via LANING_STATS_BLEND,
    * same slot laningStats's gold-diff fit already used). */
   powerCurveVsEnemyFit?: number;
-  /** This candidate's real Data Dragon ability tags (championSkills.ts) —
-   * the same signals already used to nudge compFit in refineTopWithSkillFit,
-   * now also surfaced directly so the UI can show "핵심 태그" chips (CC/
-   * 기동성/보호막·회복/사거리) instead of only using them invisibly for
-   * ranking. Same top-N-only limit as the rest of this file (one Data
-   * Dragon request per champion). */
+  /** This candidate's real ability tags (championSkills.ts, base source
+   * Meraki Analytics) — the same signals already used to nudge compFit in
+   * refineTopWithSkillFit, now also surfaced directly so the UI can show
+   * "핵심 태그" chips (CC/기동성/보호막·회복/사거리) instead of only using
+   * them invisibly for ranking. Same top-N-only limit as the rest of this
+   * file (one external request per champion). */
   keyTags?: KeyTags;
+  /** Per-ability (P/Q/W/E/R) name + cooldown/cost/range, straight from the
+   * same Meraki fetch keyTags above already made for this candidate — no
+   * extra request. "상세 정보 제공을 늘려줘": shown as an expandable detail
+   * list alongside the keyTags chips. Same top-N-only limit. */
+  abilityDetails?: AbilityDetail[];
   /** Which of compConcepts.ts's 5 known comp-concept archetypes this ONE
    * candidate individually fits (championConceptFit) — shown as a "게임
    * 스타일" hint (e.g. "포킹형", "한타형"). Explicitly NOT measured data,
@@ -415,6 +427,7 @@ interface CompFitPickEntry {
    * SKILL_FIT_CANDIDATE_LIMIT entries after sorting, same as counterPicks/
    * synergyPicks. */
   keyTags?: KeyTags;
+  abilityDetails?: AbilityDetail[];
   conceptFits?: CompConceptId[];
 }
 
@@ -484,6 +497,7 @@ async function computeCompFitPicks(
         if (r.status !== "fulfilled") return;
         const champ = champById.get(entry.championId);
         entry.keyTags = toKeyTags(r.value);
+        entry.abilityDetails = toAbilityDetails(r.value);
         if (champ) entry.conceptFits = championConceptFit(champ, r.value);
       });
     } catch {
@@ -652,10 +666,11 @@ async function annotateWithKeyTagsAndConceptFits(
       if (r.status !== "fulfilled") return;
       const champ = champById.get(entry.championId);
       entry.keyTags = toKeyTags(r.value);
+      entry.abilityDetails = toAbilityDetails(r.value);
       if (champ) entry.conceptFits = championConceptFit(champ, r.value);
     });
   } catch {
-    // Data Dragon unreachable — leave keyTags/conceptFits unset.
+    // Meraki unreachable — leave keyTags/conceptFits/abilityDetails unset.
   }
 }
 

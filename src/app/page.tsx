@@ -43,15 +43,26 @@ interface PowerCurvePoint {
 
 /** This app's own real-signal "핵심 태그" — the same hasHardCC/hasSoftCC/
  * hasMobility/hasShieldOrHeal/hasLongRange booleans championSkills.ts derives
- * from real (Korean) Data Dragon ability text via keyword matching. Only
- * attached to the top few entries of each list (see *_CANDIDATE_LIMIT
- * server-side) — a per-champion Data Dragon detail fetch, not free. */
+ * from real ability text (Meraki Analytics, English) via keyword matching.
+ * Only attached to the top few entries of each list (see *_CANDIDATE_LIMIT
+ * server-side) — a per-champion external detail fetch, not free. */
 interface KeyTags {
   hasHardCC: boolean;
   hasSoftCC: boolean;
   hasMobility: boolean;
   hasShieldOrHeal: boolean;
   hasLongRange: boolean;
+}
+
+/** Per-ability (P/Q/W/E/R) detail from the same Meraki fetch KeyTags above
+ * already made for this candidate — name + per-rank cooldown/cost, plus max
+ * cast range (see AbilityDetailList). Same top-N-only limit as keyTags. */
+interface AbilityDetail {
+  key: "P" | "Q" | "W" | "E" | "R";
+  name: string;
+  cooldown?: number[];
+  cost?: number[];
+  maxRange?: number;
 }
 
 interface CounterEntry {
@@ -62,6 +73,7 @@ interface CounterEntry {
   games: number;
   bySource: SourceValue[];
   keyTags?: KeyTags;
+  abilityDetails?: AbilityDetail[];
   conceptFits?: CompConceptId[];
   /** lol.ps head-to-head laning-phase stats (this champion vs the counter) —
    * only on the top few entries. See LaningTipList/buildLaningTips for the
@@ -133,6 +145,9 @@ interface PickEntry {
   powerCurveVsEnemyFit?: number;
   /** "핵심 태그" (see KeyTags above) — only on the top few entries. */
   keyTags?: KeyTags;
+  /** 스킬 상세(P/Q/W/E/R 이름+쿨타임/코스트/사거리) — see AbilityDetail
+   * above. Same top-N-only limit. */
+  abilityDetails?: AbilityDetail[];
   /** Which of the 5 known comp concepts this candidate individually fits
    * (게임 스타일) — app-curated, not measured data (see compConcepts.ts
    * server-side and CONCEPT_PILOT_TIPS below for the same caveat elsewhere
@@ -159,6 +174,7 @@ interface CompFitPickEntry {
   allySynergyAvgWinRate: number | null;
   tier?: 1 | 2 | 3;
   keyTags?: KeyTags;
+  abilityDetails?: AbilityDetail[];
   conceptFits?: CompConceptId[];
 }
 
@@ -886,11 +902,11 @@ const KEY_TAG_LABELS: { key: keyof KeyTags; label: string }[] = [
   { key: "hasLongRange", label: "장거리" },
 ];
 
-/** "핵심 태그" chips — this app's own classification of REAL Data Dragon
- * ability text (see championSkills.ts), not a win rate. Only renders the
- * tags that are actually true; nothing shown at all when keyTags wasn't
- * attached (candidate outside the top-N Data Dragon fetch limit) or none of
- * the five tags apply. */
+/** "핵심 태그" chips — this app's own classification of REAL ability text
+ * (Meraki Analytics, see championSkills.ts), not a win rate. Only renders
+ * the tags that are actually true; nothing shown at all when keyTags wasn't
+ * attached (candidate outside the top-N fetch limit) or none of the five
+ * tags apply. */
 function KeyTagBadges({ tags }: { tags?: KeyTags }) {
   if (!tags) return null;
   const active = KEY_TAG_LABELS.filter((t) => tags[t.key]);
@@ -903,6 +919,35 @@ function KeyTagBadges({ tags }: { tags?: KeyTags }) {
         </span>
       ))}
     </span>
+  );
+}
+
+const ABILITY_KEY_LABELS: Record<AbilityDetail["key"], string> = { P: "패시브", Q: "Q", W: "W", E: "E", R: "R" };
+
+/** "상세 정보 제공을 늘려줘" — Meraki에서 가져온 스킬별 쿨타임/코스트/
+ * 사거리를 랭크별로 보여주는 접이식 목록. keyTags/conceptFits와 같은 top-N
+ * 한정 데이터라 abilityDetails가 아예 없으면(그 후보가 top-N 밖이거나
+ * Meraki 조회 자체가 실패) 아무것도 렌더링하지 않는다. 쿨타임/코스트가
+ * 파싱되지 않은 스킬(값 없음)은 그 항목만 조용히 생략 — "0"처럼 잘못된
+ * 값을 보여주는 대신 아예 안 보여주는 쪽을 택함. */
+function AbilityDetailList({ abilities }: { abilities?: AbilityDetail[] }) {
+  if (!abilities || abilities.length === 0) return null;
+  return (
+    <Details label="스킬 상세">
+      <ul className="ability-detail-list">
+        {abilities.map((a) => (
+          <li key={a.key} className="ability-detail-row">
+            <span className="ability-detail-key">{ABILITY_KEY_LABELS[a.key]}</span>
+            <span className="ability-detail-name">{a.name || "(이름 없음)"}</span>
+            <span className="ability-detail-numbers">
+              {a.cooldown && a.cooldown.length > 0 && <>쿨타임 {a.cooldown.join("/")}초 </>}
+              {a.cost && a.cost.length > 0 && <>코스트 {a.cost.join("/")} </>}
+              {a.maxRange != null && <>사거리 {a.maxRange}</>}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </Details>
   );
 }
 
@@ -2335,6 +2380,7 @@ export default function Home() {
                 </div>
                 <LaningTipList stats={c.laningStats} />
                 <PowerCurveDetails points={c.powerCurvePoints} />
+                <AbilityDetailList abilities={c.abilityDetails} />
                 <Details label="소스별 상세">
                   <SourceBreakdown sources={c.bySource} />
                   {c.powerCurveLaneNote && <p className="build-lane-note">⚠ {c.powerCurveLaneNote}</p>}
@@ -2555,6 +2601,7 @@ export default function Home() {
                       </div>
                       <LaningTipList stats={c.laningStats} />
                       <PowerCurveDetails points={c.powerCurvePoints} />
+                      <AbilityDetailList abilities={c.abilityDetails} />
                       <Details label="세부정보">
                         <SourceBreakdown sources={c.bySource} />
                         {c.powerCurveLaneNote && <p className="build-lane-note">⚠ {c.powerCurveLaneNote}</p>}
@@ -2611,6 +2658,7 @@ export default function Home() {
                       <KeyTagBadges tags={c.keyTags} />
                       <ConceptFitBadges fits={c.conceptFits} />
                     </div>
+                    <AbilityDetailList abilities={c.abilityDetails} />
                   </li>
                 ))}
               </ol>
@@ -2653,6 +2701,7 @@ export default function Home() {
                         <ConceptFitBadges fits={c.conceptFits} />
                       </div>
                       <PowerCurveDetails points={c.powerCurvePoints} />
+                      <AbilityDetailList abilities={c.abilityDetails} />
                       <Details label="세부정보">
                         <SourceBreakdown sources={c.bySource} />
                         {c.powerCurveLaneNote && <p className="build-lane-note">⚠ {c.powerCurveLaneNote}</p>}

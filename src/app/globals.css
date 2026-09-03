@@ -723,6 +723,42 @@ textarea {
   padding: 0.1rem 0.5rem;
 }
 
+/* AbilityDetailList — Meraki 스킬 상세(쿨타임/코스트/사거리). 접이식
+   .details-toggle 안에서 쓰이는 단순 목록이라 별도 카드 스타일 없이
+   .recommend-list 세부 텍스트와 같은 톤으로 맞췄다. */
+.ability-detail-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.ability-detail-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+}
+
+.ability-detail-key {
+  display: inline-block;
+  min-width: 2rem;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.ability-detail-name {
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.ability-detail-numbers {
+  color: var(--muted);
+}
+
 /* ConceptFitBadges — explicitly NOT measured data (see championConceptFit/
    compConcepts.ts), so it deliberately avoids both the real-data accent tint
    above and the win-rate good/bad colors — a muted violet reads as "style
