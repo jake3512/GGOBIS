@@ -103,26 +103,39 @@ export interface AbilityDetail {
   cooldown?: number[];
   cost?: number[];
   maxRange?: number;
-  /** "주요 스킬 여부를 판단해줘" — true when this ability's text matched at
-   * least one of the CC/기동성/보호막/회복 keyword categories above (i.e.
-   * `tags.length > 0`), same heuristic KeyTags/hasHardCC etc. already rely
-   * on, just applied per-ability instead of aggregated across the whole
-   * kit. Same caveat as the rest of this classifier: a purely
-   * numbers-based nuke spell with none of those keywords in its text
-   * (e.g. "deals X magic damage" and nothing else) won't be flagged as
-   * key even though it may well be the champion's core damage tool — this
-   * only catches CC/engage/peel-style impact, not raw damage. */
+  /** "주요 스킬 여부를 판단해줘" — true from either of two independent
+   * signals (OR, not AND):
+   * (1) this ability's text matched at least one of the CC/기동성/보호막/
+   *     회복 keyword categories above (`tags.length > 0`), same heuristic
+   *     KeyTags/hasHardCC etc. already rely on, just applied per-ability
+   *     instead of aggregated across the whole kit. Caveat: a purely
+   *     numbers-based nuke spell with none of those keywords in its text
+   *     (e.g. "deals X magic damage" and nothing else) won't be flagged by
+   *     this signal alone even though it may well be the champion's core
+   *     damage tool.
+   * (2) real measured player behavior — "챔피언 별로 먼저 마스터하는 스킬은
+   *     주로 주요 스킬이야": when the caller has lol.ps's real
+   *     `ChampionBuild.skillMaxOrder` for this champion (see
+   *     `src/lib/sources/lolps.ts` — not fetched by this module itself, so
+   *     it's passed in as `firstMaxedKey` by whichever route already has
+   *     it), the skill players max FIRST (`skillMaxOrder[0]`) is flagged
+   *     key regardless of its text — this catches exactly the pure-damage
+   *     mage-poke case (1) misses, since real play data doesn't need the
+   *     ability to *say* it's important. `firstMaxedKey` is optional and
+   *     best-effort (lol.ps unreachable, or the caller doesn't have build
+   *     data for this candidate) — when absent, isKeySkill falls back to
+   *     signal (1) alone, same as before this was added. */
   isKeySkill: boolean;
 }
 
-export function toAbilityDetails(a: ChampionAbilities): AbilityDetail[] {
+export function toAbilityDetails(a: ChampionAbilities, firstMaxedKey?: string): AbilityDetail[] {
   return [a.passive, ...a.spells].map((s) => ({
     key: s.key,
     name: s.name,
     cooldown: s.cooldown,
     cost: s.cost,
     maxRange: s.maxRange,
-    isKeySkill: s.tags.length > 0,
+    isKeySkill: s.tags.length > 0 || s.key === firstMaxedKey,
   }));
 }
 

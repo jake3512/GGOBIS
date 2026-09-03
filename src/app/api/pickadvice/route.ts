@@ -444,6 +444,7 @@ async function computeCompFitPicks(
   tierMap: Map<number, 1 | 2 | 3>,
   enemyChamps: DDragonChampion[],
   allySynergy: { scores: Map<number, { matchCount: number; avgWinRate: number | null }>; outOf: number },
+  position: Position,
 ): Promise<CompFitPickEntry[] | null> {
   if (tierMap.size === 0) return null;
   const entries: CompFitPickEntry[] = [];
@@ -485,19 +486,32 @@ async function computeCompFitPicks(
   if (top.length > 0) {
     try {
       const version = await getLatestVersion();
-      const results = await Promise.allSettled(
-        top.map((e) => {
-          const champ = champById.get(e.championId);
-          if (!champ) return Promise.reject(new Error("unknown champion"));
-          return getChampionAbilitiesWithCache(champ.slug, version);
-        }),
-      );
+      // "챔피언 별로 먼저 마스터하는 스킬은 주로 주요 스킬이야" — unlike
+      // counterPicks/synergyPicks (annotateWithKeyTagsAndConceptFits), this
+      // path has no prior annotateWithBuild pass to reuse, so lol.ps's build
+      // (just for its real skillMaxOrder[0]) is fetched fresh here, bounded
+      // to the same top-N candidates as the ability fetch below — same
+      // "one external request per source per candidate" convention as the
+      // rest of this file. Best-effort: a lol.ps miss just leaves the
+      // keyword-only isKeySkill signal for that entry.
+      const [abilityResults, buildResults] = await Promise.all([
+        Promise.allSettled(
+          top.map((e) => {
+            const champ = champById.get(e.championId);
+            if (!champ) return Promise.reject(new Error("unknown champion"));
+            return getChampionAbilitiesWithCache(champ.slug, version);
+          }),
+        ),
+        Promise.allSettled(top.map((e) => getChampionBuild(e.championId, position, { allowMismatch: true }))),
+      ]);
       top.forEach((entry, i) => {
-        const r = results[i];
+        const r = abilityResults[i];
         if (r.status !== "fulfilled") return;
         const champ = champById.get(entry.championId);
+        const buildResult = buildResults[i];
+        const firstMaxedKey = buildResult.status === "fulfilled" ? buildResult.value.skillMaxOrder[0] : undefined;
         entry.keyTags = toKeyTags(r.value);
-        entry.abilityDetails = toAbilityDetails(r.value);
+        entry.abilityDetails = toAbilityDetails(r.value, firstMaxedKey);
         if (champ) entry.conceptFits = championConceptFit(champ, r.value);
       });
     } catch {
@@ -666,7 +680,11 @@ async function annotateWithKeyTagsAndConceptFits(
       if (r.status !== "fulfilled") return;
       const champ = champById.get(entry.championId);
       entry.keyTags = toKeyTags(r.value);
-      entry.abilityDetails = toAbilityDetails(r.value);
+      // "챔피언 별로 먼저 마스터하는 스킬은 주로 주요 스킬이야" — this runs
+      // AFTER annotateWithBuild for both counterPicks and synergyPicks (see
+      // the GET handler below), so entry.build?.skillMaxOrder is real lol.ps
+      // data already fetched for this exact candidate, zero extra requests.
+      entry.abilityDetails = toAbilityDetails(r.value, entry.build?.skillMaxOrder[0]);
       if (champ) entry.conceptFits = championConceptFit(champ, r.value);
     });
   } catch {
@@ -1198,7 +1216,8 @@ export async function GET(req: Request) {
   // 등록돼 있고 상대/우리팀 중 뭐라도 채워져 있을 때만 동작. ---
   const compFitPicks =
     !enemyLaneChampion && (enemyChamps.length > 0 || allyChamps.length > 0)
-      ? (await computeCompFitPicks(champById, tierMap, enemyChamps, allySynergy))?.slice(0, recommendCount) ?? null
+      ? (await computeCompFitPicks(champById, tierMap, enemyChamps, allySynergy, position))?.slice(0, recommendCount) ??
+        null
       : null;
 
   let synergyPicks: PickEntry[] | null = null;
