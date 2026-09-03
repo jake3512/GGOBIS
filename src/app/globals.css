@@ -755,6 +755,21 @@ textarea {
   color: var(--foreground);
 }
 
+/* "주요" badge — isKeySkill (CC/기동성/보호막/회복 텍스트가 있는 스킬),
+   same accent tint as key-tag-chip since it's grounded in the same
+   keyword-classified real ability text. */
+.ability-detail-key-badge {
+  display: inline-block;
+  margin-left: 0.35rem;
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: var(--accent);
+  background: rgba(91, 155, 255, 0.14);
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  padding: 0.05rem 0.4rem;
+}
+
 .ability-detail-numbers {
   color: var(--muted);
 }

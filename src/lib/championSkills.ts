@@ -103,6 +103,16 @@ export interface AbilityDetail {
   cooldown?: number[];
   cost?: number[];
   maxRange?: number;
+  /** "주요 스킬 여부를 판단해줘" — true when this ability's text matched at
+   * least one of the CC/기동성/보호막/회복 keyword categories above (i.e.
+   * `tags.length > 0`), same heuristic KeyTags/hasHardCC etc. already rely
+   * on, just applied per-ability instead of aggregated across the whole
+   * kit. Same caveat as the rest of this classifier: a purely
+   * numbers-based nuke spell with none of those keywords in its text
+   * (e.g. "deals X magic damage" and nothing else) won't be flagged as
+   * key even though it may well be the champion's core damage tool — this
+   * only catches CC/engage/peel-style impact, not raw damage. */
+  isKeySkill: boolean;
 }
 
 export function toAbilityDetails(a: ChampionAbilities): AbilityDetail[] {
@@ -112,6 +122,7 @@ export function toAbilityDetails(a: ChampionAbilities): AbilityDetail[] {
     cooldown: s.cooldown,
     cost: s.cost,
     maxRange: s.maxRange,
+    isKeySkill: s.tags.length > 0,
   }));
 }
 

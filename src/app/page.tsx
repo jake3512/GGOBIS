@@ -63,6 +63,11 @@ interface AbilityDetail {
   cooldown?: number[];
   cost?: number[];
   maxRange?: number;
+  /** 서버(toAbilityDetails, src/lib/championSkills.ts)에서 판단한 "주요
+   * 스킬 여부" — CC/기동성/보호막/회복 키워드에 걸린 스킬만 true. 순수
+   * 데미지 스킬은 걸리지 않을 수 있다는 같은 한계가 적용됨(서버 쪽 doc
+   * comment 참고). "주요 스킬여부를 판단해줘" 요청으로 추가. */
+  isKeySkill: boolean;
 }
 
 interface CounterEntry {
@@ -929,7 +934,10 @@ const ABILITY_KEY_LABELS: Record<AbilityDetail["key"], string> = { P: "패시브
  * 한정 데이터라 abilityDetails가 아예 없으면(그 후보가 top-N 밖이거나
  * Meraki 조회 자체가 실패) 아무것도 렌더링하지 않는다. 쿨타임/코스트가
  * 파싱되지 않은 스킬(값 없음)은 그 항목만 조용히 생략 — "0"처럼 잘못된
- * 값을 보여주는 대신 아예 안 보여주는 쪽을 택함. */
+ * 값을 보여주는 대신 아예 안 보여주는 쪽을 택함. "주요 스킬여부를
+ * 판단해줘" 요청으로, CC/기동성/보호막/회복 키워드에 걸린 스킬(isKeySkill)
+ * 옆에 "주요" 배지를 붙인다 — 순수 데미지기만 있는 스킬은 이 휴리스틱상
+ * 안 걸릴 수 있다는 한계는 AbilityDetail의 doc comment 참고. */
 function AbilityDetailList({ abilities }: { abilities?: AbilityDetail[] }) {
   if (!abilities || abilities.length === 0) return null;
   return (
@@ -938,7 +946,17 @@ function AbilityDetailList({ abilities }: { abilities?: AbilityDetail[] }) {
         {abilities.map((a) => (
           <li key={a.key} className="ability-detail-row">
             <span className="ability-detail-key">{ABILITY_KEY_LABELS[a.key]}</span>
-            <span className="ability-detail-name">{a.name || "(이름 없음)"}</span>
+            <span className="ability-detail-name">
+              {a.name || "(이름 없음)"}
+              {a.isKeySkill && (
+                <span
+                  className="ability-detail-key-badge"
+                  title="CC/기동성/보호막/회복 등 라인전에 영향을 주는 텍스트가 있는 스킬"
+                >
+                  주요
+                </span>
+              )}
+            </span>
             <span className="ability-detail-numbers">
               {a.cooldown && a.cooldown.length > 0 && <>쿨타임 {a.cooldown.join("/")}초 </>}
               {a.cost && a.cost.length > 0 && <>코스트 {a.cost.join("/")} </>}
@@ -1039,15 +1057,21 @@ interface LaningTip {
 
 /** 이 후보/카운터의 P~R 스킬 중 "자주 던질 수 있는 장거리 견제기"로 부를
  * 만한 하나를 고른다 — 패시브(사거리/쿨타임 개념이 거의 없음)와 궁극기
- * (라인전 초반엔 대부분 못 씀)는 제외하고, 남은 Q/W/E 중 사거리가
- * POKE_RANGE_THRESHOLD를 넘고 1랭크 쿨타임이 POKE_COOLDOWN_THRESHOLD
- * 이하인 것만 후보로 삼아 그중 사거리가 가장 긴 것을 반환한다. 두 조건 중
- * 하나라도 데이터가 없거나(파싱 실패) 기준을 못 넘으면 그 스킬은 아예
- * 후보에서 빠진다 — 잘못된 추정으로 팁을 만드는 것보다 안전. */
+ * (라인전 초반엔 대부분 못 씀)는 제외하고, 남은 Q/W/E 중 `isKeySkill`(CC/
+ * 기동성/보호막/회복 텍스트가 있는 스킬 — "주요 스킬여부를 판단해줘")이면서
+ * 사거리가 POKE_RANGE_THRESHOLD를 넘고 1랭크 쿨타임이
+ * POKE_COOLDOWN_THRESHOLD 이하인 것만 후보로 삼아 그중 사거리가 가장 긴
+ * 것을 반환한다. 조건 중 하나라도 데이터가 없거나(파싱 실패) 기준을 못
+ * 넘으면 그 스킬은 아예 후보에서 빠진다 — 잘못된 추정으로 팁을 만드는
+ * 것보다 안전. `isKeySkill` 조건 때문에 CC/기동성/보호막/회복 키워드가
+ * 전혀 없는 순수 데미지형 견제 스킬(흔한 메이지 포킹 Q 등)은 사거리·
+ * 쿨타임이 맞아도 여기 안 걸릴 수 있다 — AbilityDetail의 doc comment와
+ * 같은 한계. */
 function findPokeThreat(abilities: AbilityDetail[]): AbilityDetail | null {
   let best: AbilityDetail | null = null;
   for (const a of abilities) {
     if (a.key === "P" || a.key === "R") continue;
+    if (!a.isKeySkill) continue;
     if (a.maxRange === undefined || a.maxRange < POKE_RANGE_THRESHOLD) continue;
     if (!a.cooldown || a.cooldown.length === 0 || a.cooldown[0] > POKE_COOLDOWN_THRESHOLD) continue;
     if (!best || a.maxRange > (best.maxRange ?? 0)) best = a;
@@ -1056,13 +1080,14 @@ function findPokeThreat(abilities: AbilityDetail[]): AbilityDetail | null {
 }
 
 /** 같은 abilities에서 이번엔 "한 번 쓰면 한동안 못 쓰는(=쓰고 나면
- * 약해지는) 핵심 스킬"을 고른다 — 패시브/궁극기는 위와 같은 이유로 제외하고,
- * Q/W/E 중 만랭 쿨타임(cooldown 배열의 마지막 값)이
- * PUNISH_COOLDOWN_THRESHOLD를 넘는 것 중 가장 긴 것을 반환한다. */
+ * 약해지는) 핵심 스킬"을 고른다 — 패시브/궁극기는 위와 같은 이유로
+ * 제외하고, `isKeySkill`인 Q/W/E 중 만랭 쿨타임(cooldown 배열의 마지막
+ * 값)이 PUNISH_COOLDOWN_THRESHOLD를 넘는 것 중 가장 긴 것을 반환한다. */
 function findPunishWindow(abilities: AbilityDetail[]): AbilityDetail | null {
   let best: AbilityDetail | null = null;
   for (const a of abilities) {
     if (a.key === "P" || a.key === "R") continue;
+    if (!a.isKeySkill) continue;
     if (!a.cooldown || a.cooldown.length === 0) continue;
     const maxRankCooldown = a.cooldown[a.cooldown.length - 1];
     if (maxRankCooldown < PUNISH_COOLDOWN_THRESHOLD) continue;
