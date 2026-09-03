@@ -1015,60 +1015,146 @@ function LaningStatsRow({ stats }: { stats: VersusStats }) {
 const CS_LEAD_THRESHOLD = 10;
 const SOLO_KILL_LEAD_THRESHOLD = 0.15;
 
+/** Same "no larger dataset to calibrate against" caveat as the two
+ * thresholds above, now applied to Meraki's per-ability cooldown/cost/range
+ * numbers (`AbilityDetail`, see 상단 정의) instead of lol.ps's CS/솔로킬
+ * counts — "쿨타임, 코스트, 사거리를 이용해서 라인전 팁을 재편성해줘".
+ * POKE_RANGE_THRESHOLD(500)은 원거리 견제형 스킬과 근접형 스킬을 대략
+ * 가르는 값(근접 챔피언 돌진기는 보통 200~350, 원거리 견제기는 500 이상),
+ * POKE_COOLDOWN_THRESHOLD(8초)는 1랭크 쿨타임이 그보다 짧으면 라인전 내내
+ * 반복해서 던질 수 있다고 본 값, POKE_LOW_COST_THRESHOLD(40)는 문장에
+ * "코스트도 낮아"를 덧붙이는 보조 조건(그 자체로 팁 등장 여부를 가르지
+ * 않음), PUNISH_COOLDOWN_THRESHOLD(16초)는 만랭 쿨타임이 그 이상이면 "한
+ * 번 쓰고 나면 한동안 못 쓴다"고 볼 만큼 긴 값으로 잡았다. 모두 초 단위/
+ * 게임 유닛 원값이지 퍼센트가 아니다. */
+const POKE_RANGE_THRESHOLD = 500;
+const POKE_COOLDOWN_THRESHOLD = 8;
+const POKE_LOW_COST_THRESHOLD = 40;
+const PUNISH_COOLDOWN_THRESHOLD = 16;
+
 interface LaningTip {
   text: string;
   tone: "good" | "bad";
 }
 
+/** 이 후보/카운터의 P~R 스킬 중 "자주 던질 수 있는 장거리 견제기"로 부를
+ * 만한 하나를 고른다 — 패시브(사거리/쿨타임 개념이 거의 없음)와 궁극기
+ * (라인전 초반엔 대부분 못 씀)는 제외하고, 남은 Q/W/E 중 사거리가
+ * POKE_RANGE_THRESHOLD를 넘고 1랭크 쿨타임이 POKE_COOLDOWN_THRESHOLD
+ * 이하인 것만 후보로 삼아 그중 사거리가 가장 긴 것을 반환한다. 두 조건 중
+ * 하나라도 데이터가 없거나(파싱 실패) 기준을 못 넘으면 그 스킬은 아예
+ * 후보에서 빠진다 — 잘못된 추정으로 팁을 만드는 것보다 안전. */
+function findPokeThreat(abilities: AbilityDetail[]): AbilityDetail | null {
+  let best: AbilityDetail | null = null;
+  for (const a of abilities) {
+    if (a.key === "P" || a.key === "R") continue;
+    if (a.maxRange === undefined || a.maxRange < POKE_RANGE_THRESHOLD) continue;
+    if (!a.cooldown || a.cooldown.length === 0 || a.cooldown[0] > POKE_COOLDOWN_THRESHOLD) continue;
+    if (!best || a.maxRange > (best.maxRange ?? 0)) best = a;
+  }
+  return best;
+}
+
+/** 같은 abilities에서 이번엔 "한 번 쓰면 한동안 못 쓰는(=쓰고 나면
+ * 약해지는) 핵심 스킬"을 고른다 — 패시브/궁극기는 위와 같은 이유로 제외하고,
+ * Q/W/E 중 만랭 쿨타임(cooldown 배열의 마지막 값)이
+ * PUNISH_COOLDOWN_THRESHOLD를 넘는 것 중 가장 긴 것을 반환한다. */
+function findPunishWindow(abilities: AbilityDetail[]): AbilityDetail | null {
+  let best: AbilityDetail | null = null;
+  for (const a of abilities) {
+    if (a.key === "P" || a.key === "R") continue;
+    if (!a.cooldown || a.cooldown.length === 0) continue;
+    const maxRankCooldown = a.cooldown[a.cooldown.length - 1];
+    if (maxRankCooldown < PUNISH_COOLDOWN_THRESHOLD) continue;
+    const bestMaxRankCooldown = best?.cooldown ? best.cooldown[best.cooldown.length - 1] : -1;
+    if (!best || maxRankCooldown > bestMaxRankCooldown) best = a;
+  }
+  return best;
+}
+
 /** Turns lol.ps's real 15분 CS/솔로킬 head-to-head numbers (`VersusStats`,
- * already fetched for LaningStatsRow above) into short actionable Korean
- * tips — computed purely client-side from numbers the server already ships,
- * same pattern as `powerCurveLean`/`ccDotState` turning other raw real
- * numbers into display labels elsewhere in this app, rather than adding a
- * server-side text-generation step. Returns at most two tips (CS-based,
- * solo-kill-based); returns none when neither gap clears its threshold —
- * same "no badge is itself a (neutral) result" convention as CompFitBadge. */
-function buildLaningTips(stats: VersusStats): LaningTip[] {
+ * already fetched for LaningStatsRow above) *and* Meraki's per-ability
+ * cooldown/코스트/사거리 numbers (`AbilityDetail`, already fetched for
+ * AbilityDetailList above) into short actionable Korean tips — computed
+ * purely client-side from numbers the server already ships, same pattern as
+ * `powerCurveLean`/`ccDotState` turning other raw real numbers into display
+ * labels elsewhere in this app, rather than adding a server-side
+ * text-generation step. `stats`/`abilityDetails`는 서로 독립적이라 한쪽이
+ * 없어도 다른 쪽 팁은 그대로 뜬다. Returns at most four tips (CS/솔로킬
+ * 기반 최대 2개 + 스킬 기반 최대 2개); returns none when no signal clears
+ * its threshold — same "no badge is itself a (neutral) result" convention
+ * as CompFitBadge. */
+function buildLaningTips(stats: VersusStats | null | undefined, abilityDetails?: AbilityDetail[]): LaningTip[] {
   const tips: LaningTip[] = [];
-  const csDiff = stats.ally.csAt15 - stats.enemy.csAt15;
-  if (csDiff >= CS_LEAD_THRESHOLD) {
-    tips.push({
-      tone: "good",
-      text: `15분 CS가 평균 ${csDiff.toFixed(1)}개 앞서는 매치업이에요 — 우위를 살려 라인을 밀고 상대를 압박해보세요.`,
-    });
-  } else if (csDiff <= -CS_LEAD_THRESHOLD) {
-    tips.push({
-      tone: "bad",
-      text: `15분 CS가 평균 ${Math.abs(csDiff).toFixed(1)}개 밀리는 매치업이에요 — 무리한 교전보다 안전하게 CS 챙기기에 집중하세요.`,
-    });
+
+  if (stats) {
+    const csDiff = stats.ally.csAt15 - stats.enemy.csAt15;
+    if (csDiff >= CS_LEAD_THRESHOLD) {
+      tips.push({
+        tone: "good",
+        text: `15분 CS가 평균 ${csDiff.toFixed(1)}개 앞서는 매치업이에요 — 우위를 살려 라인을 밀고 상대를 압박해보세요.`,
+      });
+    } else if (csDiff <= -CS_LEAD_THRESHOLD) {
+      tips.push({
+        tone: "bad",
+        text: `15분 CS가 평균 ${Math.abs(csDiff).toFixed(1)}개 밀리는 매치업이에요 — 무리한 교전보다 안전하게 CS 챙기기에 집중하세요.`,
+      });
+    }
+
+    const soloDiff = stats.ally.soloKillBefore15 - stats.enemy.soloKillBefore15;
+    if (soloDiff >= SOLO_KILL_LEAD_THRESHOLD) {
+      tips.push({
+        tone: "good",
+        text: `이 매치업에서 우리가 솔로킬을 낸 경우가 상대보다 많았어요 — 상대가 무리하게 들어올 때 각을 노려보세요.`,
+      });
+    } else if (soloDiff <= -SOLO_KILL_LEAD_THRESHOLD) {
+      tips.push({
+        tone: "bad",
+        text: `이 매치업에서 상대가 솔로킬을 낸 경우가 더 많았어요 — 혼자 스킬 맞을 상황을 만들지 않도록 주의하세요.`,
+      });
+    }
   }
 
-  const soloDiff = stats.ally.soloKillBefore15 - stats.enemy.soloKillBefore15;
-  if (soloDiff >= SOLO_KILL_LEAD_THRESHOLD) {
-    tips.push({
-      tone: "good",
-      text: `이 매치업에서 우리가 솔로킬을 낸 경우가 상대보다 많았어요 — 상대가 무리하게 들어올 때 각을 노려보세요.`,
-    });
-  } else if (soloDiff <= -SOLO_KILL_LEAD_THRESHOLD) {
-    tips.push({
-      tone: "bad",
-      text: `이 매치업에서 상대가 솔로킬을 낸 경우가 더 많았어요 — 혼자 스킬 맞을 상황을 만들지 않도록 주의하세요.`,
-    });
+  if (abilityDetails && abilityDetails.length > 0) {
+    const pokeThreat = findPokeThreat(abilityDetails);
+    if (pokeThreat && pokeThreat.cooldown && pokeThreat.maxRange !== undefined) {
+      const lowCost = pokeThreat.cost !== undefined && pokeThreat.cost[0] <= POKE_LOW_COST_THRESHOLD;
+      tips.push({
+        tone: "bad",
+        text: `상대 ${pokeThreat.name}(${pokeThreat.key}) 사거리가 ${pokeThreat.maxRange}로 길고 재사용 대기시간도 ${pokeThreat.cooldown[0]}초로 짧아${lowCost ? " 코스트도 낮아" : ""} 견제가 잦을 수 있어요 — 미니언 정리할 때 스킬 사거리 밖에서 대기하세요.`,
+      });
+    }
+
+    const punishWindow = findPunishWindow(abilityDetails);
+    if (punishWindow && punishWindow.cooldown) {
+      const maxRankCooldown = punishWindow.cooldown[punishWindow.cooldown.length - 1];
+      tips.push({
+        tone: "good",
+        text: `상대 ${punishWindow.name}(${punishWindow.key}) 재사용 대기시간이 만랭 기준 ${maxRankCooldown}초로 길어요 — 한 번 쓰고 나면 그 직후 공격적으로 교전을 걸어보세요.`,
+      });
+    }
   }
 
   return tips;
 }
 
-/** Renders buildLaningTips' output — nothing at all when `stats` is
- * missing (candidate outside LANING_STATS_CANDIDATE_LIMIT server-side, or
- * lol.ps had no games for this exact matchup+lane) or when neither gap
- * clears its threshold, so this never leaves a bare empty block. Shown
- * outside the collapsed "세부정보" Details (unlike LaningStatsRow's raw
- * numbers) since these are meant to be an immediately visible suggestion,
- * not a stat you have to expand to see. */
-function LaningTipList({ stats }: { stats?: VersusStats | null }) {
-  if (!stats) return null;
-  const tips = buildLaningTips(stats);
+/** Renders buildLaningTips' output — nothing at all when both `stats`와
+ * `abilityDetails`가 없거나(candidate outside the relevant
+ * *_CANDIDATE_LIMIT server-side, lol.ps had no games for this exact
+ * matchup+lane, or the Meraki fetch failed) 어느 신호도 기준을 못 넘으면,
+ * 빈 블록을 남기지 않는다. `stats`/`abilityDetails`는 서로 독립적 —
+ * 한쪽만 있어도 그쪽 팁은 뜬다. Shown outside the collapsed
+ * "세부정보"/"소스별 상세" Details (unlike LaningStatsRow/AbilityDetailList의
+ * raw numbers) since these are meant to be an immediately visible
+ * suggestion, not a stat you have to expand to see. */
+function LaningTipList({
+  stats,
+  abilityDetails,
+}: {
+  stats?: VersusStats | null;
+  abilityDetails?: AbilityDetail[];
+}) {
+  const tips = buildLaningTips(stats, abilityDetails);
   if (tips.length === 0) return null;
   return (
     <ul className="laning-tip-list">
@@ -2378,7 +2464,7 @@ export default function Home() {
                   <KeyTagBadges tags={c.keyTags} />
                   <ConceptFitBadges fits={c.conceptFits} />
                 </div>
-                <LaningTipList stats={c.laningStats} />
+                <LaningTipList stats={c.laningStats} abilityDetails={c.abilityDetails} />
                 <PowerCurveDetails points={c.powerCurvePoints} />
                 <AbilityDetailList abilities={c.abilityDetails} />
                 <Details label="소스별 상세">
@@ -2599,7 +2685,7 @@ export default function Home() {
                         <KeyTagBadges tags={c.keyTags} />
                         <ConceptFitBadges fits={c.conceptFits} />
                       </div>
-                      <LaningTipList stats={c.laningStats} />
+                      <LaningTipList stats={c.laningStats} abilityDetails={c.abilityDetails} />
                       <PowerCurveDetails points={c.powerCurvePoints} />
                       <AbilityDetailList abilities={c.abilityDetails} />
                       <Details label="세부정보">
