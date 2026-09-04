@@ -18,10 +18,18 @@ import { getCommunityDragonItems } from "@/lib/sources/communityDragonItems";
  * allowlist fallback was kept as a safety net, which the user then asked
  * to remove entirely in favor of a single, exclusive source.
  *
- * Inclusion rule: `inStore && isFinalTier && !isRestrictedVariant` — same
- * three checks as before, just no longer paired with any fallback. An item
- * this feed doesn't mark as in-store/final-tier/unrestricted (or that it
- * simply doesn't have at all) is excluded, full stop.
+ * Inclusion rule: `inStore && isFinalTier && !isRestrictedVariant &&
+ * availableOnSummonersRift`. The fourth check is new — "현재 협곡에서 쓸 수
+ * 있는 아이템만 넣어줘, 삭제된 아이템은 제거해줘": `inStore` was already
+ * meant to drop removed/deprecated items (Community Dragon keeps some of
+ * those around with `inStore: false` for old match-history tooltips to
+ * still resolve, same reason Data Dragon kept `hideFromAll` items around),
+ * but it doesn't distinguish an item that's purchasable on some OTHER mode
+ * (ARAM/Arena-only items) from one actually buyable on Summoner's Rift
+ * specifically — `availableOnSummonersRift` (Community Dragon's
+ * `maps["11"]`) closes that gap. An item this feed doesn't mark as
+ * in-store/final-tier/unrestricted/SR-available (or that it simply doesn't
+ * have at all) is excluded, full stop.
  *
  * A total fetch failure (Community Dragon unreachable, or an unexpected
  * response shape) surfaces as a 502 here rather than silently returning an
@@ -31,7 +39,7 @@ export async function GET() {
   try {
     const cdItems = await getCommunityDragonItems();
     const list = Array.from(cdItems.values()).filter(
-      (it) => it.inStore && it.isFinalTier && !it.isRestrictedVariant,
+      (it) => it.inStore && it.isFinalTier && !it.isRestrictedVariant && it.availableOnSummonersRift,
     );
     list.sort((a, b) => a.name.localeCompare(b.name, "ko"));
     const seenNames = new Set<string>();

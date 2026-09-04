@@ -35,6 +35,14 @@
 //     read out of the response.
 //   - `simpleDescription` — short plain-text summary, same role Data
 //     Dragon's `plaintext` played.
+//   - `maps` (object keyed by map id string, e.g. `{"11": true, "12": false,
+//     ...}`) — per-map availability, same concept Data Dragon's
+//     `maps["11"]` used to gate `availableOnSummonersRift` before this tab
+//     dropped Data Dragon entirely. "11" is Summoner's Rift's map id (Riot's
+//     own numbering, unrelated to this feed). Added for "현재 협곡에서 쓸 수
+//     있는 아이템만 넣어줘" — `inStore` alone doesn't distinguish an item
+//     that's purchasable somewhere (ARAM/Arena-only items, say) from one
+//     actually buyable on Summoner's Rift specifically.
 //   - `stats` (object, keyed by camelCase stat concept e.g.
 //     "abilityPower"/"attackSpeed"/"lethality"/"omnivamp", each a
 //     `{flat?, percent?}`-shaped block) — covers several stats Data
@@ -79,6 +87,10 @@ const ASSET_BASE = "https://raw.communitydragon.org/latest/game/";
 
 const CACHE_TTL_MS = 60 * 60 * 1000;
 
+// Riot's own map id for Summoner's Rift — same numbering Data Dragon's
+// item.json `maps` block used (see this file's header comment).
+const SUMMONERS_RIFT_MAP_ID = "11";
+
 export interface CommunityDragonItem {
   id: number;
   name: string;
@@ -100,6 +112,13 @@ export interface CommunityDragonItem {
   /** True when `requiredChampion`/`requiredAlly` is set — a variant most
    * builds can't actually buy (e.g. Kalista's Black Spear, Ornn upgrades). */
   isRestrictedVariant: boolean;
+  /** `maps["11"]` (Summoner's Rift) — true unless the feed explicitly marks
+   * this item unavailable there (ARAM/Arena-only items, etc.). Defaults to
+   * true when the `maps` block itself is missing for an item, rather than
+   * excluding it — a missing field isn't evidence the item is unavailable,
+   * same "don't penalize a data gap" principle this file already applies to
+   * `stats`. */
+  availableOnSummonersRift: boolean;
 }
 
 interface RawCDStatBlock {
@@ -120,6 +139,7 @@ interface RawCommunityDragonItem {
   requiredChampion?: string;
   requiredAlly?: string;
   stats?: Record<string, RawCDStatBlock>;
+  maps?: Record<string, boolean>;
 }
 
 /** Maps a Community Dragon stat concept key to the Flat*Mod/Percent*Mod
@@ -201,6 +221,7 @@ async function fetchItems(url: string): Promise<Map<number, CommunityDragonItem>
       inStore: raw.inStore ?? false,
       isFinalTier: (raw.to?.length ?? 0) === 0,
       isRestrictedVariant: Boolean(raw.requiredChampion) || Boolean(raw.requiredAlly),
+      availableOnSummonersRift: raw.maps?.[SUMMONERS_RIFT_MAP_ID] !== false,
     });
   }
   return map;
