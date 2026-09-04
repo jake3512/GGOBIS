@@ -12,7 +12,7 @@ import { itemSetDiffCount } from "@/lib/buildDiff";
 import { ItemPicker, type ItemSummary } from "@/components/ItemPicker";
 import { statLabel, formatStatValue } from "@/lib/itemStats";
 
-type Mode = "counter" | "advice" | "build" | "compcompare" | "itembuild";
+type Mode = "counter" | "advice" | "build" | "compcompare" | "itembuild" | "versus";
 
 interface ChampionBrief {
   id: number;
@@ -408,6 +408,40 @@ interface CompCompareResult {
   likelyEnemyLaners: LikelyEnemyLaner[];
 }
 
+/** "1대1" 탭 — 두 챔피언 각각의 실측 데이터를 나란히 담는다
+ * (src/app/api/versus/route.ts와 필드 1:1 대응). PickEntry/CounterEntry와
+ * 겹치는 필드가 많지만, 이쪽은 "후보 목록의 한 항목"이 아니라 "정확히 이
+ * 상대방 한 명과 비교했을 때"의 값이라는 의미가 달라 별도 타입으로 둔다. */
+interface VersusSide {
+  championId: number;
+  name: string;
+  iconUrl: string;
+  winRate: number | null;
+  games: number | null;
+  bySource: SourceValue[];
+  sourcesSucceeded: number;
+  sourcesAttempted: number;
+  sourceErrors: SourceErrorInfo[];
+  earlyWinRate?: number | null;
+  lateWinRate?: number | null;
+  powerCurveLaneNote?: string | null;
+  powerCurvePoints?: PowerCurvePoint[] | null;
+  powerCurveVsOpponentFit?: number;
+  keyTags?: KeyTags;
+  abilityDetails?: AbilityDetail[];
+  conceptFits?: CompConceptId[];
+  build?: BuildResult | null;
+  buildDeeplol?: BuildResult | null;
+  compFitVsOpponent?: number;
+}
+
+interface VersusResult {
+  position: string;
+  a: VersusSide;
+  b: VersusSide;
+  versusStats: VersusStats | null;
+}
+
 const COMP_CONCEPT_LABELS: Record<CompConceptId, string> = {
   engage: "돌진/이니시",
   poke: "포킹",
@@ -579,6 +613,17 @@ function compCompareSlotsFor(): Slot[] {
       label: `상대팀 챔피언 ${i + 1}`,
       championId: null,
     })),
+  ];
+}
+
+/** "1대1 통계를 만들어줘" — 새 독립 탭("1대1")의 2슬롯. 팀/포지션 배정 없이
+ * 그냥 두 챔피언을 나란히 비교하는 화면이라 카운터/빌드 탭과 같은 단순
+ * slot-row 렌더링(renderSlot)을 그대로 재사용할 수 있게 일반 Slot 배열
+ * 형태로 만든다. */
+function versusSlotsFor(): Slot[] {
+  return [
+    { key: "versusA", label: "챔피언 A", championId: null },
+    { key: "versusB", label: "챔피언 B", championId: null },
   ];
 }
 
@@ -1215,6 +1260,50 @@ function LaningTipList({
   );
 }
 
+/** "1대1" 탭의 한쪽 챔피언 카드 — 라인 카운터 탭의 candidate 행(counterResult.counters
+ * 항목)과 거의 같은 배지/상세 구성을 재사용하되, 후보 목록의 한 줄이 아니라
+ * "이 한 명"에 집중된 카드 레이아웃(recommend-row-main 대신 그대로 두고
+ * 세로로 쌓음)이라 별도 컴포넌트로 둔다. 승률이 없을 때(모든 소스 실패)는
+ * WinRateBar 대신 빈 안내문을 보여준다 — CounterEntry와 달리 VersusSide는
+ * winRate가 아예 null일 수 있어서(그 방향의 집계만 전부 실패해도 다른 쪽
+ * 방향은 살아있을 수 있음, 파일 상단 doc comment 참고). */
+function VersusSideColumn({ side }: { side: VersusSide }) {
+  return (
+    <div className="versus-side">
+      <div className="recommend-row-main">
+        <ChampionIcon src={side.iconUrl} name={side.name} />
+        <span className="recommend-name">{side.name}</span>
+      </div>
+      {side.winRate !== null ? (
+        <WinRateBar rate={side.winRate} games={side.games ?? undefined} />
+      ) : (
+        <p className="empty-hint">이 매치업의 실측 승률 데이터를 찾지 못했습니다.</p>
+      )}
+      <div className="badge-row">
+        <PowerCurveBadge earlyWinRate={side.earlyWinRate} lateWinRate={side.lateWinRate} />
+        <PowerCurveVsEnemyBadge fit={side.powerCurveVsOpponentFit} />
+        <CompFitBadge compFit={side.compFitVsOpponent} />
+        <KeyTagBadges tags={side.keyTags} />
+        <ConceptFitBadges fits={side.conceptFits} />
+        <KeySkillBadges abilities={side.abilityDetails} />
+      </div>
+      <AbilityDetailList abilities={side.abilityDetails} />
+      <PowerCurveDetails points={side.powerCurvePoints} />
+      <Details label="소스별 상세">
+        <SourceBreakdown sources={side.bySource} />
+        {side.powerCurveLaneNote && <p className="build-lane-note">⚠ {side.powerCurveLaneNote}</p>}
+        {side.build && <BuildCardCompact build={side.build} sourceLabel="lol.ps" />}
+        {side.buildDeeplol && <BuildCardCompact build={side.buildDeeplol} sourceLabel="DeepLoL" />}
+      </Details>
+      <SourceStatusNote
+        succeeded={side.sourcesSucceeded}
+        attempted={side.sourcesAttempted}
+        errors={side.sourceErrors}
+      />
+    </div>
+  );
+}
+
 /** Shown next to a recommendation entry's name when a champion pool is
  * active — mirrors the priority the server already baked into the sort
  * order, just so it's visible why one pick outranks another despite a
@@ -1626,6 +1715,7 @@ export default function Home() {
   const [counterLookupFailed, setCounterLookupFailed] = useState(false);
   const [adviceResult, setAdviceResult] = useState<AdviceResult | null>(null);
   const [compareResult, setCompareResult] = useState<CompCompareResult | null>(null);
+  const [versusResult, setVersusResult] = useState<VersusResult | null>(null);
   /** lol.ps's build(s) for this champion+position — always 0 or 1 entries,
    * since lol.ps only ever tracks a single build per champion (no ranked
    * variant list the way deeplol has). Kept as an array (not a bare
@@ -1779,6 +1869,7 @@ export default function Home() {
     setCounterLookupFailed(false);
     setAdviceResult(null);
     setCompareResult(null);
+    setVersusResult(null);
     setLastPickedChampionId(null);
     setBuildResultsLolps([]);
     setBuildResultsDeeplol([]);
@@ -1802,6 +1893,10 @@ export default function Home() {
       setActiveSlotKey(nextSlots[0].key);
     } else if (next === "itembuild") {
       // 이 탭은 챔피언 슬롯(slots/activeSlotKey)을 아예 안 씀 — 건드리지 않음.
+    } else if (next === "versus") {
+      const nextSlots = cached ?? versusSlotsFor();
+      setSlots(nextSlots);
+      setActiveSlotKey(nextSlots[0].key);
     } else {
       const nextSlots = cached ?? adviceSlotsFor();
       setSlots(nextSlots);
@@ -1960,7 +2055,11 @@ export default function Home() {
   }, [pickerOpen]);
 
   const canRun =
-    mode === "counter" || mode === "build" ? slots[0]?.championId !== null : slots.some((s) => s.championId !== null);
+    mode === "counter" || mode === "build"
+      ? slots[0]?.championId !== null
+      : mode === "versus"
+        ? slots.every((s) => s.championId !== null)
+        : slots.some((s) => s.championId !== null);
 
   async function runLookup() {
     // 챔피언을 하나씩 입력할 때마다 자동으로 재조회하다 보니(아래
@@ -2033,6 +2132,17 @@ export default function Home() {
           deeplolResult.status === "fulfilled" && deeplolResult.value.ok ? deeplolResult.value.data.builds : [],
         );
         setBuildLookupAttempted(true);
+      } else if (mode === "versus") {
+        const championA = slots.find((s) => s.key === "versusA")?.championId;
+        const championB = slots.find((s) => s.key === "versusB")?.championId;
+        if (championA == null || championB == null) return;
+        const res = await fetch(
+          `/api/versus?championA=${championA}&championB=${championB}&position=${position}`,
+        );
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error ?? "조회에 실패했습니다.");
+        if (isStale()) return;
+        setVersusResult(data);
       } else if (mode === "compcompare") {
         const allyIds = slots
           .filter((s) => s.key.startsWith("compally-"))
@@ -2107,9 +2217,13 @@ export default function Home() {
    * "조합 비교" 탭도 같은 자동조회+디바운스를 그대로 씀 — position/
    * championPool[position]/poolApplied/recommendCount는 이 탭에서 안 바뀌는
    * 값이라(그 UI 자체가 이 탭엔 없음) 그냥 두어도 불필요한 재조회를
-   * 일으키지 않는다. */
+   * 일으키지 않는다.
+   *
+   * "1대1" 탭도 같은 자동조회+디바운스를 재사용 — canRun이 이 탭에서는
+   * "두 슬롯 모두 채워짐"을 뜻하므로(위 canRun 참고), 두 챔피언을 다 고르면
+   * 버튼을 누르지 않아도 바로 조회된다. */
   useEffect(() => {
-    if ((mode !== "advice" && mode !== "compcompare") || !canRun) return;
+    if ((mode !== "advice" && mode !== "compcompare" && mode !== "versus") || !canRun) return;
     const timeout = setTimeout(() => {
       runLookup();
     }, 500);
@@ -2268,6 +2382,13 @@ export default function Home() {
         >
           아이템 빌드
         </button>
+        <button
+          type="button"
+          className={mode === "versus" ? "tab tab--active" : "tab"}
+          onClick={() => switchMode("versus")}
+        >
+          1대1
+        </button>
       </div>
 
       {mode !== "itembuild" && (
@@ -2289,6 +2410,13 @@ export default function Home() {
         <p className="empty-hint">
           위 포지션은 <strong>내가 픽할 포지션</strong>을 뜻해요 — 상대팀 5명 중 이 포지션 표본이 가장 많은
           (=내 맞 라이너일 확률이 높은) 최대 3명을 추려서, 각각에 대한 카운터 픽 추천을 아래에 보여드려요.
+        </p>
+      )}
+
+      {mode === "versus" && (
+        <p className="empty-hint">
+          두 챔피언을 각각 선택하면 위 포지션 기준 1대1 맞라인 실측 데이터(승률, 15분 라인전 지표, 파워 커브,
+          스킬, 빌드)를 양쪽 다 보여드려요.
         </p>
       )}
 
@@ -2437,7 +2565,7 @@ export default function Home() {
                   ? "빌드 조회"
                   : "지금 바로 새로고침"}
           </button>
-          {(mode === "advice" || mode === "compcompare") && (
+          {(mode === "advice" || mode === "compcompare" || mode === "versus") && (
             <p className="empty-hint">챔피언을 넣거나 뺄 때마다 자동으로 다시 조회돼요. 버튼은 기다리지 않고 바로 새로고침하고 싶을 때만 누르세요.</p>
           )}
         </section>
@@ -3114,6 +3242,34 @@ export default function Home() {
                 </div>
                 <ConceptMatchupNote matchup={compareResult.conceptMatchup} />
               </Details>
+            </>
+          )}
+        </section>
+      )}
+
+      {mode === "versus" && canRun && versusResult && (
+        <section className="results">
+          <h2>
+            {versusResult.a.name} vs {versusResult.b.name} (
+            {POSITIONS.find((p) => p.value === versusResult.position)?.label}) 1대1 비교
+          </h2>
+          <Details label="설명">
+            <p className="empty-hint">
+              두 챔피언의 승률은 각자 독립적으로 조회한 값입니다({versusResult.a.name} 기준 상대 승률,{" "}
+              {versusResult.b.name} 기준 상대 승률을 각각 따로 가져옴) — 두 수치를 더해도 정확히 100%가 아닐 수
+              있지만, 각 소스가 실제로 측정한 값을 그대로 보여드리기 위한 선택입니다. 나머지 지표(파워 커브·스킬·
+              빌드)도 각 챔피언 자신의 데이터입니다.
+            </p>
+          </Details>
+          <div className="comp-heuristic-grid">
+            <VersusSideColumn side={versusResult.a} />
+            <VersusSideColumn side={versusResult.b} />
+          </div>
+          {versusResult.versusStats && (
+            <>
+              <h3>15분 라인전 세부지표 ({versusResult.a.name} 기준 우위/열세)</h3>
+              <LaningStatsRow stats={versusResult.versusStats} />
+              <LaningTipList stats={versusResult.versusStats} abilityDetails={versusResult.b.abilityDetails} />
             </>
           )}
         </section>
