@@ -32,6 +32,7 @@ import {
 } from "@/lib/championSkills";
 import { analyzeCompConcepts, championConceptFit, lookupConceptMatchup, type CompConceptId } from "@/lib/compConcepts";
 import { sampleReliabilityTier } from "@/lib/sampleSize";
+import { PICK_REAL_WEIGHT, PICK_ENEMY_FIT_WEIGHT, PICK_ALLY_SYNERGY_WEIGHT } from "@/lib/pickWeights";
 
 // Only the top handful of each recommendation list gets a power-curve/build/
 // skill-kit lookup — the list itself can be 20-40 champions long, and
@@ -54,22 +55,20 @@ const SKILL_FIT_CANDIDATE_LIMIT = 5;
 
 const POSITION_LABEL = new Map(POSITIONS.map((p) => [p.value, p.label]));
 
-// How much the two secondary signals below are allowed to move the ranking,
-// next to real scraped lane-counter/synergy win rate. Real data stays
-// dominant (0.65) — these can only nudge order among close picks, never
-// flip a clear lane-counter/synergy edge:
-//   - PICK_ENEMY_FIT_WEIGHT: the tag/stat-based "fits the enemy comp"
+// PICK_REAL_WEIGHT/PICK_ENEMY_FIT_WEIGHT/PICK_ALLY_SYNERGY_WEIGHT: how much
+// the two secondary signals below (enemy-comp fit / ally-synergy fit) are
+// allowed to move the ranking, next to real scraped lane-counter/synergy win
+// rate — see src/lib/pickWeights.ts for the full rationale and why they live
+// there instead of here (single source of truth compcompare's
+// likelyEnemyLaners ranking also reuses, renormalized for its 2-signal
+// case — "모든 픽추천 로직을 발전시켜줘").
+//   - PICK_ENEMY_FIT_WEIGHT feeds the tag/stat-based "fits the enemy comp"
 //     heuristic (and, for the top few, actual skill kits) — see
 //     rerankPicks/refineTopWithSkillFit below and
 //     scoreEnemyCompFit/applySkillFitBonus in teamComp.ts.
-//   - PICK_ALLY_SYNERGY_WEIGHT: real scraped per-champion synergy data
+//   - PICK_ALLY_SYNERGY_WEIGHT feeds real scraped per-champion synergy data
 //     against EVERY already-picked ally (not a tag heuristic) — see
-//     computeAllySynergyScores below. Weighted higher than the tag-based
-//     enemy fit since it's actual measured win-rate data, just per-pair
-//     rather than a true 5-champion team stat.
-const PICK_REAL_WEIGHT = 0.65;
-const PICK_ENEMY_FIT_WEIGHT = 0.15;
-const PICK_ALLY_SYNERGY_WEIGHT = 0.2;
+//     computeAllySynergyScores below.
 
 // How close two candidates' REAL win rates need to be (as a 0-1 fraction —
 // 0.015 = 1.5 percentage points) before champion-pool tier is allowed to
