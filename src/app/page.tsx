@@ -929,6 +929,29 @@ function KeyTagBadges({ tags }: { tags?: KeyTags }) {
 
 const ABILITY_KEY_LABELS: Record<AbilityDetail["key"], string> = { P: "패시브", Q: "Q", W: "W", E: "E", R: "R" };
 
+/** "픽 추천에서 주요 스킬 표시를 해줘" — `isKeySkill` abilities (see
+ * AbilityDetail, championSkills.ts — at most 2 per champion) were only ever
+ * shown as a small inline tag inside the collapsed "스킬 상세" list below.
+ * This surfaces the same information as its own always-visible chip row,
+ * same "badge-row, no expand needed" placement as KeyTagBadges/
+ * ConceptFitBadges right above it — reuses that component's chip styling
+ * (same accent tint, since this is grounded in the same real per-ability
+ * data) rather than introducing new CSS. Renders nothing when abilityDetails
+ * wasn't attached (top-N limit) or no ability is flagged key. */
+function KeySkillBadges({ abilities }: { abilities?: AbilityDetail[] }) {
+  const keySkills = (abilities ?? []).filter((a) => a.isKeySkill);
+  if (keySkills.length === 0) return null;
+  return (
+    <span className="key-tag-row" title="실측 스킬 마스터리 순서(콤보를 시작하는 스킬+그 다음 스킬)와 CC/기동성/보호막/회복 텍스트로 판단한 주요 스킬입니다">
+      {keySkills.map((a) => (
+        <span key={a.key} className="key-tag-chip">
+          주요 {ABILITY_KEY_LABELS[a.key]}
+        </span>
+      ))}
+    </span>
+  );
+}
+
 /** "상세 정보 제공을 늘려줘" — Meraki에서 가져온 스킬별 쿨타임/코스트/
  * 사거리를 랭크별로 보여주는 접이식 목록. keyTags/conceptFits와 같은 top-N
  * 한정 데이터라 abilityDetails가 아예 없으면(그 후보가 top-N 밖이거나
@@ -1575,6 +1598,15 @@ export default function Home() {
   const [position, setPosition] = useState("top");
   const [slots, setSlots] = useState<Slot[]>([{ key: "target", label: "기준 챔피언", championId: null }]);
   const [activeSlotKey, setActiveSlotKey] = useState("target");
+  /** "다른 탭으로 넘어가도 선택한 챔피언이 유지되게 해줘" — `slots`만으로는
+   * 탭을 바꿀 때마다 switchMode가 새 배열로 통째로 갈아끼워서 이전 선택이
+   * 사라졌다. 탭을 나갈 때 그 탭의 slots를 여기 저장해두고, 다시 그 탭으로
+   * 돌아오면(처음 방문이 아니라면) 새로 만드는 대신 저장된 값을 그대로
+   * 복원한다. 카운터/빌드 탭은 슬롯 모양이 완전히 같아서("기준 챔피언" 1칸)
+   * 같은 캐시 키(slotCacheKey 참고)를 공유 — 한쪽에서 고른 챔피언이 다른
+   * 쪽에도 그대로 보인다. "아이템 빌드" 탭(itemSlots)은 챔피언이 아니라
+   * 아이템을 고르는 별개의 상태라 이 캐시 대상이 아니다. */
+  const [slotsByMode, setSlotsByMode] = useState<Partial<Record<string, Slot[]>>>({});
   /** Whether the champion picker is showing as a full-screen overlay — see
    * activateSlot below. Shared by all three modes (counter/build/advice) so
    * tapping any slot always opens the same full-screen picker. */
@@ -1725,7 +1757,23 @@ export default function Home() {
 
   const portraitChampion = lastPickedChampionId !== null ? (championById.get(lastPickedChampionId) ?? null) : null;
 
+  /** 카운터/빌드 탭은 슬롯 모양이 완전히 같은("기준 챔피언" 1칸) 별개
+   * 모드라 같은 캐시 키를 공유한다 — slotsByMode 참고. */
+  function slotCacheKey(m: Mode): string {
+    return m === "counter" || m === "build" ? "counterbuild" : m;
+  }
+
   function switchMode(next: Mode) {
+    // "다른 탭으로 넘어가도 선택한 챔피언이 유지되게 해줘" — 지금 탭을
+    // 떠나기 전에 그 탭의 slots를 캐시에 저장. setSlotsByMode 이후
+    // slotsByMode(state)를 바로 읽으면 이 렌더의 클로저가 들고 있는 갱신
+    // 전 값이라(리액트 state 업데이트는 비동기), 카운터/빌드처럼 캐시 키를
+    // 공유하는 두 탭 사이를 처음 오갈 때 방금 저장한 값을 못 읽는 버그가
+    // 있었다 — 로컬 변수로 "저장 반영된 캐시"를 먼저 만들어 state에도
+    // 반영하고, 복원 판단도 이 로컬 변수에서 한다.
+    const updatedCache = { ...slotsByMode, [slotCacheKey(mode)]: slots };
+    setSlotsByMode(updatedCache);
+
     setMode(next);
     setCounterResult(null);
     setCounterLookupFailed(false);
@@ -1740,18 +1788,22 @@ export default function Home() {
     setItemSlots(Array(ITEM_SLOT_COUNT).fill(null));
     setActiveItemSlotIndex(null);
     setItemPickerOpen(false);
+
+    // 이 탭에 처음 들어오는 게 아니면(캐시에 저장된 값이 있으면) 새로
+    // 만드는 대신 그 값을 그대로 복원해서 이전 선택을 유지한다.
+    const cached = updatedCache[slotCacheKey(next)];
     if (next === "counter" || next === "build") {
-      const nextSlots: Slot[] = [{ key: "target", label: "기준 챔피언", championId: null }];
+      const nextSlots: Slot[] = cached ?? [{ key: "target", label: "기준 챔피언", championId: null }];
       setSlots(nextSlots);
       setActiveSlotKey(nextSlots[0].key);
     } else if (next === "compcompare") {
-      const nextSlots = compCompareSlotsFor();
+      const nextSlots = cached ?? compCompareSlotsFor();
       setSlots(nextSlots);
       setActiveSlotKey(nextSlots[0].key);
     } else if (next === "itembuild") {
       // 이 탭은 챔피언 슬롯(slots/activeSlotKey)을 아예 안 씀 — 건드리지 않음.
     } else {
-      const nextSlots = adviceSlotsFor();
+      const nextSlots = cached ?? adviceSlotsFor();
       setSlots(nextSlots);
       setActiveSlotKey(`enemy-${position}`);
     }
@@ -2488,6 +2540,7 @@ export default function Home() {
                   <PowerCurveVsEnemyBadge fit={c.powerCurveVsMineFit} />
                   <KeyTagBadges tags={c.keyTags} />
                   <ConceptFitBadges fits={c.conceptFits} />
+                  <KeySkillBadges abilities={c.abilityDetails} />
                 </div>
                 <LaningTipList stats={c.laningStats} abilityDetails={c.abilityDetails} />
                 <PowerCurveDetails points={c.powerCurvePoints} />
@@ -2709,6 +2762,7 @@ export default function Home() {
                         />
                         <KeyTagBadges tags={c.keyTags} />
                         <ConceptFitBadges fits={c.conceptFits} />
+                        <KeySkillBadges abilities={c.abilityDetails} />
                       </div>
                       <LaningTipList stats={c.laningStats} abilityDetails={c.abilityDetails} />
                       <PowerCurveDetails points={c.powerCurvePoints} />
@@ -2768,6 +2822,7 @@ export default function Home() {
                       />
                       <KeyTagBadges tags={c.keyTags} />
                       <ConceptFitBadges fits={c.conceptFits} />
+                      <KeySkillBadges abilities={c.abilityDetails} />
                     </div>
                     <AbilityDetailList abilities={c.abilityDetails} />
                   </li>
@@ -2810,6 +2865,7 @@ export default function Home() {
                         />
                         <KeyTagBadges tags={c.keyTags} />
                         <ConceptFitBadges fits={c.conceptFits} />
+                        <KeySkillBadges abilities={c.abilityDetails} />
                       </div>
                       <PowerCurveDetails points={c.powerCurvePoints} />
                       <AbilityDetailList abilities={c.abilityDetails} />
@@ -2963,24 +3019,24 @@ export default function Home() {
           </p>
 
           {compareResult.likelyEnemyLaners.length > 0 && (
-            // "조합비교 탭에서 픽 추천을 숨길 수 있게 해줘" — 이 블록(최대
-            // 3명 각각의 카운터 픽 목록)이 파워 커브/조합 분석보다 먼저,
-            // 화면 공간을 가장 많이 차지해서 다른 탭의 세부정보/소스별
-            // 상세와 같은 <Details> 접이식으로 감쌌다. 기본은 닫힘(이
-            // 앱의 모든 <Details>와 동일한 규칙) — 필요할 때만 펼쳐서
-            // 보고, 안 볼 때는 "픽 추천 보기" 한 줄로 접어둘 수 있다.
-            <Details label="픽 추천">
+            <>
+              <h3>픽 추천</h3>
               <p className="empty-hint">
                 상대팀 5명 중 <strong>{POSITIONS.find((p) => p.value === position)?.label}</strong> 표본이 많은
                 순으로 최대 3명을 추렸습니다 — lol.ps의 라인 점유율 필드는 신뢰할 수 없다고 이미 확인돼서(항상
                 0을 반환), 대신 실제 카운터 조회 표본 게임 수를 근거로 씁니다.
               </p>
+              {/* "조합비교 탭에서 예상 맞라이너의 픽 추천을 따로따로 접었다
+                  펼 수 있게 해줘" — 이전엔 <Details label="픽 추천">
+                  하나가 최대 3명 전체를 한 번에 묶어서 접고 폈는데, 이제
+                  라이너 한 명당 하나씩 독립된 <Details>로 감싸서 원하는
+                  라이너만 펼쳐볼 수 있다. 표본 게임 수는 접힌 상태에서도
+                  바로 보이도록 라벨 문구 안에 그대로 남겨뒀다. */}
               {compareResult.likelyEnemyLaners.map((laner) => (
-                <div key={laner.champion.id}>
-                  <h3>
-                    {laner.champion.name} 상대 라인전 유리한 픽{" "}
-                    <span className="empty-hint">(표본 {laner.totalGames.toLocaleString()}게임)</span>
-                  </h3>
+                <Details
+                  key={laner.champion.id}
+                  label={`${laner.champion.name} 상대 라인전 유리한 픽 (표본 ${laner.totalGames.toLocaleString()}게임)`}
+                >
                   <ol className="recommend-list">
                     {laner.counterPicks.map((c) => (
                       <li key={c.championId} className="recommend-row recommend-row--stacked">
@@ -2996,7 +3052,10 @@ export default function Home() {
                           <CompFitBadge compFit={c.compFit} />
                           <KeyTagBadges tags={c.keyTags} />
                           <ConceptFitBadges fits={c.conceptFits} />
+                          <KeySkillBadges abilities={c.abilityDetails} />
                         </div>
+                        {/* "조합 비교 탭에서도 주요스킬 표시를 해줘" */}
+                        <AbilityDetailList abilities={c.abilityDetails} />
                         <Details label="소스별 상세">
                           <SourceBreakdown sources={c.bySource} />
                         </Details>
@@ -3006,9 +3065,9 @@ export default function Home() {
                       <p className="empty-hint">카운터 데이터를 찾지 못했습니다.</p>
                     )}
                   </ol>
-                </div>
+                </Details>
               ))}
-            </Details>
+            </>
           )}
 
           <h3>파워 커브 (초반/중반/후반)</h3>

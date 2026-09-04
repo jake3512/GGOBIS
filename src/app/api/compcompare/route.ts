@@ -20,8 +20,8 @@ import {
   type CompConceptAnalysis,
   type ConceptMatchup,
 } from "@/lib/compConcepts";
-import { getChampionAbilitiesWithCache, type ChampionAbilities } from "@/lib/championSkills";
-import { getPowerCurve } from "@/lib/sources/lolps";
+import { getChampionAbilitiesWithCache, toAbilityDetails, type ChampionAbilities, type AbilityDetail } from "@/lib/championSkills";
+import { getChampionBuild, getPowerCurve } from "@/lib/sources/lolps";
 import { PICK_REAL_WEIGHT, PICK_ENEMY_FIT_WEIGHT } from "@/lib/pickWeights";
 import { sampleReliabilityTier } from "@/lib/sampleSize";
 
@@ -191,6 +191,12 @@ interface LaneCandidateEntry {
   games: number;
   bySource: SourceValueOut[];
   compFit: number;
+  /** "조합 비교 탭에서도 주요스킬 표시를 해줘" — same per-ability
+   * cooldown/cost/range + isKeySkill data every other candidate list in
+   * this app already carries (see AbilityDetail, championSkills.ts). Only
+   * on the top LANE_CANDIDATE_KEY_SKILL_LIMIT candidates per laner — see
+   * attachAbilityDetailsToCandidates. */
+  abilityDetails?: AbilityDetail[];
 }
 
 interface LikelyEnemyLaner {
@@ -214,6 +220,47 @@ const CANDIDATE_WEIGHT_TOTAL = PICK_REAL_WEIGHT + PICK_ENEMY_FIT_WEIGHT;
 const CANDIDATE_REAL_WEIGHT = PICK_REAL_WEIGHT / CANDIDATE_WEIGHT_TOTAL;
 const CANDIDATE_ENEMY_FIT_WEIGHT = PICK_ENEMY_FIT_WEIGHT / CANDIDATE_WEIGHT_TOTAL;
 
+// Same reasoning/value as pickadvice's SKILL_FIT_CANDIDATE_LIMIT — only the
+// best few candidates get a per-champion Meraki+lol.ps detail fetch. Kept
+// smaller here (3, not 5) since this runs per-laner and up to
+// LIKELY_LANER_COUNT laners can each have their own candidate list —
+// LIKELY_LANER_COUNT × this limit is the real fetch ceiling for this tab.
+const LANE_CANDIDATE_KEY_SKILL_LIMIT = 3;
+
+/** Best-effort attaches "주요 스킬" ability detail to the top N candidates
+ * of ONE laner's already-sorted counterPicks list — same
+ * getChampionAbilitiesWithCache + getChampionBuild(for skillMaxOrder) pair
+ * counters/route.ts's attachKeyTagsAndConceptFits already uses, just
+ * without the keyTags/conceptFits half (not asked for here — "주요스킬
+ * 표시를 해줘" only). `allowMismatch: true` on the build fetch since only
+ * skillMaxOrder is read, not the full build. */
+async function attachAbilityDetailsToCandidates(
+  candidates: LaneCandidateEntry[],
+  champById: Map<number, DDragonChampion>,
+  position: Position,
+  version: string | undefined,
+): Promise<void> {
+  const top = candidates.slice(0, LANE_CANDIDATE_KEY_SKILL_LIMIT);
+  if (top.length === 0) return;
+  const [abilityResults, buildResults] = await Promise.all([
+    Promise.allSettled(
+      top.map((c) => {
+        const champ = champById.get(c.championId);
+        if (!champ) return Promise.reject(new Error("unknown champion"));
+        return getChampionAbilitiesWithCache(champ.slug, version);
+      }),
+    ),
+    Promise.allSettled(top.map((c) => getChampionBuild(c.championId, position, { allowMismatch: true }))),
+  ]);
+  top.forEach((entry, i) => {
+    const r = abilityResults[i];
+    if (r.status !== "fulfilled") return;
+    const buildResult = buildResults[i];
+    const skillMaxOrder = buildResult.status === "fulfilled" ? buildResult.value.skillMaxOrder : undefined;
+    entry.abilityDetails = toAbilityDetails(r.value, skillMaxOrder);
+  });
+}
+
 /** 상대 로스터(최대 5명) 중 `position` 기준 표본이 가장 많은 상위
  * LIKELY_LANER_COUNT명을 추려서, 각각에 대해 실제 카운터 데이터(픽 추천의
  * counterPicks와 동일한 원본 데이터/원리)를 조회해 픽 추천 형식으로
@@ -226,6 +273,7 @@ async function computeLikelyEnemyLaners(
   position: Position,
   champions: DDragonChampion[],
   champById: Map<number, DDragonChampion>,
+  version: string | undefined,
 ): Promise<LikelyEnemyLaner[]> {
   if (enemyChamps.length === 0) return [];
 
@@ -245,52 +293,56 @@ async function computeLikelyEnemyLaners(
     .sort((a, b) => b.totalGames - a.totalGames)
     .slice(0, LIKELY_LANER_COUNT);
 
-  return withGames.map(({ champ, totalGames, result }) => {
-    const candidates: LaneCandidateEntry[] = result.entries
-      .map((entry) => {
-        const candidate = champById.get(entry.championId);
-        if (!candidate) return null;
-        const compFit = scoreEnemyCompFit(candidate, enemyChamps);
-        return {
-          championId: entry.championId,
-          name: candidate.name,
-          iconUrl: candidate.iconUrl,
-          winRate: entry.primary.winRate,
-          games: entry.primary.games,
-          bySource: entry.bySource.map((s) => ({
-            sourceId: s.sourceId,
-            sourceLabel: s.sourceLabel,
-            winRate: s.winRate,
-            games: s.games,
-          })),
-          compFit,
-        };
-      })
-      .filter((c): c is LaneCandidateEntry => c !== null)
-      // 표본(게임 수) 신뢰도 구간을 최우선으로 — 픽 추천 counterPicks의
-      // pickRankScore/라인 카운터 탭과 같은 원칙(sampleReliabilityTier)을
-      // 이 탭에도 적용했다. "모든 픽추천 로직을 발전시켜줘": 이전엔 이
-      // 탭만 유일하게 표본 크기를 전혀 안 봐서, 3게임 100% 승률 후보가
-      // 500게임 55% 승률 후보보다 위로 올 수 있는 구멍이 있었다. 구간이
-      // 같을 때만 아래 블렌디드 점수(상대 champ의 winRate가 낮을수록=이
-      // 후보가 champ을 상대로 잘 이긴다는 뜻 → 좋은 카운터, 픽 추천
-      // counterPicks의 "asc" 정렬과 같은 방향)로 정렬한다. 실제
-      // 승률(≈81%)이 여전히 압도적이고, 상대팀 조합 적합도(≈19%)는 근소한
-      // 차이일 때만 순서를 조금 흔든다.
-      .sort((a, b) => {
-        const tierDiff = sampleReliabilityTier(a.games) - sampleReliabilityTier(b.games);
-        if (tierDiff !== 0) return tierDiff;
-        const scoreOf = (e: LaneCandidateEntry) =>
-          CANDIDATE_REAL_WEIGHT * (1 - e.winRate) + CANDIDATE_ENEMY_FIT_WEIGHT * e.compFit;
-        return scoreOf(b) - scoreOf(a);
-      });
+  return Promise.all(
+    withGames.map(async ({ champ, totalGames, result }) => {
+      const candidates: LaneCandidateEntry[] = result.entries
+        .map((entry) => {
+          const candidate = champById.get(entry.championId);
+          if (!candidate) return null;
+          const compFit = scoreEnemyCompFit(candidate, enemyChamps);
+          return {
+            championId: entry.championId,
+            name: candidate.name,
+            iconUrl: candidate.iconUrl,
+            winRate: entry.primary.winRate,
+            games: entry.primary.games,
+            bySource: entry.bySource.map((s) => ({
+              sourceId: s.sourceId,
+              sourceLabel: s.sourceLabel,
+              winRate: s.winRate,
+              games: s.games,
+            })),
+            compFit,
+          };
+        })
+        .filter((c): c is LaneCandidateEntry => c !== null)
+        // 표본(게임 수) 신뢰도 구간을 최우선으로 — 픽 추천 counterPicks의
+        // pickRankScore/라인 카운터 탭과 같은 원칙(sampleReliabilityTier)을
+        // 이 탭에도 적용했다. "모든 픽추천 로직을 발전시켜줘": 이전엔 이
+        // 탭만 유일하게 표본 크기를 전혀 안 봐서, 3게임 100% 승률 후보가
+        // 500게임 55% 승률 후보보다 위로 올 수 있는 구멍이 있었다. 구간이
+        // 같을 때만 아래 블렌디드 점수(상대 champ의 winRate가 낮을수록=이
+        // 후보가 champ을 상대로 잘 이긴다는 뜻 → 좋은 카운터, 픽 추천
+        // counterPicks의 "asc" 정렬과 같은 방향)로 정렬한다. 실제
+        // 승률(≈81%)이 여전히 압도적이고, 상대팀 조합 적합도(≈19%)는 근소한
+        // 차이일 때만 순서를 조금 흔든다.
+        .sort((a, b) => {
+          const tierDiff = sampleReliabilityTier(a.games) - sampleReliabilityTier(b.games);
+          if (tierDiff !== 0) return tierDiff;
+          const scoreOf = (e: LaneCandidateEntry) =>
+            CANDIDATE_REAL_WEIGHT * (1 - e.winRate) + CANDIDATE_ENEMY_FIT_WEIGHT * e.compFit;
+          return scoreOf(b) - scoreOf(a);
+        });
 
-    return {
-      champion: { id: champ.id, name: champ.name, iconUrl: champ.iconUrl },
-      totalGames,
-      counterPicks: candidates,
-    };
-  });
+      await attachAbilityDetailsToCandidates(candidates, champById, position, version);
+
+      return {
+        champion: { id: champ.id, name: champ.name, iconUrl: champ.iconUrl },
+        totalGames,
+        counterPicks: candidates,
+      };
+    }),
+  );
 }
 
 export async function GET(req: Request) {
@@ -326,7 +378,9 @@ export async function GET(req: Request) {
   const [ally, enemy, likelyEnemyLaners] = await Promise.all([
     analyzeRoster(allyChamps, version),
     analyzeRoster(enemyChamps, version),
-    position ? computeLikelyEnemyLaners(enemyChamps, position, champions, champById) : Promise.resolve([]),
+    position
+      ? computeLikelyEnemyLaners(enemyChamps, position, champions, champById, version ?? undefined)
+      : Promise.resolve([]),
   ]);
 
   const conceptMatchup: ConceptMatchup | null =
