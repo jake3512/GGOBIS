@@ -947,6 +947,19 @@ textarea {
   font-size: 0.95rem;
 }
 
+/* "1대1" 탭의 챔피언 A/B 카드 — .comp-card와 같은 배경/테두리로 나란히
+   둘 때(comp-heuristic-grid) 톤이 맞도록 두되, 내부는 세로로 쌓는 배지/
+   상세 컴포넌트가 많아 gap을 둔 flex column으로 구성한다. */
+.versus-side {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 0.7rem 0.85rem;
+}
+
 .adc-flex-badge {
   display: inline-block;
   margin-left: 0.4rem;

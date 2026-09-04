@@ -12,7 +12,7 @@ import { itemSetDiffCount } from "@/lib/buildDiff";
 import { ItemPicker, type ItemSummary } from "@/components/ItemPicker";
 import { statLabel, formatStatValue } from "@/lib/itemStats";
 
-type Mode = "counter" | "advice" | "build" | "compcompare" | "itembuild";
+type Mode = "counter" | "advice" | "build" | "compcompare" | "itembuild" | "versus";
 
 interface ChampionBrief {
   id: number;
@@ -408,6 +408,40 @@ interface CompCompareResult {
   likelyEnemyLaners: LikelyEnemyLaner[];
 }
 
+/** "1대1" 탭 — 두 챔피언 각각의 실측 데이터를 나란히 담는다
+ * (src/app/api/versus/route.ts와 필드 1:1 대응). PickEntry/CounterEntry와
+ * 겹치는 필드가 많지만, 이쪽은 "후보 목록의 한 항목"이 아니라 "정확히 이
+ * 상대방 한 명과 비교했을 때"의 값이라는 의미가 달라 별도 타입으로 둔다. */
+interface VersusSide {
+  championId: number;
+  name: string;
+  iconUrl: string;
+  winRate: number | null;
+  games: number | null;
+  bySource: SourceValue[];
+  sourcesSucceeded: number;
+  sourcesAttempted: number;
+  sourceErrors: SourceErrorInfo[];
+  earlyWinRate?: number | null;
+  lateWinRate?: number | null;
+  powerCurveLaneNote?: string | null;
+  powerCurvePoints?: PowerCurvePoint[] | null;
+  powerCurveVsOpponentFit?: number;
+  keyTags?: KeyTags;
+  abilityDetails?: AbilityDetail[];
+  conceptFits?: CompConceptId[];
+  build?: BuildResult | null;
+  buildDeeplol?: BuildResult | null;
+  compFitVsOpponent?: number;
+}
+
+interface VersusResult {
+  position: string;
+  a: VersusSide;
+  b: VersusSide;
+  versusStats: VersusStats | null;
+}
+
 const COMP_CONCEPT_LABELS: Record<CompConceptId, string> = {
   engage: "돌진/이니시",
   poke: "포킹",
@@ -579,6 +613,17 @@ function compCompareSlotsFor(): Slot[] {
       label: `상대팀 챔피언 ${i + 1}`,
       championId: null,
     })),
+  ];
+}
+
+/** "1대1 통계를 만들어줘" — 새 독립 탭("1대1")의 2슬롯. 팀/포지션 배정 없이
+ * 그냥 두 챔피언을 나란히 비교하는 화면이라 카운터/빌드 탭과 같은 단순
+ * slot-row 렌더링(renderSlot)을 그대로 재사용할 수 있게 일반 Slot 배열
+ * 형태로 만든다. */
+function versusSlotsFor(): Slot[] {
+  return [
+    { key: "versusA", label: "챔피언 A", championId: null },
+    { key: "versusB", label: "챔피언 B", championId: null },
   ];
 }
 
@@ -929,6 +974,29 @@ function KeyTagBadges({ tags }: { tags?: KeyTags }) {
 
 const ABILITY_KEY_LABELS: Record<AbilityDetail["key"], string> = { P: "패시브", Q: "Q", W: "W", E: "E", R: "R" };
 
+/** "픽 추천에서 주요 스킬 표시를 해줘" — `isKeySkill` abilities (see
+ * AbilityDetail, championSkills.ts — at most 2 per champion) were only ever
+ * shown as a small inline tag inside the collapsed "스킬 상세" list below.
+ * This surfaces the same information as its own always-visible chip row,
+ * same "badge-row, no expand needed" placement as KeyTagBadges/
+ * ConceptFitBadges right above it — reuses that component's chip styling
+ * (same accent tint, since this is grounded in the same real per-ability
+ * data) rather than introducing new CSS. Renders nothing when abilityDetails
+ * wasn't attached (top-N limit) or no ability is flagged key. */
+function KeySkillBadges({ abilities }: { abilities?: AbilityDetail[] }) {
+  const keySkills = (abilities ?? []).filter((a) => a.isKeySkill);
+  if (keySkills.length === 0) return null;
+  return (
+    <span className="key-tag-row" title="실측 스킬 마스터리 순서(콤보를 시작하는 스킬+그 다음 스킬)와 CC/기동성/보호막/회복 텍스트로 판단한 주요 스킬입니다">
+      {keySkills.map((a) => (
+        <span key={a.key} className="key-tag-chip">
+          주요 {ABILITY_KEY_LABELS[a.key]}
+        </span>
+      ))}
+    </span>
+  );
+}
+
 /** "상세 정보 제공을 늘려줘" — Meraki에서 가져온 스킬별 쿨타임/코스트/
  * 사거리를 랭크별로 보여주는 접이식 목록. keyTags/conceptFits와 같은 top-N
  * 한정 데이터라 abilityDetails가 아예 없으면(그 후보가 top-N 밖이거나
@@ -1189,6 +1257,50 @@ function LaningTipList({
         </li>
       ))}
     </ul>
+  );
+}
+
+/** "1대1" 탭의 한쪽 챔피언 카드 — 라인 카운터 탭의 candidate 행(counterResult.counters
+ * 항목)과 거의 같은 배지/상세 구성을 재사용하되, 후보 목록의 한 줄이 아니라
+ * "이 한 명"에 집중된 카드 레이아웃(recommend-row-main 대신 그대로 두고
+ * 세로로 쌓음)이라 별도 컴포넌트로 둔다. 승률이 없을 때(모든 소스 실패)는
+ * WinRateBar 대신 빈 안내문을 보여준다 — CounterEntry와 달리 VersusSide는
+ * winRate가 아예 null일 수 있어서(그 방향의 집계만 전부 실패해도 다른 쪽
+ * 방향은 살아있을 수 있음, 파일 상단 doc comment 참고). */
+function VersusSideColumn({ side }: { side: VersusSide }) {
+  return (
+    <div className="versus-side">
+      <div className="recommend-row-main">
+        <ChampionIcon src={side.iconUrl} name={side.name} />
+        <span className="recommend-name">{side.name}</span>
+      </div>
+      {side.winRate !== null ? (
+        <WinRateBar rate={side.winRate} games={side.games ?? undefined} />
+      ) : (
+        <p className="empty-hint">이 매치업의 실측 승률 데이터를 찾지 못했습니다.</p>
+      )}
+      <div className="badge-row">
+        <PowerCurveBadge earlyWinRate={side.earlyWinRate} lateWinRate={side.lateWinRate} />
+        <PowerCurveVsEnemyBadge fit={side.powerCurveVsOpponentFit} />
+        <CompFitBadge compFit={side.compFitVsOpponent} />
+        <KeyTagBadges tags={side.keyTags} />
+        <ConceptFitBadges fits={side.conceptFits} />
+        <KeySkillBadges abilities={side.abilityDetails} />
+      </div>
+      <AbilityDetailList abilities={side.abilityDetails} />
+      <PowerCurveDetails points={side.powerCurvePoints} />
+      <Details label="소스별 상세">
+        <SourceBreakdown sources={side.bySource} />
+        {side.powerCurveLaneNote && <p className="build-lane-note">⚠ {side.powerCurveLaneNote}</p>}
+        {side.build && <BuildCardCompact build={side.build} sourceLabel="lol.ps" />}
+        {side.buildDeeplol && <BuildCardCompact build={side.buildDeeplol} sourceLabel="DeepLoL" />}
+      </Details>
+      <SourceStatusNote
+        succeeded={side.sourcesSucceeded}
+        attempted={side.sourcesAttempted}
+        errors={side.sourceErrors}
+      />
+    </div>
   );
 }
 
@@ -1575,6 +1687,15 @@ export default function Home() {
   const [position, setPosition] = useState("top");
   const [slots, setSlots] = useState<Slot[]>([{ key: "target", label: "기준 챔피언", championId: null }]);
   const [activeSlotKey, setActiveSlotKey] = useState("target");
+  /** "다른 탭으로 넘어가도 선택한 챔피언이 유지되게 해줘" — `slots`만으로는
+   * 탭을 바꿀 때마다 switchMode가 새 배열로 통째로 갈아끼워서 이전 선택이
+   * 사라졌다. 탭을 나갈 때 그 탭의 slots를 여기 저장해두고, 다시 그 탭으로
+   * 돌아오면(처음 방문이 아니라면) 새로 만드는 대신 저장된 값을 그대로
+   * 복원한다. 카운터/빌드 탭은 슬롯 모양이 완전히 같아서("기준 챔피언" 1칸)
+   * 같은 캐시 키(slotCacheKey 참고)를 공유 — 한쪽에서 고른 챔피언이 다른
+   * 쪽에도 그대로 보인다. "아이템 빌드" 탭(itemSlots)은 챔피언이 아니라
+   * 아이템을 고르는 별개의 상태라 이 캐시 대상이 아니다. */
+  const [slotsByMode, setSlotsByMode] = useState<Partial<Record<string, Slot[]>>>({});
   /** Whether the champion picker is showing as a full-screen overlay — see
    * activateSlot below. Shared by all three modes (counter/build/advice) so
    * tapping any slot always opens the same full-screen picker. */
@@ -1594,6 +1715,7 @@ export default function Home() {
   const [counterLookupFailed, setCounterLookupFailed] = useState(false);
   const [adviceResult, setAdviceResult] = useState<AdviceResult | null>(null);
   const [compareResult, setCompareResult] = useState<CompCompareResult | null>(null);
+  const [versusResult, setVersusResult] = useState<VersusResult | null>(null);
   /** lol.ps's build(s) for this champion+position — always 0 or 1 entries,
    * since lol.ps only ever tracks a single build per champion (no ranked
    * variant list the way deeplol has). Kept as an array (not a bare
@@ -1725,12 +1847,29 @@ export default function Home() {
 
   const portraitChampion = lastPickedChampionId !== null ? (championById.get(lastPickedChampionId) ?? null) : null;
 
+  /** 카운터/빌드 탭은 슬롯 모양이 완전히 같은("기준 챔피언" 1칸) 별개
+   * 모드라 같은 캐시 키를 공유한다 — slotsByMode 참고. */
+  function slotCacheKey(m: Mode): string {
+    return m === "counter" || m === "build" ? "counterbuild" : m;
+  }
+
   function switchMode(next: Mode) {
+    // "다른 탭으로 넘어가도 선택한 챔피언이 유지되게 해줘" — 지금 탭을
+    // 떠나기 전에 그 탭의 slots를 캐시에 저장. setSlotsByMode 이후
+    // slotsByMode(state)를 바로 읽으면 이 렌더의 클로저가 들고 있는 갱신
+    // 전 값이라(리액트 state 업데이트는 비동기), 카운터/빌드처럼 캐시 키를
+    // 공유하는 두 탭 사이를 처음 오갈 때 방금 저장한 값을 못 읽는 버그가
+    // 있었다 — 로컬 변수로 "저장 반영된 캐시"를 먼저 만들어 state에도
+    // 반영하고, 복원 판단도 이 로컬 변수에서 한다.
+    const updatedCache = { ...slotsByMode, [slotCacheKey(mode)]: slots };
+    setSlotsByMode(updatedCache);
+
     setMode(next);
     setCounterResult(null);
     setCounterLookupFailed(false);
     setAdviceResult(null);
     setCompareResult(null);
+    setVersusResult(null);
     setLastPickedChampionId(null);
     setBuildResultsLolps([]);
     setBuildResultsDeeplol([]);
@@ -1740,18 +1879,26 @@ export default function Home() {
     setItemSlots(Array(ITEM_SLOT_COUNT).fill(null));
     setActiveItemSlotIndex(null);
     setItemPickerOpen(false);
+
+    // 이 탭에 처음 들어오는 게 아니면(캐시에 저장된 값이 있으면) 새로
+    // 만드는 대신 그 값을 그대로 복원해서 이전 선택을 유지한다.
+    const cached = updatedCache[slotCacheKey(next)];
     if (next === "counter" || next === "build") {
-      const nextSlots: Slot[] = [{ key: "target", label: "기준 챔피언", championId: null }];
+      const nextSlots: Slot[] = cached ?? [{ key: "target", label: "기준 챔피언", championId: null }];
       setSlots(nextSlots);
       setActiveSlotKey(nextSlots[0].key);
     } else if (next === "compcompare") {
-      const nextSlots = compCompareSlotsFor();
+      const nextSlots = cached ?? compCompareSlotsFor();
       setSlots(nextSlots);
       setActiveSlotKey(nextSlots[0].key);
     } else if (next === "itembuild") {
       // 이 탭은 챔피언 슬롯(slots/activeSlotKey)을 아예 안 씀 — 건드리지 않음.
+    } else if (next === "versus") {
+      const nextSlots = cached ?? versusSlotsFor();
+      setSlots(nextSlots);
+      setActiveSlotKey(nextSlots[0].key);
     } else {
-      const nextSlots = adviceSlotsFor();
+      const nextSlots = cached ?? adviceSlotsFor();
       setSlots(nextSlots);
       setActiveSlotKey(`enemy-${position}`);
     }
@@ -1908,7 +2055,11 @@ export default function Home() {
   }, [pickerOpen]);
 
   const canRun =
-    mode === "counter" || mode === "build" ? slots[0]?.championId !== null : slots.some((s) => s.championId !== null);
+    mode === "counter" || mode === "build"
+      ? slots[0]?.championId !== null
+      : mode === "versus"
+        ? slots.every((s) => s.championId !== null)
+        : slots.some((s) => s.championId !== null);
 
   async function runLookup() {
     // 챔피언을 하나씩 입력할 때마다 자동으로 재조회하다 보니(아래
@@ -1981,6 +2132,17 @@ export default function Home() {
           deeplolResult.status === "fulfilled" && deeplolResult.value.ok ? deeplolResult.value.data.builds : [],
         );
         setBuildLookupAttempted(true);
+      } else if (mode === "versus") {
+        const championA = slots.find((s) => s.key === "versusA")?.championId;
+        const championB = slots.find((s) => s.key === "versusB")?.championId;
+        if (championA == null || championB == null) return;
+        const res = await fetch(
+          `/api/versus?championA=${championA}&championB=${championB}&position=${position}`,
+        );
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error ?? "조회에 실패했습니다.");
+        if (isStale()) return;
+        setVersusResult(data);
       } else if (mode === "compcompare") {
         const allyIds = slots
           .filter((s) => s.key.startsWith("compally-"))
@@ -2055,9 +2217,13 @@ export default function Home() {
    * "조합 비교" 탭도 같은 자동조회+디바운스를 그대로 씀 — position/
    * championPool[position]/poolApplied/recommendCount는 이 탭에서 안 바뀌는
    * 값이라(그 UI 자체가 이 탭엔 없음) 그냥 두어도 불필요한 재조회를
-   * 일으키지 않는다. */
+   * 일으키지 않는다.
+   *
+   * "1대1" 탭도 같은 자동조회+디바운스를 재사용 — canRun이 이 탭에서는
+   * "두 슬롯 모두 채워짐"을 뜻하므로(위 canRun 참고), 두 챔피언을 다 고르면
+   * 버튼을 누르지 않아도 바로 조회된다. */
   useEffect(() => {
-    if ((mode !== "advice" && mode !== "compcompare") || !canRun) return;
+    if ((mode !== "advice" && mode !== "compcompare" && mode !== "versus") || !canRun) return;
     const timeout = setTimeout(() => {
       runLookup();
     }, 500);
@@ -2216,6 +2382,13 @@ export default function Home() {
         >
           아이템 빌드
         </button>
+        <button
+          type="button"
+          className={mode === "versus" ? "tab tab--active" : "tab"}
+          onClick={() => switchMode("versus")}
+        >
+          1대1
+        </button>
       </div>
 
       {mode !== "itembuild" && (
@@ -2237,6 +2410,13 @@ export default function Home() {
         <p className="empty-hint">
           위 포지션은 <strong>내가 픽할 포지션</strong>을 뜻해요 — 상대팀 5명 중 이 포지션 표본이 가장 많은
           (=내 맞 라이너일 확률이 높은) 최대 3명을 추려서, 각각에 대한 카운터 픽 추천을 아래에 보여드려요.
+        </p>
+      )}
+
+      {mode === "versus" && (
+        <p className="empty-hint">
+          두 챔피언을 각각 선택하면 위 포지션 기준 1대1 맞라인 실측 데이터(승률, 15분 라인전 지표, 파워 커브,
+          스킬, 빌드)를 양쪽 다 보여드려요.
         </p>
       )}
 
@@ -2385,7 +2565,7 @@ export default function Home() {
                   ? "빌드 조회"
                   : "지금 바로 새로고침"}
           </button>
-          {(mode === "advice" || mode === "compcompare") && (
+          {(mode === "advice" || mode === "compcompare" || mode === "versus") && (
             <p className="empty-hint">챔피언을 넣거나 뺄 때마다 자동으로 다시 조회돼요. 버튼은 기다리지 않고 바로 새로고침하고 싶을 때만 누르세요.</p>
           )}
         </section>
@@ -2488,6 +2668,7 @@ export default function Home() {
                   <PowerCurveVsEnemyBadge fit={c.powerCurveVsMineFit} />
                   <KeyTagBadges tags={c.keyTags} />
                   <ConceptFitBadges fits={c.conceptFits} />
+                  <KeySkillBadges abilities={c.abilityDetails} />
                 </div>
                 <LaningTipList stats={c.laningStats} abilityDetails={c.abilityDetails} />
                 <PowerCurveDetails points={c.powerCurvePoints} />
@@ -2709,6 +2890,7 @@ export default function Home() {
                         />
                         <KeyTagBadges tags={c.keyTags} />
                         <ConceptFitBadges fits={c.conceptFits} />
+                        <KeySkillBadges abilities={c.abilityDetails} />
                       </div>
                       <LaningTipList stats={c.laningStats} abilityDetails={c.abilityDetails} />
                       <PowerCurveDetails points={c.powerCurvePoints} />
@@ -2768,6 +2950,7 @@ export default function Home() {
                       />
                       <KeyTagBadges tags={c.keyTags} />
                       <ConceptFitBadges fits={c.conceptFits} />
+                      <KeySkillBadges abilities={c.abilityDetails} />
                     </div>
                     <AbilityDetailList abilities={c.abilityDetails} />
                   </li>
@@ -2810,6 +2993,7 @@ export default function Home() {
                         />
                         <KeyTagBadges tags={c.keyTags} />
                         <ConceptFitBadges fits={c.conceptFits} />
+                        <KeySkillBadges abilities={c.abilityDetails} />
                       </div>
                       <PowerCurveDetails points={c.powerCurvePoints} />
                       <AbilityDetailList abilities={c.abilityDetails} />
@@ -2963,24 +3147,24 @@ export default function Home() {
           </p>
 
           {compareResult.likelyEnemyLaners.length > 0 && (
-            // "조합비교 탭에서 픽 추천을 숨길 수 있게 해줘" — 이 블록(최대
-            // 3명 각각의 카운터 픽 목록)이 파워 커브/조합 분석보다 먼저,
-            // 화면 공간을 가장 많이 차지해서 다른 탭의 세부정보/소스별
-            // 상세와 같은 <Details> 접이식으로 감쌌다. 기본은 닫힘(이
-            // 앱의 모든 <Details>와 동일한 규칙) — 필요할 때만 펼쳐서
-            // 보고, 안 볼 때는 "픽 추천 보기" 한 줄로 접어둘 수 있다.
-            <Details label="픽 추천">
+            <>
+              <h3>픽 추천</h3>
               <p className="empty-hint">
                 상대팀 5명 중 <strong>{POSITIONS.find((p) => p.value === position)?.label}</strong> 표본이 많은
                 순으로 최대 3명을 추렸습니다 — lol.ps의 라인 점유율 필드는 신뢰할 수 없다고 이미 확인돼서(항상
                 0을 반환), 대신 실제 카운터 조회 표본 게임 수를 근거로 씁니다.
               </p>
+              {/* "조합비교 탭에서 예상 맞라이너의 픽 추천을 따로따로 접었다
+                  펼 수 있게 해줘" — 이전엔 <Details label="픽 추천">
+                  하나가 최대 3명 전체를 한 번에 묶어서 접고 폈는데, 이제
+                  라이너 한 명당 하나씩 독립된 <Details>로 감싸서 원하는
+                  라이너만 펼쳐볼 수 있다. 표본 게임 수는 접힌 상태에서도
+                  바로 보이도록 라벨 문구 안에 그대로 남겨뒀다. */}
               {compareResult.likelyEnemyLaners.map((laner) => (
-                <div key={laner.champion.id}>
-                  <h3>
-                    {laner.champion.name} 상대 라인전 유리한 픽{" "}
-                    <span className="empty-hint">(표본 {laner.totalGames.toLocaleString()}게임)</span>
-                  </h3>
+                <Details
+                  key={laner.champion.id}
+                  label={`${laner.champion.name} 상대 라인전 유리한 픽 (표본 ${laner.totalGames.toLocaleString()}게임)`}
+                >
                   <ol className="recommend-list">
                     {laner.counterPicks.map((c) => (
                       <li key={c.championId} className="recommend-row recommend-row--stacked">
@@ -2996,7 +3180,10 @@ export default function Home() {
                           <CompFitBadge compFit={c.compFit} />
                           <KeyTagBadges tags={c.keyTags} />
                           <ConceptFitBadges fits={c.conceptFits} />
+                          <KeySkillBadges abilities={c.abilityDetails} />
                         </div>
+                        {/* "조합 비교 탭에서도 주요스킬 표시를 해줘" */}
+                        <AbilityDetailList abilities={c.abilityDetails} />
                         <Details label="소스별 상세">
                           <SourceBreakdown sources={c.bySource} />
                         </Details>
@@ -3006,9 +3193,9 @@ export default function Home() {
                       <p className="empty-hint">카운터 데이터를 찾지 못했습니다.</p>
                     )}
                   </ol>
-                </div>
+                </Details>
               ))}
-            </Details>
+            </>
           )}
 
           <h3>파워 커브 (초반/중반/후반)</h3>
@@ -3055,6 +3242,34 @@ export default function Home() {
                 </div>
                 <ConceptMatchupNote matchup={compareResult.conceptMatchup} />
               </Details>
+            </>
+          )}
+        </section>
+      )}
+
+      {mode === "versus" && canRun && versusResult && (
+        <section className="results">
+          <h2>
+            {versusResult.a.name} vs {versusResult.b.name} (
+            {POSITIONS.find((p) => p.value === versusResult.position)?.label}) 1대1 비교
+          </h2>
+          <Details label="설명">
+            <p className="empty-hint">
+              두 챔피언의 승률은 각자 독립적으로 조회한 값입니다({versusResult.a.name} 기준 상대 승률,{" "}
+              {versusResult.b.name} 기준 상대 승률을 각각 따로 가져옴) — 두 수치를 더해도 정확히 100%가 아닐 수
+              있지만, 각 소스가 실제로 측정한 값을 그대로 보여드리기 위한 선택입니다. 나머지 지표(파워 커브·스킬·
+              빌드)도 각 챔피언 자신의 데이터입니다.
+            </p>
+          </Details>
+          <div className="comp-heuristic-grid">
+            <VersusSideColumn side={versusResult.a} />
+            <VersusSideColumn side={versusResult.b} />
+          </div>
+          {versusResult.versusStats && (
+            <>
+              <h3>15분 라인전 세부지표 ({versusResult.a.name} 기준 우위/열세)</h3>
+              <LaningStatsRow stats={versusResult.versusStats} />
+              <LaningTipList stats={versusResult.versusStats} abilityDetails={versusResult.b.abilityDetails} />
             </>
           )}
         </section>
