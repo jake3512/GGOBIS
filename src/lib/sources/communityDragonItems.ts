@@ -1,95 +1,81 @@
-// Community Dragon's own extracted game-data feed, pulled by the user
-// directly:
-//   https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/items.json
-// — a community-maintained mirror of Riot's client data files.
+// Community Dragon's own extracted game-data feed — "데이터베이스를 이걸로
+// 교체해줘": the user uploaded a real, verified dump of
+// https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/items.json
+// (868 items, saved as src/data/communityDragonItems.json). This is now
+// bundled and read directly — NO live network fetch happens for item data
+// at all anymore. That fixes two things at once:
+//   1. This sandbox's outbound network to raw.communitydragon.org was
+//      always blocked (confirmed via WebFetch and curl all session), so
+//      the live-fetch version could never be exercised or verified here.
+//   2. The real schema turned out to differ from what the earlier
+//      (never-verified) version of this file assumed — see "WHAT CHANGED"
+//      below. Every field mapping below is now grounded in the actual
+//      uploaded data, not a guess at Community Dragon's public schema.
 //
-// This is now the ONLY data source for the "아이템 빌드" tab
-// (/api/items) — "아이템 빌드에서는 datadragon의 데이터를 쓰지 말아줘
-// 모든 데이터를 제시한 링크에서만 가져와줘". Everything the tab shows
-// (name, icon, tags, price, stats, description, and the "should this item
-// even be in the list" decision) is derived from this one feed; Data
-// Dragon's item.json (src/lib/ddragon.ts) is no longer consulted anywhere
-// in that tab's code path — it's still used elsewhere in the app (the
-// champion "빌드" tab, pick-advice's build cards) for an unrelated feature.
+// This remains the ONLY data source for the "아이템 빌드" tab (/api/items)
+// — "아이템 빌드에서는 datadragon의 데이터를 쓰지 말아줘 모든 데이터를
+// 제시한 링크에서만 가져와줘". Data Dragon's item.json (src/lib/ddragon.ts)
+// is still used elsewhere in the app (champion "빌드" tab, pick-advice build
+// cards) but never in this tab's code path.
 //
-// Fields used, and what each maps onto below:
-//   - `inStore` (boolean) — whether the item is actually orderable in the
-//     shop right now.
-//   - `to` (number[]) — the items this one upgrades into; non-empty means
-//     it's a component/recipe item, not a finished one (`isFinalTier`).
-//   - `requiredChampion`/`requiredAlly` (string, empty when unrestricted) —
-//     champion/ally-locked variants (Kalista's Black Spear, Ornn upgrades).
-//   - `name` — display name.
-//   - `iconPath` (e.g. "/lol-game-data/assets/ASSETS/Items/Icons2D/
-//     3031_infinityedge.png") — converted to a fetchable URL under
-//     Community Dragon's own asset CDN (`toAssetUrl` below): the
-//     "/lol-game-data/assets/" prefix is stripped and the remaining path is
-//     lowercased, per this feed's well-known asset-serving convention.
-//   - `categories` (string[]) — same concept as Data Dragon's `tags`
-//     (e.g. "Boots", "CriticalStrike").
-//   - `price` / `priceTotal` — combine-only cost / full total cost, the
-//     same base-vs-total split Data Dragon's `gold.base`/`gold.total` make.
-//     There's no explicit sell-price field in this feed's schema, so
-//     `cost.sell` is DERIVED (not sourced) as 70% of `priceTotal`, rounded —
-//     League's standard sell-back ratio for buildable items, not a value
-//     read out of the response.
-//   - `simpleDescription` — short plain-text summary, same role Data
-//     Dragon's `plaintext` played.
-//   - `maps` (object keyed by map id string, e.g. `{"11": true, "12": false,
-//     ...}`) — per-map availability, same concept Data Dragon's
-//     `maps["11"]` used to gate `availableOnSummonersRift` before this tab
-//     dropped Data Dragon entirely. "11" is Summoner's Rift's map id (Riot's
-//     own numbering, unrelated to this feed). Added for "현재 협곡에서 쓸 수
-//     있는 아이템만 넣어줘" — `inStore` alone doesn't distinguish an item
-//     that's purchasable somewhere (ARAM/Arena-only items, say) from one
-//     actually buyable on Summoner's Rift specifically.
-//   - `stats` (object, keyed by camelCase stat concept e.g.
-//     "abilityPower"/"attackSpeed"/"lethality"/"omnivamp", each a
-//     `{flat?, percent?}`-shaped block) — covers several stats Data
-//     Dragon's own `stats` block never included at all (Ability Haste,
-//     Lethality, Omnivamp, Physical/Spell Vamp, Tenacity, Heal & Shield
-//     Power, Armor/Magic Penetration). Normalized below onto the same
-//     `Flat*Mod`/`Percent*Mod` key style Data Dragon used to use, via
-//     CD_STAT_KEY_MAP, so src/lib/itemStats.ts's existing label/filter
-//     table keeps working unchanged.
+// WHAT CHANGED once real data was available (previous assumptions in
+// parentheses were all wrong):
+//   - There is NO `stats` object anywhere in the real data (previously
+//     assumed `{concept: {flat, percent}}` blocks) — every one of the 868
+//     items lacks it. Numeric stats only exist as human-readable text
+//     inside `description`'s `<stats>...</stats>` block (e.g.
+//     "<attention> 75</attention> Attack Damage"). This file now parses
+//     that text instead (see parseStatsFromDescription/STAT_LABEL_KEY_MAP).
+//   - There is NO `simpleDescription` field (previously assumed to exist).
+//     `plainDescription` is now derived by stripping the `<stats>` block and
+//     all remaining markup out of `description` (see stripDescriptionTags).
+//   - There is NO `maps` field (previously assumed, added for "협곡에서 쓸
+//     수 있는 아이템만" — `availableOnSummonersRift` has been removed
+//     entirely since nothing in the real data can answer that question).
+//     What real data DOES show: many items appear multiple times under
+//     different ids for the SAME name — e.g. "Infinity Edge" as 3031 (normal
+//     price/stats), 223031 (ARAM rebalance), 773031 (Arena rebalance).
+//     There's no per-item mode flag, but the LOWEST id among same-named
+//     duplicates is consistently the normal Summoner's Rift version in
+//     every case checked — /api/items now dedupes on exactly that (keep the
+//     minimum id per name) instead of "keep whichever the array happened to
+//     list first". A small number of clearly-non-buildable entries (game-
+//     mode placeholders, URF/Arena champion-power items, 0-cost vouchers)
+//     all share one trait confirmed against the real data: an EMPTY
+//     `categories` array — every genuine buildable item has at least one
+//     category, so /api/items also requires `categories.length > 0`. Some
+//     special-mode items without a normal-SR name collision may still slip
+//     through this heuristic (there's no ground-truth mode field to check
+//     against) — if one shows up, the fix is a one-line name-based
+//     exclusion, not a redesign of this filter.
+//   - `price`/`priceTotal`/`inStore`/`to`/`requiredChampion`/`requiredAlly`/
+//     `categories`/`iconPath`/`name` all matched what this file already
+//     assumed — those mappings are unchanged.
 //
-// LOCALE: the URL the user gave points at "global/default" — Community
-// Dragon's convention for the un-localized (English) copy of the data; the
-// same path with "default" swapped for a locale code (e.g. "ko_kr") serves
-// a translated copy with identical non-text fields (inStore/to/price/stats
-// are locale-independent, only name/description change). Since this app's
-// entire UI is Korean, this file tries the "ko_kr" path FIRST — same
-// underlying Community Dragon data the user pointed at, just the localized
-// variant of it — and only falls back to the exact "global/default" URL
-// given (English names) if that request itself fails.
-//
-// IMPORTANT — none of this could be verified against a live response: this
-// session's sandbox has outbound network access blocked for
-// raw.communitydragon.org (confirmed via both WebFetch and a direct curl,
-// same "organization policy" block that already applied to
-// ddragon.leagueoflegends.com and namu.wiki). The shape below is built from
-// this endpoint's long-standing, widely-referenced public schema, not a
-// fetch this session actually made. Since this is now the tab's ONLY
-// source (no Data Dragon fallback left), getCommunityDragonItems() throws
-// on total failure instead of swallowing it — /api/items turns that into a
-// clear 502 rather than silently showing an empty "no items" list that
-// looks the same as a legitimately-empty catalog. If the real deploy shows
-// wrong/missing fields, the actual response JSON (or even just one item's
-// raw entry) is what's needed to correct the field names/shapes.
+// Fields used from the real schema, and what each maps onto below:
+//   - `inStore` — whether the item is actually orderable in the shop.
+//   - `to` (number[]) — items this upgrades into; non-empty means it's a
+//     component/recipe item, not a finished one (`isFinalTier`).
+//   - `requiredChampion`/`requiredAlly` — champion/ally-locked variants.
+//   - `name` — display name. NOTE: this dump is Community Dragon's
+//     "global/default" (English) locale — the user's uploaded file has
+//     English names ("Infinity Edge", not "무한의 검"). This app's UI is
+//     otherwise all Korean; if a Korean-locale dump becomes available it can
+//     replace this same file without any code changes (same shape).
+//   - `iconPath` — converted to a fetchable Community Dragon asset CDN URL
+//     (`toAssetUrl`): "/lol-game-data/assets/" prefix stripped, remainder
+//     lowercased.
+//   - `categories` (string[]) — same concept as Data Dragon's `tags`.
+//   - `price` / `priceTotal` — combine-only cost / full total cost. No sell
+//     price field exists, so `cost.sell` is DERIVED (not sourced) as 70% of
+//     `priceTotal`, rounded — League's standard sell-back ratio.
+//   - `description` — rich HTML-ish markup (Riot's tooltip format). Mined
+//     for both the numeric stats list and the plain-text passive summary
+//     (see below) — nothing here is rendered as raw HTML.
 
-import { cached } from "@/lib/cache";
+import rawItemsData from "@/data/communityDragonItems.json";
 
-const ITEMS_URL_KO =
-  "https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/ko_kr/v1/items.json";
-const ITEMS_URL_DEFAULT =
-  "https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/items.json";
 const ASSET_BASE = "https://raw.communitydragon.org/latest/game/";
-
-const CACHE_TTL_MS = 60 * 60 * 1000;
-
-// Riot's own map id for Summoner's Rift — same numbering Data Dragon's
-// item.json `maps` block used (see this file's header comment).
-const SUMMONERS_RIFT_MAP_ID = "11";
 
 export interface CommunityDragonItem {
   id: number;
@@ -97,12 +83,18 @@ export interface CommunityDragonItem {
   iconUrl: string;
   tags: string[];
   cost: { base: number; total: number; sell: number };
-  /** Normalized onto the same Flat*Mod/Percent*Mod key style Data Dragon's
-   * item.json stats used to use — see src/lib/itemStats.ts. Percent-type
-   * stats are stored as fractions (0.25 = 25%), same assumption Data
-   * Dragon's own stats block used, unverified against a live Community
-   * Dragon response. */
+  /** Parsed out of `description`'s `<stats>...</stats>` text (see
+   * parseStatsFromDescription) — NOT a structured field in the source data.
+   * Onto the same Flat*Mod/Percent*Mod key style Data Dragon's item.json
+   * `stats` used to use, so src/lib/itemStats.ts's existing label/filter
+   * table keeps working. Percent-type stats are stored as fractions (0.25 =
+   * 25%). A label this file doesn't recognize (STAT_LABEL_KEY_MAP miss) is
+   * silently dropped rather than guessed at. */
   stats: Record<string, number>;
+  /** Derived by stripping `description`'s `<stats>` block and all remaining
+   * markup tags — see stripDescriptionTags. Covers passive/active effect
+   * text (e.g. Rabadon's "Magical Opus" passive); empty for pure-stat items
+   * (e.g. boots, Infinity Edge) that have nothing beyond their stats block. */
   plainDescription: string;
   /** Whether this item is actually purchasable in the shop right now. */
   inStore: boolean;
@@ -112,76 +104,121 @@ export interface CommunityDragonItem {
   /** True when `requiredChampion`/`requiredAlly` is set — a variant most
    * builds can't actually buy (e.g. Kalista's Black Spear, Ornn upgrades). */
   isRestrictedVariant: boolean;
-  /** `maps["11"]` (Summoner's Rift) — true unless the feed explicitly marks
-   * this item unavailable there (ARAM/Arena-only items, etc.). Defaults to
-   * true when the `maps` block itself is missing for an item, rather than
-   * excluding it — a missing field isn't evidence the item is unavailable,
-   * same "don't penalize a data gap" principle this file already applies to
-   * `stats`. */
-  availableOnSummonersRift: boolean;
-}
-
-interface RawCDStatBlock {
-  flat?: number;
-  percent?: number;
 }
 
 interface RawCommunityDragonItem {
   id: number;
   name?: string;
+  description?: string;
   iconPath?: string;
   categories?: string[];
   price?: number;
   priceTotal?: number;
-  simpleDescription?: string;
   inStore?: boolean;
   to?: number[];
   requiredChampion?: string;
   requiredAlly?: string;
-  stats?: Record<string, RawCDStatBlock>;
-  maps?: Record<string, boolean>;
 }
 
-/** Maps a Community Dragon stat concept key to the Flat*Mod/Percent*Mod
- * output key(s) it becomes — reusing Data Dragon's old key names where the
- * concept overlaps (so src/lib/itemStats.ts's existing labels keep working
- * unchanged) and inventing new ones, following the same naming convention,
- * for concepts Data Dragon never had at all. */
-const CD_STAT_KEY_MAP: Record<string, { flatKey?: string; percentKey?: string }> = {
-  abilityPower: { flatKey: "FlatMagicDamageMod" },
-  attackDamage: { flatKey: "FlatPhysicalDamageMod", percentKey: "PercentPhysicalDamageMod" },
-  armor: { flatKey: "FlatArmorMod" },
-  armorPenetration: { flatKey: "FlatArmorPenetrationMod", percentKey: "PercentArmorPenetrationMod" },
-  attackSpeed: { percentKey: "PercentAttackSpeedMod" },
-  cooldownReduction: { percentKey: "PercentCooldownReductionMod" },
-  abilityHaste: { flatKey: "FlatAbilityHasteMod" },
-  criticalStrikeChance: { percentKey: "FlatCritChanceMod" },
-  healAndShieldPower: { percentKey: "PercentHealShieldPowerMod" },
-  health: { flatKey: "FlatHPPoolMod" },
-  healthRegen: { flatKey: "FlatHPRegenMod", percentKey: "PercentHPRegenMod" },
-  lethality: { flatKey: "FlatLethalityMod" },
-  lifesteal: { percentKey: "PercentLifeStealMod" },
-  magicPenetration: { flatKey: "FlatMagicPenetrationMod", percentKey: "PercentMagicPenetrationMod" },
-  magicResistance: { flatKey: "FlatSpellBlockMod" },
-  mana: { flatKey: "FlatMPPoolMod" },
-  manaRegen: { flatKey: "FlatMPRegenMod", percentKey: "PercentMPRegenMod" },
-  movespeed: { flatKey: "FlatMovementSpeedMod", percentKey: "PercentMovementSpeedMod" },
-  omnivamp: { percentKey: "PercentOmnivampMod" },
-  physicalVamp: { percentKey: "PercentPhysicalVampMod" },
-  spellVamp: { percentKey: "PercentSpellVampMod" },
-  tenacity: { percentKey: "PercentTenacityMod" },
+/** English stat-label text (as it appears after `<attention>`/`<ornnBonus>`
+ * in `description`'s `<stats>` block) -> the Flat*Mod/Percent*Mod key(s) it
+ * becomes. Built by scanning every label that actually occurs across all 868
+ * items in the bundled dump (see the module header) rather than guessed —
+ * `mode: "flat"`/`"percent"` is used when every observed occurrence of that
+ * label was consistently one or the other; `"auto"` is used for the few
+ * labels (Move Speed, Magic Penetration) that occur as BOTH a flat number
+ * and a percentage depending on the item, detected per-occurrence by
+ * whether the value string has a trailing "%". Reuses Data Dragon's old key
+ * names where the concept overlaps (so src/lib/itemStats.ts's existing
+ * labels keep working unchanged) and adds new ones, following the same
+ * naming convention, for concepts Data Dragon's item.json never had at all
+ * (Gold Per 10, Adaptive Force, Critical Strike Damage — see itemStats.ts). */
+const STAT_LABEL_KEY_MAP: Record<
+  string,
+  { mode: "flat" | "percent" | "auto"; flatKey?: string; percentKey?: string }
+> = {
+  Health: { mode: "flat", flatKey: "FlatHPPoolMod" },
+  "Ability Haste": { mode: "flat", flatKey: "FlatAbilityHasteMod" },
+  "Attack Damage": { mode: "flat", flatKey: "FlatPhysicalDamageMod" },
+  "Ability Power": { mode: "flat", flatKey: "FlatMagicDamageMod" },
+  Armor: { mode: "flat", flatKey: "FlatArmorMod" },
+  "Move Speed": { mode: "auto", flatKey: "FlatMovementSpeedMod", percentKey: "PercentMovementSpeedMod" },
+  "Magic Resist": { mode: "flat", flatKey: "FlatSpellBlockMod" },
+  "Attack Speed": { mode: "percent", percentKey: "PercentAttackSpeedMod" },
+  Mana: { mode: "flat", flatKey: "FlatMPPoolMod" },
+  "Critical Strike Chance": { mode: "percent", percentKey: "FlatCritChanceMod" },
+  "Base Mana Regen": { mode: "percent", percentKey: "PercentMPRegenMod" },
+  Lethality: { mode: "flat", flatKey: "FlatLethalityMod" },
+  "Heal and Shield Power": { mode: "percent", percentKey: "PercentHealShieldPowerMod" },
+  "Base Health Regen": { mode: "percent", percentKey: "PercentHPRegenMod" },
+  "Life Steal": { mode: "percent", percentKey: "PercentLifeStealMod" },
+  "Mana Regen per 5 seconds": { mode: "flat", flatKey: "FlatMPRegenMod" },
+  "Magic Penetration": { mode: "auto", flatKey: "FlatMagicPenetrationMod", percentKey: "PercentMagicPenetrationMod" },
+  "Cooldown Reduction": { mode: "percent", percentKey: "PercentCooldownReductionMod" },
+  "Gold Per 10 Seconds": { mode: "flat", flatKey: "FlatGoldPer10Mod" },
+  Omnivamp: { mode: "percent", percentKey: "PercentOmnivampMod" },
+  "Health Regen per 5 seconds": { mode: "flat", flatKey: "FlatHPRegenMod" },
+  Tenacity: { mode: "percent", percentKey: "PercentTenacityMod" },
+  "Adaptive Force": { mode: "flat", flatKey: "FlatAdaptiveForceMod" },
+  "Armor Penetration": { mode: "percent", percentKey: "PercentArmorPenetrationMod" },
+  "Critical Strike Damage": { mode: "percent", percentKey: "PercentCritDamageMod" },
 };
 
-function normalizeStats(raw: Record<string, RawCDStatBlock> | undefined): Record<string, number> {
+/** Pulls the `<attention>VALUE</attention> Label` (and Ornn-upgrade
+ * `<ornnBonus>VALUE</ornnBonus> Label`) pairs out of `description`'s
+ * `<stats>...</stats>` block and maps each recognized label onto
+ * STAT_LABEL_KEY_MAP. Values are summed when the same output key appears
+ * more than once on one item (e.g. an Ornn-upgraded item's base Armor plus
+ * its `<ornnBonus>` Armor) rather than the later one silently overwriting
+ * the earlier. An unrecognized label, or a value that doesn't parse as a
+ * number, is dropped for just that one line — never guessed at. */
+function parseStatsFromDescription(description: string): Record<string, number> {
   const out: Record<string, number> = {};
-  if (!raw) return out;
-  for (const [concept, block] of Object.entries(raw)) {
-    const mapping = CD_STAT_KEY_MAP[concept];
-    if (!mapping || !block) continue;
-    if (mapping.flatKey && block.flat) out[mapping.flatKey] = block.flat;
-    if (mapping.percentKey && block.percent) out[mapping.percentKey] = block.percent;
+  const statsMatch = description.match(/<stats>([\s\S]*?)<\/stats>/);
+  if (!statsMatch) return out;
+  const lines = statsMatch[1].split(/<br\s*\/?>|<li>/);
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const m = line.match(/<(?:attention|ornnBonus)>([^<]*)<\/(?:attention|ornnBonus)>\s*(.*)/);
+    if (!m) continue;
+    const [, rawValue, rawLabel] = m;
+    const label = rawLabel.replace(/<[^>]+>/g, "").trim();
+    const mapping = STAT_LABEL_KEY_MAP[label];
+    if (!mapping) continue;
+    const isPercent = rawValue.includes("%");
+    const numeric = parseFloat(rawValue.replace("%", "").trim());
+    if (Number.isNaN(numeric)) continue;
+
+    let key: string | undefined;
+    let value: number;
+    if (mapping.mode === "flat" || (mapping.mode === "auto" && !isPercent)) {
+      key = mapping.flatKey;
+      value = numeric;
+    } else {
+      key = mapping.percentKey;
+      value = numeric / 100;
+    }
+    if (!key) continue;
+    out[key] = (out[key] ?? 0) + value;
   }
   return out;
+}
+
+/** Derives a readable plain-text summary from `description`: drops the
+ * `<stats>...</stats>` block entirely (those numbers are already surfaced
+ * structurally via `stats` above, no need to duplicate them as text), then
+ * strips every remaining markup tag and collapses `<br>`/whitespace into
+ * single spaces. Mirrors what Data Dragon's own `plaintext` field used to
+ * provide server-side — this file does the same stripping itself since the
+ * real Community Dragon schema doesn't ship a pre-stripped version. */
+function stripDescriptionTags(description: string): string {
+  const withoutStats = description.replace(/<stats>[\s\S]*?<\/stats>/, "");
+  return withoutStats
+    .replace(/<br\s*\/?>/g, " ")
+    .replace(/<[^>]+>/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 /** "/lol-game-data/assets/ASSETS/Items/Icons2D/x.png" (mixed case, as
@@ -192,55 +229,38 @@ function toAssetUrl(iconPath: string): string {
   return ASSET_BASE + stripped.toLowerCase();
 }
 
-async function fetchItems(url: string): Promise<Map<number, CommunityDragonItem>> {
-  const res = await fetch(url, {
-    headers: {
-      "User-Agent": "Mozilla/5.0 (compatible; semips-lol-app/1.0; personal project, non-commercial)",
-      Accept: "application/json",
-    },
-  });
-  if (!res.ok) {
-    throw new Error(`Community Dragon: items.json request failed (HTTP ${res.status}).`);
-  }
-  const body = (await res.json()) as unknown;
-  if (!Array.isArray(body)) {
-    throw new Error("Community Dragon: items.json response wasn't the expected array.");
-  }
-  const map = new Map<number, CommunityDragonItem>();
-  for (const raw of body as RawCommunityDragonItem[]) {
-    if (typeof raw?.id !== "number") continue;
-    const total = raw.priceTotal ?? 0;
-    map.set(raw.id, {
-      id: raw.id,
-      name: raw.name ?? "",
-      iconUrl: raw.iconPath ? toAssetUrl(raw.iconPath) : "",
-      tags: raw.categories ?? [],
-      cost: { base: raw.price ?? total, total, sell: Math.round(total * 0.7) },
-      stats: normalizeStats(raw.stats),
-      plainDescription: raw.simpleDescription ?? "",
-      inStore: raw.inStore ?? false,
-      isFinalTier: (raw.to?.length ?? 0) === 0,
-      isRestrictedVariant: Boolean(raw.requiredChampion) || Boolean(raw.requiredAlly),
-      availableOnSummonersRift: raw.maps?.[SUMMONERS_RIFT_MAP_ID] !== false,
-    });
-  }
-  return map;
+function toCommunityDragonItem(raw: RawCommunityDragonItem): CommunityDragonItem | null {
+  if (typeof raw.id !== "number") return null;
+  const total = raw.priceTotal ?? 0;
+  const description = raw.description ?? "";
+  return {
+    id: raw.id,
+    name: raw.name ?? "",
+    iconUrl: raw.iconPath ? toAssetUrl(raw.iconPath) : "",
+    tags: raw.categories ?? [],
+    cost: { base: raw.price ?? total, total, sell: Math.round(total * 0.7) },
+    stats: parseStatsFromDescription(description),
+    plainDescription: stripDescriptionTags(description),
+    inStore: raw.inStore ?? false,
+    isFinalTier: (raw.to?.length ?? 0) === 0,
+    isRestrictedVariant: Boolean(raw.requiredChampion) || Boolean(raw.requiredAlly),
+  };
 }
 
-async function fetchItemsWithLocaleFallback(): Promise<Map<number, CommunityDragonItem>> {
-  try {
-    return await fetchItems(ITEMS_URL_KO);
-  } catch {
-    return fetchItems(ITEMS_URL_DEFAULT);
-  }
-}
+let itemsCache: Map<number, CommunityDragonItem> | null = null;
 
-/** Throws on total failure (both the ko_kr and default locale requests
- * failing, or an unexpected response shape) — this feed is now the item-
- * build tab's ONLY data source (no Data Dragon fallback), so callers
- * should surface that failure rather than silently rendering an empty
- * catalog. Cached for an hour either way, same as this app's other
- * external sources. */
+/** Reads the bundled static dump (src/data/communityDragonItems.json) —
+ * no network call, so this can't fail the way a live fetch could. Kept
+ * async so call sites (which pre-date this bundling and awaited a network
+ * response) didn't need to change. Computed once per server process and
+ * cached in memory since the underlying file never changes at runtime. */
 export async function getCommunityDragonItems(): Promise<Map<number, CommunityDragonItem>> {
-  return cached("communitydragon:items", CACHE_TTL_MS, fetchItemsWithLocaleFallback);
+  if (itemsCache) return itemsCache;
+  const map = new Map<number, CommunityDragonItem>();
+  for (const raw of rawItemsData as RawCommunityDragonItem[]) {
+    const item = toCommunityDragonItem(raw);
+    if (item) map.set(item.id, item);
+  }
+  itemsCache = map;
+  return map;
 }
