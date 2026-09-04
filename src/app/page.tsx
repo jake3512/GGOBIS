@@ -2568,8 +2568,8 @@ export default function Home() {
           <h2>아이템 빌드</h2>
           <p className="empty-hint">
             6개 아이템 슬롯을 직접 채워서 조합의 총 가격과 스탯 합계를 확인하세요. 아이템 이름은 물론 위 스탯
-            카테고리로도 검색할 수 있습니다. 이름·가격·스탯·설명은 전부 Riot 공식 정적 데이터(Data Dragon
-            `item.json`)에서 그대로 가져온 값입니다.
+            카테고리로도 검색할 수 있습니다. 이름·가격·스탯·설명은 전부 Riot 클라이언트 데이터를 그대로 담은
+            Community Dragon 데이터베이스에서 가져온 값입니다.
           </p>
           {itemLoadError && <p className="empty-hint">{itemLoadError}</p>}
 

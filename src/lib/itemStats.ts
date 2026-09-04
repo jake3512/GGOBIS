@@ -1,19 +1,22 @@
 // Korean labels + percent-vs-flat formatting for item stat keys. The key
 // style ("Flat*Mod"/"Percent*Mod") originally came from Data Dragon
 // item.json's `stats` block, but /api/items no longer uses Data Dragon at
-// all — every item-build tab value now comes from Community Dragon's own
-// `stats` block (src/lib/sources/communityDragonItems.ts's
-// `getCommunityDragonItems`), normalized onto this same key style by that
-// file's CD_STAT_KEY_MAP so this table didn't need to change shape. Community
-// Dragon's stats cover several concepts Data Dragon's version never exposed
-// at all (Ability Haste, Lethality, Omnivamp, Physical/Spell Vamp, Tenacity,
-// Heal & Shield Power, Armor/Magic Penetration, Cooldown Reduction). Used
-// both for the item-build tab's per-item stat readout and its "스탯
+// all — every item-build tab value now comes from Community Dragon's real,
+// verified item data (a bundled static dump, src/data/communityDragonItems.json
+// — "데이터베이스를 이걸로 교체해줘"), which has NO structured `stats`
+// object at all: src/lib/sources/communityDragonItems.ts's
+// STAT_LABEL_KEY_MAP parses the numbers out of each item's plain-English
+// description text instead and normalizes them onto this same key style, so
+// this table didn't need to change shape. That real data covers several
+// concepts Data Dragon's old `stats` block never exposed at all (Ability
+// Haste, Lethality, Omnivamp, Heal & Shield Power, Armor/Magic Penetration,
+// Cooldown Reduction, Gold Per 10, Adaptive Force, Critical Strike Damage).
+// Used both for the item-build tab's per-item stat readout and its "스탯
 // 종류별로 검색" category filter chips.
 //
-// The new entries' exact key spelling/percent-vs-flat shape mirrors
-// src/lib/sources/communityDragonItems.ts's CD_STAT_KEY_MAP and carries the
-// same unverified-against-a-live-response caveat that file documents.
+// Every key/percent-vs-flat shape below is now grounded in labels that
+// actually occur in the real bundled data (STAT_LABEL_KEY_MAP was built by
+// scanning all 868 items), not a guess at Community Dragon's schema.
 
 export interface ItemStatCategory {
   key: string;
@@ -53,6 +56,9 @@ export const ITEM_STAT_CATEGORIES: ItemStatCategory[] = [
   { key: "PercentHPRegenMod", label: "체력 재생", isPercent: true },
   { key: "FlatMPRegenMod", label: "마나 재생", isPercent: false },
   { key: "PercentMPRegenMod", label: "마나 재생", isPercent: true },
+  { key: "PercentCritDamageMod", label: "치명타 피해량", isPercent: true },
+  { key: "FlatGoldPer10Mod", label: "골드 획득(10초당)", isPercent: false },
+  { key: "FlatAdaptiveForceMod", label: "적응형 능력치", isPercent: false },
 ];
 
 const CATEGORY_BY_KEY = new Map(ITEM_STAT_CATEGORIES.map((c) => [c.key, c]));
