@@ -22,6 +22,8 @@ import {
 } from "@/lib/compConcepts";
 import { getChampionAbilitiesWithCache, type ChampionAbilities } from "@/lib/championSkills";
 import { getPowerCurve } from "@/lib/sources/lolps";
+import { PICK_REAL_WEIGHT, PICK_ENEMY_FIT_WEIGHT } from "@/lib/pickWeights";
+import { sampleReliabilityTier } from "@/lib/sampleSize";
 
 const VALID_POSITIONS = new Set(POSITIONS.map((p) => p.value));
 
@@ -200,12 +202,17 @@ interface LikelyEnemyLaner {
   counterPicks: LaneCandidateEntry[];
 }
 
-// pickadvice/route.ts의 PICK_REAL_WEIGHT(0.65)/PICK_ENEMY_FIT_WEIGHT(0.15)와
-// 같은 4:1 비율(0.8:0.2)로 맞춘 값 — 이 탭엔 아군 시너지 신호가 없어서 그
-// 몫(0.2)만큼을 그대로 빼는 대신, 남은 두 신호(real/enemyFit)의 상대적
-// 비중은 그대로 유지했다.
-const CANDIDATE_REAL_WEIGHT = 0.8;
-const CANDIDATE_ENEMY_FIT_WEIGHT = 0.2;
+// src/lib/pickWeights.ts의 PICK_REAL_WEIGHT(0.65)/PICK_ENEMY_FIT_WEIGHT(0.15)를
+// 그대로 재정규화한 값 — 이 탭엔 아군 시너지 신호가 없어서 그 몫(0.2)만큼을
+// 빼는 대신, 남은 두 신호(real/enemyFit)의 상대적 비중(약 4.33:1)은 그대로
+// 유지한다. "모든 픽추천 로직을 발전시켜줘" — 이전엔 여기 별도로 0.8/0.2를
+// 하드코딩해서 "같은 비율"이라고 주석만 달아뒀는데, 실제로는 정확히 같은
+// 비율이 아니었다(0.65:0.15 ≈ 4.33:1 vs 0.8:0.2 = 정확히 4:1). 이제
+// pickadvice의 두 상수에서 직접 계산하므로 그쪽 값이 바뀌면 이 탭도 항상
+// 정확히 같은 비율을 유지한다.
+const CANDIDATE_WEIGHT_TOTAL = PICK_REAL_WEIGHT + PICK_ENEMY_FIT_WEIGHT;
+const CANDIDATE_REAL_WEIGHT = PICK_REAL_WEIGHT / CANDIDATE_WEIGHT_TOTAL;
+const CANDIDATE_ENEMY_FIT_WEIGHT = PICK_ENEMY_FIT_WEIGHT / CANDIDATE_WEIGHT_TOTAL;
 
 /** 상대 로스터(최대 5명) 중 `position` 기준 표본이 가장 많은 상위
  * LIKELY_LANER_COUNT명을 추려서, 각각에 대해 실제 카운터 데이터(픽 추천의
@@ -260,11 +267,19 @@ async function computeLikelyEnemyLaners(
         };
       })
       .filter((c): c is LaneCandidateEntry => c !== null)
-      // 상대(champ)의 winRate가 낮을수록(=이 후보가 champ을 상대로 잘
-      // 이긴다는 뜻) 좋은 카운터 — 픽 추천 counterPicks의 "asc" 정렬과
-      // 같은 방향. 실제 승률(80%)이 여전히 압도적이고, 상대팀 조합
-      // 적합도(20%)는 근소한 차이일 때만 순서를 조금 흔든다.
+      // 표본(게임 수) 신뢰도 구간을 최우선으로 — 픽 추천 counterPicks의
+      // pickRankScore/라인 카운터 탭과 같은 원칙(sampleReliabilityTier)을
+      // 이 탭에도 적용했다. "모든 픽추천 로직을 발전시켜줘": 이전엔 이
+      // 탭만 유일하게 표본 크기를 전혀 안 봐서, 3게임 100% 승률 후보가
+      // 500게임 55% 승률 후보보다 위로 올 수 있는 구멍이 있었다. 구간이
+      // 같을 때만 아래 블렌디드 점수(상대 champ의 winRate가 낮을수록=이
+      // 후보가 champ을 상대로 잘 이긴다는 뜻 → 좋은 카운터, 픽 추천
+      // counterPicks의 "asc" 정렬과 같은 방향)로 정렬한다. 실제
+      // 승률(≈81%)이 여전히 압도적이고, 상대팀 조합 적합도(≈19%)는 근소한
+      // 차이일 때만 순서를 조금 흔든다.
       .sort((a, b) => {
+        const tierDiff = sampleReliabilityTier(a.games) - sampleReliabilityTier(b.games);
+        if (tierDiff !== 0) return tierDiff;
         const scoreOf = (e: LaneCandidateEntry) =>
           CANDIDATE_REAL_WEIGHT * (1 - e.winRate) + CANDIDATE_ENEMY_FIT_WEIGHT * e.compFit;
         return scoreOf(b) - scoreOf(a);

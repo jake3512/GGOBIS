@@ -11,7 +11,7 @@
 // side of "team synergy".
 
 import type { DDragonChampion } from "@/lib/ddragon";
-import type { ChampionAbilities } from "@/lib/championSkills";
+import type { AbilityTag, ChampionAbilities } from "@/lib/championSkills";
 import { getAdcArchetype, type AdcAttribute } from "@/lib/adcArchetype";
 import { getTankArchetype, type TankAttribute } from "@/lib/tankArchetype";
 import { getBruiserArchetype, type BruiserAttribute } from "@/lib/bruiserArchetype";
@@ -159,6 +159,51 @@ export function scoreEnemyCompFit(candidate: DDragonChampion, enemyChamps: DDrag
   return Math.min(1, Math.max(0, score));
 }
 
+// How much a hasMobility/hasHardCC bonus below gets scaled by how often the
+// candidate's OWN matching ability is actually back up — "모든 픽추천
+// 로직을 발전시켜줘": these two bonuses used to be a flat +0.2 regardless of
+// whether the tool was a 4초 dash or an 80초 one-shot commit, even though
+// this file already fetches each candidate's real per-ability cooldown data
+// (AbilitySummary.cooldown) for the tag booleans themselves — that number
+// was just never used past the boolean. A rank-1 cooldown at or below
+// RELIABLE_COOLDOWN_SECONDS keeps the full bonus (available basically every
+// engage); one at or above LONG_COOLDOWN_SECONDS is scaled down to
+// MIN_RELIABILITY_FACTOR (a real tool, but a rare one-time commitment, not a
+// repeatable safety net); in between it's a straight linear interpolation.
+// No larger dataset exists here to calibrate an exact curve against (same
+// caveat as this app's other cooldown-based thresholds, e.g.
+// POKE_COOLDOWN_THRESHOLD in src/app/page.tsx), so this is deliberately
+// simple rather than empirically derived.
+const RELIABLE_COOLDOWN_SECONDS = 6;
+const LONG_COOLDOWN_SECONDS = 20;
+const MIN_RELIABILITY_FACTOR = 0.5;
+
+/** Among the candidate's own Q/W/E (passive excluded — rarely has a real
+ * cooldown; ultimate excluded — always long-cooldown by design, so it would
+ * always read as "unreliable" here even on a champion whose ultimate IS the
+ * relevant hard-CC/mobility tool, same nonUltimateSpells convention
+ * championSkills.ts's hasLongRange already uses), finds whichever one(s)
+ * carry `tag` and returns a 0..1 reliability factor from the SHORTEST rank-1
+ * cooldown among them. Returns 1 (full bonus, unchanged from before this
+ * existed) when no matching ability has parseable cooldown data — a missing
+ * number is not evidence the tool is unreliable, just that Meraki's response
+ * didn't parse cleanly (see extractNumericProgression's own caveat), so this
+ * never penalizes for a data gap. */
+function abilityReliabilityFactor(abilities: ChampionAbilities, tag: AbilityTag): number {
+  const cooldowns = abilities.spells
+    .slice(0, 3)
+    .filter((a) => a.tags.includes(tag))
+    .map((a) => a.cooldown?.[0])
+    .filter((c): c is number => c !== undefined);
+  if (cooldowns.length === 0) return 1;
+
+  const shortest = Math.min(...cooldowns);
+  if (shortest <= RELIABLE_COOLDOWN_SECONDS) return 1;
+  if (shortest >= LONG_COOLDOWN_SECONDS) return MIN_RELIABILITY_FACTOR;
+  const t = (shortest - RELIABLE_COOLDOWN_SECONDS) / (LONG_COOLDOWN_SECONDS - RELIABLE_COOLDOWN_SECONDS);
+  return 1 - t * (1 - MIN_RELIABILITY_FACTOR);
+}
+
 /** Refines a compFit score (from scoreEnemyCompFit, or 0.5 to start fresh)
  * using each side's ACTUAL passive/Q/W/E/R kit instead of just the coarse
  * champion tag — see src/lib/championSkills.ts for where hasHardCC/
@@ -175,6 +220,10 @@ export function scoreEnemyCompFit(candidate: DDragonChampion, enemyChamps: DDrag
  *    down) → mobility on the candidate is safer to commit, so it's rewarded.
  *  - enemy side has no escape tools (no mobility, no shield/heal) → hard CC
  *    on the candidate reliably catches them, so it's rewarded.
+ * Each bonus is scaled by abilityReliabilityFactor above — a mobility/hard-CC
+ * tool up every few seconds earns the full bonus; the same tool on a long
+ * cooldown earns a reduced one, since it's a one-time commitment rather than
+ * something the candidate can lean on repeatably.
  *
  * Same clamp-at-1 behavior as scoreEnemyCompFit — this only ever adds on
  * top of the base score, never subtracts, and the result stays in 0..1. */
@@ -188,12 +237,12 @@ export function applySkillFitBonus(
 
   const enemyHasHardCC = enemyAbilitiesList.some((a) => a.hasHardCC);
   if (!enemyHasHardCC && candidateAbilities.hasMobility) {
-    score += 0.2;
+    score += 0.2 * abilityReliabilityFactor(candidateAbilities, "mobility");
   }
 
   const enemyHasEscapeTools = enemyAbilitiesList.some((a) => a.hasMobility || a.hasShieldOrHeal);
   if (!enemyHasEscapeTools && candidateAbilities.hasHardCC) {
-    score += 0.2;
+    score += 0.2 * abilityReliabilityFactor(candidateAbilities, "hardCC");
   }
 
   return Math.min(1, Math.max(0, score));
