@@ -113,9 +113,9 @@ async function attachKeyTagsAndConceptFits(
       if (r.status !== "fulfilled") return;
       const champ = champById.get(entry.championId);
       const buildResult = buildResults[i];
-      const firstMaxedKey = buildResult.status === "fulfilled" ? buildResult.value.skillMaxOrder[0] : undefined;
+      const skillMaxOrder = buildResult.status === "fulfilled" ? buildResult.value.skillMaxOrder : undefined;
       entry.keyTags = toKeyTags(r.value);
-      entry.abilityDetails = toAbilityDetails(r.value, firstMaxedKey);
+      entry.abilityDetails = toAbilityDetails(r.value, skillMaxOrder);
       if (champ) entry.conceptFits = championConceptFit(champ, r.value);
     });
   } catch {

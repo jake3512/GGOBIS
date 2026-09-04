@@ -508,9 +508,9 @@ async function computeCompFitPicks(
         if (r.status !== "fulfilled") return;
         const champ = champById.get(entry.championId);
         const buildResult = buildResults[i];
-        const firstMaxedKey = buildResult.status === "fulfilled" ? buildResult.value.skillMaxOrder[0] : undefined;
+        const skillMaxOrder = buildResult.status === "fulfilled" ? buildResult.value.skillMaxOrder : undefined;
         entry.keyTags = toKeyTags(r.value);
-        entry.abilityDetails = toAbilityDetails(r.value, firstMaxedKey);
+        entry.abilityDetails = toAbilityDetails(r.value, skillMaxOrder);
         if (champ) entry.conceptFits = championConceptFit(champ, r.value);
       });
     } catch {
@@ -683,7 +683,7 @@ async function annotateWithKeyTagsAndConceptFits(
       // AFTER annotateWithBuild for both counterPicks and synergyPicks (see
       // the GET handler below), so entry.build?.skillMaxOrder is real lol.ps
       // data already fetched for this exact candidate, zero extra requests.
-      entry.abilityDetails = toAbilityDetails(r.value, entry.build?.skillMaxOrder[0]);
+      entry.abilityDetails = toAbilityDetails(r.value, entry.build?.skillMaxOrder);
       if (champ) entry.conceptFits = championConceptFit(champ, r.value);
     });
   } catch {

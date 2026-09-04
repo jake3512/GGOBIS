@@ -117,19 +117,41 @@ export interface AbilityDetail {
    *     주로 주요 스킬이야": when the caller has lol.ps's real
    *     `ChampionBuild.skillMaxOrder` for this champion (see
    *     `src/lib/sources/lolps.ts` — not fetched by this module itself, so
-   *     it's passed in as `firstMaxedKey` by whichever route already has
+   *     it's passed in as `skillMaxOrder` by whichever route already has
    *     it), the skill players max FIRST (`skillMaxOrder[0]`) is flagged
    *     key regardless of its text — this catches exactly the pure-damage
    *     mage-poke case (1) misses, since real play data doesn't need the
-   *     ability to *say* it's important. `firstMaxedKey` is optional and
+   *     ability to *say* it's important. `skillMaxOrder` is optional and
    *     best-effort (lol.ps unreachable, or the caller doesn't have build
    *     data for this candidate) — when absent, isKeySkill falls back to
-   *     signal (1) alone, same as before this was added. */
+   *     signal (1) alone.
+   *
+   * "주요 스킬은 최대 2개로 제한해줘, 3개 이상이면 콤보를 시작하는 스킬과
+   * 그 다음 스킬을 뽑아줘" — when the two signals above flag 3 or more
+   * abilities key for one champion, toAbilityDetails (below) narrows the
+   * set down to exactly 2 using skillMaxOrder as the "콤보 순서" proxy: no
+   * data source in this app tracks actual in-fight cast order, but
+   * skillMaxOrder[0]/[1] (the first two skills players prioritize
+   * leveling — real lol.ps data, Q/W/E only, never P/R) is the closest
+   * available real signal to "which skill the kit centers around and the
+   * one right after it". */
   isKeySkill: boolean;
 }
 
-export function toAbilityDetails(a: ChampionAbilities, firstMaxedKey?: string): AbilityDetail[] {
-  return [a.passive, ...a.spells].map((s) => ({
+// See the isKeySkill doc comment above — "주요 스킬은 최대 2개로 제한해줘".
+const MAX_KEY_SKILLS = 2;
+
+/** Q/W/E only (never P/R) — same "combo-relevant basic abilities" exclusion
+ * this file already applies elsewhere (see hasLongRange's nonUltimateSpells
+ * above): a passive isn't cast into a combo, and an ultimate is always a
+ * separate power-spike decision, not the "next skill after the starter". */
+function isComboEligible(key: AbilitySummary["key"]): boolean {
+  return key === "Q" || key === "W" || key === "E";
+}
+
+export function toAbilityDetails(a: ChampionAbilities, skillMaxOrder?: string[]): AbilityDetail[] {
+  const firstMaxedKey = skillMaxOrder?.[0];
+  const details = [a.passive, ...a.spells].map((s) => ({
     key: s.key,
     name: s.name,
     cooldown: s.cooldown,
@@ -137,6 +159,30 @@ export function toAbilityDetails(a: ChampionAbilities, firstMaxedKey?: string): 
     maxRange: s.maxRange,
     isKeySkill: s.tags.length > 0 || s.key === firstMaxedKey,
   }));
+
+  const keyCount = details.filter((d) => d.isKeySkill).length;
+  if (keyCount > MAX_KEY_SKILLS) {
+    // Prefer the real "콤보를 시작하는 스킬과 그 다음 스킬" — skillMaxOrder's
+    // first two entries, forced key regardless of whether the keyword
+    // classifier had already flagged them (the combo-order signal wins once
+    // this cap kicks in). Falls back to the first two ALREADY-key,
+    // combo-eligible abilities in Q/W/E order when skillMaxOrder isn't
+    // available (best-effort build fetch failed) — still deterministic and
+    // still respects "combo starter first", just without real ordering data
+    // to confirm it.
+    const comboKeys =
+      skillMaxOrder && skillMaxOrder.length >= 2
+        ? skillMaxOrder.slice(0, 2)
+        : details
+            .filter((d) => d.isKeySkill && isComboEligible(d.key))
+            .slice(0, MAX_KEY_SKILLS)
+            .map((d) => d.key);
+    for (const d of details) {
+      d.isKeySkill = comboKeys.includes(d.key);
+    }
+  }
+
+  return details;
 }
 
 // Root English terms for each tag — translated from this module's old
